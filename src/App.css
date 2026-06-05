@@ -1,46 +1,116 @@
 @import "tailwindcss";
 
+/* Korero - dark liquid-glass theme (iOS 18 / Sequoia, aurora-on-navy palette) */
+
 @theme {
-  /* Design tokens */
-  --color-text: #0f0f0f;
-  --color-background: #fbfbfb;
-  --color-background-ui: #da5893;
-  --color-logo-primary: #faa2ca;
-  --color-logo-stroke: #382731;
-  --color-text-stroke: #f6f6f6;
-  --color-mid-gray: #808080;
+  --color-background:           #0a0d1a;
+  --color-background-elev:      #0f1326;
+
+  --color-glass-surface-thin:    rgba(255, 255, 255, 0.06);
+  --color-glass-surface:         rgba(255, 255, 255, 0.10);
+  --color-glass-surface-thick:   rgba(255, 255, 255, 0.14);
+  --color-glass-surface-hover:   rgba(255, 255, 255, 0.13);
+  --color-glass-surface-active:  rgba(255, 255, 255, 0.17);
+
+  --color-glass-border:          rgba(255, 255, 255, 0.09);
+  --color-glass-border-strong:   rgba(255, 255, 255, 0.16);
+
+  --color-glass-hero-tint:       rgba(80, 90, 200, 0.18);
+
+  /* ---- AURORA brand palette (replaces yellow brand) ---- */
+  --color-aurora-cyan:           #5DD8FF;
+  --color-aurora-purple:         #9B7FE8;
+  --color-aurora-pink:           #E87AC5;
+  --color-aurora-magenta:        #FF7AB3;
+
+  /* Tints used for "selected / active" glass surfaces */
+  --color-glass-accent-tint:     rgba( 93, 216, 255, 0.12);   /* cyan-tinted */
+  --color-glass-accent-strong:   rgba( 93, 216, 255, 0.22);   /* cyan selected */
+
+  --color-text:           #ffffff;
+  --color-text-muted:     #b5bcd0;
+  /* Kōrero (v1.12.0): lifted from #7a8198 for better legibility over glass
+     (the old value sat near the AA floor for small text on the dark backdrop). */
+  --color-text-subtle:    #8b93a9;
+  --color-text-stroke:    rgba(255, 255, 255, 0.08);
+
+  /* Brand logo colour — used by SVG paths via Tailwind class .logo-primary */
+  --color-logo-primary:   #5DD8FF;
+  --color-logo-stroke:    #0f1326;
+
+  --color-accent-purple:  var(--color-aurora-purple);
+  --color-accent-blue:    var(--color-aurora-cyan);
+
+  /* Status pill palette — UNIVERSAL semantic colours, NOT brand.
+     Kept as-is (warning is amber-orange, not yellow). */
+  --color-pill-warning:   #f5a020;
+  --color-pill-urgent:    #e85d75;
+  --color-pill-positive:  #4cd97a;
+  --color-pill-info:      #7c6dd1;
+
+  /* ---- Backwards-compat aliases ----
+     Components still referencing `bg-accent-yellow`, `bg-logo-primary`,
+     `text-logo-primary` etc. will pull from the cyan brand colour instead
+     of yellow. Old class names keep working without per-component edits. */
+  --color-accent-yellow:  var(--color-aurora-cyan);
+  --color-background-ui:  var(--color-aurora-purple);
+  --color-mid-gray:       var(--color-text-muted);
+
+  /* ---- Typography (Kōrero v1.10.0) ----
+     Define Tailwind's --font-sans token so the `font-sans` utility, Preflight's
+     base html font, and the :root rule below ALL resolve to the Aptos-led stack.
+     Without this, any element carrying a `font-sans` class would pull Tailwind's
+     default stack (no Aptos) and override the :root rule. Aptos is Microsoft's
+     default since Win11/Office 2024; not bundled — resolves from the OS, with a
+     graceful fallback chain for machines that lack it. --font-mono left default. */
+  --font-sans: "Aptos", "Aptos Display", "Segoe UI Variable Text", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Inter", sans-serif;
 }
 
 :root {
-  /* Typography */
   font-size: 15px;
   line-height: 24px;
   font-weight: 400;
-
-  /* Colors - Light Theme */
-  /* --color-text: #0f0f0f;
-  --color-background: #fbfbfb;
-  --color-logo-primary: #FAA2CA;
-  --color-logo-stroke: #382731;
-  --color-text-stroke: #f6f6f6; */
-
-  /* Typography settings */
+  /* Kōrero (v1.10.0): single source of truth is the --font-sans @theme token above.
+     This explicit :root rule guarantees the base font even if Preflight ordering
+     changes. */
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv11";
+  /* Kōrero (v1.12.0) type polish: let variable fonts (Aptos/Segoe UI Variable)
+     pick optical sizes, enable tasteful ligatures, and shave a hair of tracking
+     for a more refined, modern body setting. */
+  font-optical-sizing: auto;
+  font-variant-ligatures: common-ligatures contextual;
+  letter-spacing: -0.006em;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   -webkit-text-size-adjust: 100%;
 
-  --scrollbar-thumb: color-mix(in srgb, var(--color-text), transparent 85%);
-  --scrollbar-thumb-hover: color-mix(
-    in srgb,
-    var(--color-text),
-    transparent 70%
-  );
+  --scrollbar-thumb:       rgba(255, 255, 255, 0.14);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.26);
 
-  /* Apply colors */
   color: var(--color-text);
   background-color: var(--color-background);
+  color-scheme: dark;
+}
+
+body {
+  position: relative;
+  min-height: 100vh;
+  margin: 0;
+  background-color: var(--color-background);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse 75% 55% at 100% 0%, rgba(93, 216, 255, 0.10), transparent 60%),
+    radial-gradient(ellipse 60% 50% at 0% 100%, rgba(155, 127, 232, 0.10), transparent 60%);
 }
 
 .container {
@@ -52,57 +122,327 @@
   text-align: center;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    /* Colors - Dark Theme */
-    --color-text: #fbfbfb;
-    --color-background: #2c2b29;
-    --color-logo-primary: #f28cbb;
-    --color-logo-stroke: #fad1ed;
-  }
-}
-
-/* macOS - tint native overlay scrollbar thumb */
-:root[data-platform="macos"] {
-  scrollbar-color: var(--scrollbar-thumb) transparent;
-}
-
-/* Custom Scrollbar - only on Windows/Linux; macOS uses native overlay scrollbars */
-:root:not([data-platform="macos"]) ::-webkit-scrollbar {
-  width: 14px;
-  height: 14px;
-}
-
-:root:not([data-platform="macos"]) ::-webkit-scrollbar-track {
-  background: transparent;
-}
-
+:root[data-platform="macos"] { scrollbar-color: var(--scrollbar-thumb) transparent; }
+:root:not([data-platform="macos"]) ::-webkit-scrollbar { width: 12px; height: 12px; }
+:root:not([data-platform="macos"]) ::-webkit-scrollbar-track { background: transparent; }
 :root:not([data-platform="macos"]) ::-webkit-scrollbar-thumb {
   background-color: var(--scrollbar-thumb);
   border-radius: 20px;
   border: 3px solid transparent;
-  border-right-width: 4px;
-  border-left-width: 3px;
   background-clip: content-box;
   min-height: 32px;
 }
-
 :root:not([data-platform="macos"]) ::-webkit-scrollbar-thumb:hover {
   background-color: var(--scrollbar-thumb-hover);
 }
 
 @layer utilities {
-  .text-stroke {
-    -webkit-text-stroke: 2px var(--color-text-stroke);
+  .text-stroke { -webkit-text-stroke: 1.5px var(--color-text-stroke); }
+
+  .glass {
+    -webkit-backdrop-filter: blur(40px) saturate(200%);
+    backdrop-filter: blur(40px) saturate(200%);
+    border-radius: 16px;
+    box-shadow: inset 0 1px 0 0 rgba(255,255,255,0.12), inset 0 -1px 0 0 rgba(255,255,255,0.04), 0 8px 32px 0 rgba(0,0,0,0.24);
   }
+
+  .glass-card {
+    background-color: var(--color-glass-surface);
+    /* Kōrero (v1.12.0): faint diagonal top-left sheen layered over the fill so
+       the surface reads as curved, liquid glass catching light — not a flat panel. */
+    background-image: linear-gradient(
+      157deg,
+      rgba(255, 255, 255, 0.06) 0%,
+      rgba(255, 255, 255, 0.015) 26%,
+      rgba(255, 255, 255, 0) 58%
+    );
+    border: 1px solid var(--color-glass-border);
+    border-radius: 16px;
+    padding: 20px;
+    /* Kōrero (v1.10.0): + brightness(1.05) so the aurora behind blooms through
+       the glass; full-perimeter inset rim (top brightest, sides + base subtle)
+       gives the edge a refracted "lit" feel instead of a flat top highlight. */
+    -webkit-backdrop-filter: blur(40px) saturate(200%) brightness(1.05);
+    backdrop-filter: blur(40px) saturate(200%) brightness(1.05);
+    box-shadow:
+      inset 0  1px 0 0 rgba(255,255,255,0.16),
+      inset  1px 0 0 0 rgba(255,255,255,0.05),
+      inset -1px 0 0 0 rgba(255,255,255,0.05),
+      inset 0 -1px 0 0 rgba(255,255,255,0.05),
+      0 8px 32px 0 rgba(0,0,0,0.24);
+  }
+
+  .glass-card-thin {
+    background-color: var(--color-glass-surface-thin);
+    border: 1px solid var(--color-glass-border);
+    border-radius: 12px;
+    padding: 14px;
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%);
+    box-shadow: inset 0 1px 0 0 rgba(255,255,255,0.08), inset 0 -1px 0 0 rgba(255,255,255,0.03), 0 4px 16px 0 rgba(0,0,0,0.18);
+  }
+
+  .glass-card-thick {
+    background-color: var(--color-glass-surface-thick);
+    /* Kōrero (v1.12.0): stronger sheen for the hero/modal surface. */
+    background-image: linear-gradient(
+      157deg,
+      rgba(255, 255, 255, 0.09) 0%,
+      rgba(255, 255, 255, 0.025) 26%,
+      rgba(255, 255, 255, 0) 58%
+    );
+    border: 1px solid var(--color-glass-border-strong);
+    border-radius: 18px;
+    padding: 22px;
+    /* Kōrero (v1.10.0): strongest bloom + brightest perimeter rim — this is the
+       hero/modal surface, so it reads as the thickest, most refractive glass. */
+    -webkit-backdrop-filter: blur(48px) saturate(220%) brightness(1.08);
+    backdrop-filter: blur(48px) saturate(220%) brightness(1.08);
+    box-shadow:
+      inset 0  1px 0 0 rgba(255,255,255,0.20),
+      inset  1px 0 0 0 rgba(255,255,255,0.06),
+      inset -1px 0 0 0 rgba(255,255,255,0.06),
+      inset 0 -1px 0 0 rgba(255,255,255,0.06),
+      0 16px 48px 0 rgba(0,0,0,0.32);
+  }
+
+  .glass-card-vibrant {
+    background-color: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--color-glass-border-strong);
+    border-radius: 18px;
+    padding: 22px;
+    -webkit-backdrop-filter: blur(28px) saturate(240%);
+    backdrop-filter: blur(28px) saturate(240%);
+    box-shadow: inset 0 1px 0 0 rgba(255,255,255,0.16), inset 0 -1px 0 0 rgba(255,255,255,0.05), 0 16px 56px 0 rgba(0,0,0,0.30);
+  }
+
+  .glass-card-hero {
+    background-color: var(--color-glass-hero-tint);
+    border: 1px solid var(--color-glass-border-strong);
+    border-radius: 22px;
+    padding: 26px;
+    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    backdrop-filter: blur(40px) saturate(180%);
+    box-shadow: inset 0 1px 0 0 rgba(255,255,255,0.14), inset 0 -1px 0 0 rgba(255,255,255,0.04), 0 16px 48px 0 rgba(80,90,200,0.22);
+  }
+
+  /* Selected — cyan-tinted glass (was yellow) */
+  .glass-card-selected {
+    background-color: var(--color-glass-accent-strong);
+    border: 1px solid rgba(93, 216, 255, 0.50);
+    border-radius: 16px;
+    padding: 20px;
+    -webkit-backdrop-filter: blur(36px) saturate(200%);
+    backdrop-filter: blur(36px) saturate(200%);
+    box-shadow: inset 0 1px 0 0 rgba(150,230,255,0.30), 0 8px 32px 0 rgba(93,216,255,0.22), 0 0 0 1px rgba(93,216,255,0.22);
+  }
+
+  .glass-card-interactive {
+    transition: background-color 220ms cubic-bezier(0.22,1,0.36,1), border-color 220ms cubic-bezier(0.22,1,0.36,1), box-shadow 320ms cubic-bezier(0.22,1,0.36,1), transform 200ms cubic-bezier(0.22,1,0.36,1);
+    cursor: pointer;
+    will-change: transform, box-shadow;
+  }
+  .glass-card-interactive:hover {
+    background-color: var(--color-glass-surface-hover);
+    border-color: var(--color-glass-border-strong);
+    /* Kōrero (v1.10.0): hovered glass lifts AND gains a faint aurora-cyan ambient
+       glow, so it reads as "lit from within" rather than merely shadowed. */
+    box-shadow:
+      inset 0  1px 0 0 rgba(255,255,255,0.20),
+      inset  1px 0 0 0 rgba(255,255,255,0.06),
+      inset -1px 0 0 0 rgba(255,255,255,0.06),
+      inset 0 -1px 0 0 rgba(255,255,255,0.06),
+      0 16px 48px 0 rgba(0,0,0,0.32),
+      0 0 24px 0 rgba(93, 216, 255, 0.10);
+    transform: translateY(-2px);
+  }
+  .glass-card-interactive:active {
+    transform: translateY(0);
+    background-color: var(--color-glass-surface-active);
+    transition-duration: 80ms;
+  }
+
+  .glass-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.4;
+    border: 1px solid var(--color-glass-border-strong);
+    background-color: var(--color-glass-surface-thick);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    backdrop-filter: blur(16px) saturate(180%);
+    box-shadow: inset 0 1px 0 0 rgba(255,255,255,0.14);
+  }
+
+  /* Primary pill — was yellow, now aurora cyan */
+  .glass-pill-accent {
+    background-color: rgba(93, 216, 255, 0.22);
+    border-color: rgba(93, 216, 255, 0.45);
+    color: var(--color-aurora-cyan);
+  }
+
+  @supports not (backdrop-filter: blur(1px)) {
+    .glass, .glass-card, .glass-card-thin, .glass-card-thick,
+    .glass-card-vibrant, .glass-card-hero, .glass-card-selected, .glass-pill {
+      background-color: rgba(255, 255, 255, 0.12);
+    }
+    .glass-pill-accent { background-color: rgba(93, 216, 255, 0.30); }
+  }
+
+  .pill-warning  { background-color: color-mix(in srgb, var(--color-pill-warning)  18%, transparent); color: var(--color-pill-warning);  }
+  .pill-urgent   { background-color: color-mix(in srgb, var(--color-pill-urgent)   18%, transparent); color: var(--color-pill-urgent);   }
+  .pill-positive { background-color: color-mix(in srgb, var(--color-pill-positive) 18%, transparent); color: var(--color-pill-positive); }
+  .pill-info     { background-color: color-mix(in srgb, var(--color-pill-info)     18%, transparent); color: var(--color-pill-info);     }
 }
 
-.logo-primary {
-  fill: var(--color-logo-primary);
-}
-
+.logo-primary { fill: var(--color-logo-primary); }
 .logo-stroke {
   fill: var(--color-logo-stroke);
   stroke: var(--color-logo-stroke);
   stroke-width: 1;
 }
+
+
+/* =============================================================================
+   Bleeding-edge polish (2026-05-15)
+   ============================================================================= */
+
+/* Animated aurora ambient background — slow rotation creates subtle motion.
+   Replaces the static body::before defined earlier (overrides via later rule). */
+@keyframes korero-aurora-drift {
+  0%   { transform: rotate(0deg)   scale(1.00); opacity: 1; }
+  50%  { transform: rotate(180deg) scale(1.12); opacity: 0.85; }
+  100% { transform: rotate(360deg) scale(1.00); opacity: 1; }
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: -25%;
+  pointer-events: none;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse 60% 50% at 30% 20%, rgba( 93, 216, 255, 0.16), transparent 65%),
+    radial-gradient(ellipse 60% 50% at 70% 80%, rgba(155, 127, 232, 0.14), transparent 65%),
+    radial-gradient(ellipse 50% 40% at 80% 30%, rgba(216, 111, 212, 0.10), transparent 65%);
+  animation: korero-aurora-drift 60s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before { animation: none; }
+}
+
+/* Light-sweep hover effect on interactive glass — a thin diagonal highlight
+   sweeps across the surface on hover, mimicking light catching real glass. */
+.glass-card-interactive {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.glass-card-interactive::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* Kōrero (v1.10.0): tighter, brighter specular band with a faint aurora-cyan
+     core — light catching the glass picks up the brand hue as it sweeps. */
+  background: linear-gradient(
+    115deg,
+    transparent 38%,
+    rgba(255, 255, 255, 0.08) 47%,
+    rgba(180, 240, 255, 0.22) 50%,
+    rgba(255, 255, 255, 0.08) 53%,
+    transparent 62%
+  );
+  transform: translateX(-120%);
+  transition: transform 760ms cubic-bezier(0.22, 1, 0.36, 1);
+  z-index: 1;
+}
+
+.glass-card-interactive:hover::after {
+  transform: translateX(120%);
+}
+
+/* Aurora focus ring — for keyboard accessibility, glows on focus-visible */
+*:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--color-background),
+    0 0 0 4px var(--color-aurora-cyan),
+    0 0 12px 4px rgba(93, 216, 255, 0.35);
+  border-radius: 6px;
+}
+
+/* Kōrero (v1.11.0): honour reduced-motion for the interactive-glass effects.
+   Motion is removed (no lift, no light-sweep, instant transitions); the static
+   surface/colour/glow hover states are kept — they convey state without moving. */
+@media (prefers-reduced-motion: reduce) {
+  .glass-card-interactive { transition: none; }
+  .glass-card-interactive:hover { transform: none; }
+  .glass-card-interactive::after { transition: none; }
+  /* Keep the sweep band parked off-screen so it never travels across the card. */
+  .glass-card-interactive:hover::after { transform: translateX(-120%); }
+}
+
+/* Kōrero (v1.12.0): page-section transition — a brief fade + rise when the
+   active section changes (App.tsx remounts the keyed wrapper to replay it). */
+@keyframes korero-page-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.korero-page {
+  animation: korero-page-in 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .korero-page { animation: none; }
+}
+
+/* Kōrero (v1.13.0): markdown rendering for processed meeting notes
+   (react-markdown + remark-gfm). Tailwind Preflight strips default element
+   styling, so tables, headings, lists and code need explicit styles here. */
+.md-body { font-size: 0.875rem; line-height: 1.6; color: var(--color-text-muted); }
+.md-body > *:first-child { margin-top: 0; }
+.md-body > *:last-child { margin-bottom: 0; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4 {
+  color: var(--color-text); font-weight: 600; margin: 0.8em 0 0.4em; line-height: 1.3;
+}
+.md-body h1 { font-size: 1.15rem; }
+.md-body h2 { font-size: 1.05rem; }
+.md-body h3 { font-size: 0.95rem; }
+.md-body p { margin: 0.5em 0; }
+.md-body ul, .md-body ol { margin: 0.5em 0; padding-left: 1.4em; }
+.md-body ul { list-style: disc; }
+.md-body ol { list-style: decimal; }
+.md-body li { margin: 0.2em 0; }
+.md-body a { color: var(--color-aurora-cyan); text-decoration: underline; }
+.md-body strong { color: var(--color-text); font-weight: 600; }
+.md-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em; background: rgba(255,255,255,0.08);
+  padding: 0.1em 0.35em; border-radius: 4px;
+}
+.md-body pre {
+  background: rgba(0,0,0,0.28); border: 1px solid var(--color-glass-border);
+  border-radius: 8px; padding: 0.75em; overflow-x: auto; margin: 0.6em 0;
+}
+.md-body pre code { background: none; padding: 0; }
+.md-body blockquote {
+  border-left: 2px solid var(--color-aurora-cyan); margin: 0.6em 0;
+  padding-left: 0.8em; color: var(--color-text-subtle);
+}
+.md-body table {
+  border-collapse: collapse; margin: 0.6em 0; font-size: 0.85rem;
+  display: block; max-width: 100%; overflow-x: auto;
+}
+.md-body th, .md-body td {
+  border: 1px solid var(--color-glass-border-strong);
+  padding: 0.4em 0.6em; text-align: left; vertical-align: top;
+}
+.md-body th { background: rgba(255,255,255,0.06); color: var(--color-text); font-weight: 600; }
+.md-body hr { border: none; border-top: 1px solid var(--color-glass-border); margin: 0.8em 0; }

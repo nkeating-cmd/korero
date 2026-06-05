@@ -42,3 +42,16 @@ blob-report/
 
 # Nix build output
 result
+
+# --- Korero fork additions (2026-05-30) ---
+# Build/patch artefacts and any runtime data that must never be committed.
+KORERO_PATCHES_APPLIED.txt
+settings_store.json
+*.settings_store.json
+.window-state.json
+*.window-state.json
+*.bak
+*.bak-*
+# portable-mode local data, if the app is ever run from the repo tree
+recordings/
+models/

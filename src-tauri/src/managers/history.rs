@@ -581,6 +581,46 @@ impl HistoryManager {
         Ok(())
     }
 
+    /// Update only the post-processed text for a history entry.
+    ///
+    /// Korero (v1.4.0): used by the inline correction UI in the History panel.
+    /// Emits HistoryUpdatePayload::Updated so the frontend refreshes in real time
+    /// without a full page reload.
+    pub fn update_post_processed_text(
+        &self,
+        id: i64,
+        text: String,
+    ) -> Result<HistoryEntry> {
+        let conn = self.get_connection()?;
+        let updated = conn.execute(
+            "UPDATE transcription_history SET post_processed_text = ?1 WHERE id = ?2",
+            params![text, id],
+        )?;
+
+        if updated == 0 {
+            return Err(anyhow!("History entry {} not found", id));
+        }
+
+        let entry = conn.query_row(
+            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+             FROM transcription_history WHERE id = ?1",
+            params![id],
+            Self::map_history_entry,
+        )?;
+
+        debug!("Updated post_processed_text for history entry {}", id);
+
+        if let Err(e) = (HistoryUpdatePayload::Updated {
+            entry: entry.clone(),
+        })
+        .emit(&self.app_handle)
+        {
+            error!("Failed to emit history-updated event: {}", e);
+        }
+
+        Ok(entry)
+    }
+
     pub fn get_audio_file_path(&self, file_name: &str) -> PathBuf {
         self.recordings_dir.join(file_name)
     }

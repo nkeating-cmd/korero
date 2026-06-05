@@ -31,8 +31,13 @@ tauri_panel! {
     })
 }
 
-const OVERLAY_WIDTH: f64 = 172.0;
-const OVERLAY_HEIGHT: f64 = 36.0;
+// Korero (v2 pill fix, 2026-05-17 PM): 320x64 gives 55px horizontal slack each
+// side so the 210-280px auto-sized pill renders with its 32px shadow halo and
+// per-state glow intact, AND has headroom for longer localised state labels.
+// v1 of this patch used 240x60 which was geometrically insufficient (shadow
+// clipped on right). CSS body{display:flex} centres the pill in the window.
+const OVERLAY_WIDTH: f64 = 320.0;
+const OVERLAY_HEIGHT: f64 = 64.0;
 
 #[cfg(target_os = "macos")]
 const OVERLAY_TOP_OFFSET: f64 = 46.0;
@@ -235,7 +240,7 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
         }
     }
 
-    // Position starts unset — update_overlay_position() sets the correct
+    // Position starts unset â€” update_overlay_position() sets the correct
     // LogicalPosition before the overlay is shown.
     let mut builder = WebviewWindowBuilder::new(
         app_handle,
@@ -254,6 +259,13 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
     .always_on_top(true)
     .skip_taskbar(true)
     .transparent(true)
+    // Korero (v1.2.0): WebView2 on Windows renders a dark background rectangle
+    // behind the pill even with transparent(true) set on the Tauri window.
+    // CSS backdrop-filter removal (v1.1.0) fixed the blur artefact but WebView2
+    // still paints its own default background. Explicit Color(0,0,0,0) tells
+    // WebView2 to use a fully transparent background, eliminating the square
+    // artifact visible on the left side of the overlay pill.
+    .background_color(tauri::utils::config::Color(0, 0, 0, 0))
     .focused(false)
     .visible(false);
 

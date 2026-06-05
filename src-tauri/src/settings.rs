@@ -4,8 +4,38 @@ use serde::{Deserialize, Deserializer, Serialize};
 use specta::Type;
 use std::collections::HashMap;
 use std::fmt;
-use tauri::AppHandle;
+use std::sync::{Arc, RwLock};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_store::StoreExt;
+
+/// Kōrero: event emitted when one or more keychain writes fail. Payload is a
+/// list of provider IDs that did not persist. Frontend listens on
+/// `korero://keychain-error` and surfaces a toast so the user knows their key
+/// isn't being saved (otherwise the failure is silent and manifests later as
+/// "the app forgot my key").
+pub const KEYCHAIN_ERROR_EVENT: &str = "korero://keychain-error";
+
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct KeychainErrorPayload {
+    pub failed_providers: Vec<String>,
+    pub phase: &'static str, // "save" | "migrate"
+}
+
+fn emit_keychain_error(app: &AppHandle, phase: &'static str, failed_providers: Vec<String>) {
+    if failed_providers.is_empty() {
+        return;
+    }
+    let payload = KeychainErrorPayload {
+        failed_providers,
+        phase,
+    };
+    if let Err(err) = app.emit(KEYCHAIN_ERROR_EVENT, &payload) {
+        warn!(
+            "secret_store: failed to emit {} event: {}",
+            KEYCHAIN_ERROR_EVENT, err
+        );
+    }
+}
 
 pub const APPLE_INTELLIGENCE_PROVIDER_ID: &str = "apple_intelligence";
 pub const APPLE_INTELLIGENCE_DEFAULT_MODEL_ID: &str = "Apple Intelligence";
@@ -77,6 +107,14 @@ impl From<LogLevel> for tauri_plugin_log::LogLevel {
     }
 }
 
+/// Kōrero (v1.15.0): one user-taught transcription correction. `wrong` is
+/// what the model keeps producing; `right` is what it should be.
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct TranscriptCorrection {
+    pub wrong: String,
+    pub right: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
 pub struct ShortcutBinding {
     pub id: String,
@@ -104,6 +142,15 @@ pub struct PostProcessProvider {
     pub models_endpoint: Option<String>,
     #[serde(default)]
     pub supports_structured_output: bool,
+    /// Static model list shown in the UI without requiring an API call.
+    /// Populated for providers with a well-known, stable model catalogue.
+    /// The UI merges this with any dynamically-fetched models from the API.
+    #[serde(default)]
+    pub suggested_models: Vec<String>,
+    /// True when the provider runs locally (e.g. Ollama).
+    /// Adds a "Local" badge in the UI and enables the in-app model pull workflow.
+    #[serde(default)]
+    pub is_local_provider: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
@@ -181,7 +228,8 @@ impl Default for KeyboardImplementation {
 
 impl Default for ModelUnloadTimeout {
     fn default() -> Self {
-        ModelUnloadTimeout::Min5
+        // Kōrero: keep model warm longer during a working session.
+        ModelUnloadTimeout::Min15
     }
 }
 
@@ -305,9 +353,43 @@ impl Default for OrtAcceleratorSetting {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Type)]
+// Kōrero: secrets live in the OS keychain, not on disk.
+//
+// SecretMap is still the in-memory cache the rest of the app reads from — the
+// frontend, the LLM client, and the settings command surface all expect a
+// `HashMap<String, String>`-shaped view. The change is at the persistence
+// boundary:
+//
+//   * `Serialize` emits empty strings for every key, so `settings_store.json`
+//     never contains plaintext secrets even if the in-memory map is populated.
+//   * `Deserialize` reads the JSON verbatim, which lets us migrate legacy
+//     plaintext keys on first load (see `migrate_plaintext_to_keyring`).
+//   * `hydrate_from_keyring` repopulates the in-memory map from the OS store
+//     after every load.
+//   * `persist_to_keyring` writes the in-memory map into the OS store before
+//     every save.
+//
+// Result: a backup of `settings_store.json` is no longer a credential leak.
+#[derive(Clone, Deserialize, Type)]
 #[serde(transparent)]
 pub(crate) struct SecretMap(HashMap<String, String>);
+
+impl Serialize for SecretMap {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        // Preserve the key set (provider IDs) so the on-disk shape stays
+        // schema-compatible with anything that reads it raw, but blank every
+        // value. Real secrets are stored separately in the OS keychain.
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for key in self.0.keys() {
+            map.serialize_entry(key, "")?;
+        }
+        map.end()
+    }
+}
 
 impl fmt::Debug for SecretMap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -330,6 +412,71 @@ impl std::ops::Deref for SecretMap {
 impl std::ops::DerefMut for SecretMap {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
+    }
+}
+
+impl SecretMap {
+    /// Pull every known provider's key out of the OS keychain into the
+    /// in-memory map. Existing in-memory values are overwritten — the keychain
+    /// is the source of truth post-migration. Missing keychain entries leave
+    /// the in-memory value as an empty string.
+    pub fn hydrate_from_keyring(&mut self) {
+        for provider_id in self.0.keys().cloned().collect::<Vec<_>>() {
+            let key = crate::secret_store::load_api_key(&provider_id).unwrap_or_default();
+            self.0.insert(provider_id, key);
+        }
+    }
+
+    /// Push every value in the in-memory map into the OS keychain.
+    /// Empty values trigger a delete so revoked keys don't linger.
+    ///
+    /// Returns the list of provider IDs whose write failed, so the caller
+    /// can surface a UI signal. An empty vec means everything persisted
+    /// cleanly.
+    pub fn persist_to_keyring(&self) -> Vec<String> {
+        let mut failures = Vec::new();
+        for (provider_id, value) in self.0.iter() {
+            if !crate::secret_store::save_api_key(provider_id, value) {
+                failures.push(provider_id.clone());
+            }
+        }
+        failures
+    }
+
+    /// One-shot migration of legacy plaintext keys from a freshly deserialised
+    /// settings JSON. Any non-empty value is copied to the keychain and then
+    /// blanked in the in-memory map (so the next write to disk is clean).
+    ///
+    /// Returns `(migrated_any, failures)`:
+    ///   * `migrated_any` is `true` if at least one key was migrated and the
+    ///     caller should re-write the settings JSON to commit the blanks.
+    ///   * `failures` lists provider IDs whose keychain write failed — their
+    ///     plaintext is preserved in the in-memory map for the current session
+    ///     (do not blank), and the caller should surface a UI signal so the
+    ///     user knows a re-save is needed.
+    pub fn migrate_plaintext_to_keyring(&mut self) -> (bool, Vec<String>) {
+        let mut migrated = false;
+        let mut failures = Vec::new();
+        for (provider_id, value) in self.0.iter_mut() {
+            if value.is_empty() {
+                continue;
+            }
+            if crate::secret_store::save_api_key(provider_id, value) {
+                debug!(
+                    "secret_store: migrated plaintext key for '{}' into OS keychain",
+                    provider_id
+                );
+                value.clear();
+                migrated = true;
+            } else {
+                warn!(
+                    "secret_store: keychain unavailable, leaving plaintext key for '{}' in place for this session",
+                    provider_id
+                );
+                failures.push(provider_id.clone());
+            }
+        }
+        (migrated, failures)
     }
 }
 
@@ -371,6 +518,19 @@ pub struct AppSettings {
     pub log_level: LogLevel,
     #[serde(default)]
     pub custom_words: Vec<String>,
+    // Kōrero (v1.15.0): user-taught corrections (wrong → right), applied
+    // deterministically to every transcription AFTER custom-word fuzzy
+    // matching, and injected as a glossary into note/meeting post-processing.
+    #[serde(default)]
+    pub transcript_corrections: Vec<TranscriptCorrection>,
+    // Kōrero (v1.11.0): optional RNNoise mic denoiser. Only effective when the
+    // capture device runs at 48 kHz. Default OFF (denoising can hurt ASR accuracy).
+    #[serde(default)]
+    pub denoise_enabled: bool,
+    // Kōrero (v1.12.0): write a crash report file on panic (panic logging is
+    // always on regardless). Default ON.
+    #[serde(default = "default_save_crash_reports")]
+    pub save_crash_reports: bool,
     #[serde(default)]
     pub model_unload_timeout: ModelUnloadTimeout,
     #[serde(default = "default_word_correction_threshold")]
@@ -457,7 +617,9 @@ fn default_update_checks_enabled() -> bool {
 }
 
 fn default_selected_language() -> String {
-    "auto".to_string()
+    // Kōrero: default to English. "auto" was upstream default but caused
+    // mistriggers on NZ accents in early testing.
+    "en".to_string()
 }
 
 fn default_overlay_position() -> OverlayPosition {
@@ -473,6 +635,10 @@ fn default_debug_mode() -> bool {
 
 fn default_log_level() -> LogLevel {
     LogLevel::Debug
+}
+
+fn default_save_crash_reports() -> bool {
+    true
 }
 
 fn default_word_correction_threshold() -> f64 {
@@ -518,7 +684,9 @@ fn default_show_tray_icon() -> bool {
 }
 
 fn default_post_process_provider_id() -> String {
-    "openai".to_string()
+    // Korero: DeepSeek V4 as default for cost (about 12x cheaper than
+    // Claude per token). User can switch to Anthropic for premium prompts.
+    "deepseek".to_string()
 }
 
 fn default_post_process_providers() -> Vec<PostProcessProvider> {
@@ -530,6 +698,8 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
+            suggested_models: vec![],
+            is_local_provider: false,
         },
         PostProcessProvider {
             id: "zai".to_string(),
@@ -538,6 +708,8 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
+            suggested_models: vec![],
+            is_local_provider: false,
         },
         PostProcessProvider {
             id: "openrouter".to_string(),
@@ -546,6 +718,8 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
+            suggested_models: vec![],
+            is_local_provider: false,
         },
         PostProcessProvider {
             id: "anthropic".to_string(),
@@ -554,6 +728,8 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: false,
+            suggested_models: vec![],
+            is_local_provider: false,
         },
         PostProcessProvider {
             id: "groq".to_string(),
@@ -562,6 +738,21 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: false,
+            suggested_models: vec![],
+            is_local_provider: false,
+        },
+        PostProcessProvider {
+            // Korero: added 2026-05-14. DeepSeek V4 — OpenAI-compatible API.
+            // Roughly 12x cheaper than Claude per token. Default for high-volume
+            // post-processing (clean transcript, WhatsApp/Slack formatting).
+            id: "deepseek".to_string(),
+            label: "DeepSeek".to_string(),
+            base_url: "https://api.deepseek.com/v1".to_string(),
+            allow_base_url_edit: false,
+            models_endpoint: Some("/models".to_string()),
+            supports_structured_output: true,
+            suggested_models: vec![],
+            is_local_provider: false,
         },
         PostProcessProvider {
             id: "cerebras".to_string(),
@@ -570,6 +761,8 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
+            suggested_models: vec![],
+            is_local_provider: false,
         },
     ];
 
@@ -586,6 +779,8 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: None,
             supports_structured_output: true,
+            suggested_models: vec![],
+            is_local_provider: true,
         });
     }
 
@@ -597,16 +792,79 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
         allow_base_url_edit: false,
         models_endpoint: Some("/models".to_string()),
         supports_structured_output: true,
+        suggested_models: vec![],
+        is_local_provider: false,
     });
 
-    // Custom provider always comes last
+    // Kōrero (v1.1.0): Google Gemini via the OpenAI-compatible endpoint.
+    // supports_structured_output: false -- Google's compat layer accepts JSON mode
+    // but strict schema mode is not fully equivalent to OpenAI's. Enable once
+    // confirmed working end-to-end. /models returns "models/gemini-*" prefixed IDs.
+    // Kōrero (v1.3.0): suggested_models populated so the dropdown works without
+    // an API call. Ordered fastest/cheapest → largest for easy scanning.
     providers.push(PostProcessProvider {
-        id: "custom".to_string(),
-        label: "Custom".to_string(),
+        id: "gemini".to_string(),
+        label: "Google Gemini".to_string(),
+        base_url: "https://generativelanguage.googleapis.com/v1beta/openai/".to_string(),
+        allow_base_url_edit: false,
+        models_endpoint: Some("/models".to_string()),
+        supports_structured_output: false,
+        suggested_models: vec![
+            "gemini-2.5-flash".to_string(),
+            "gemini-2.5-flash-lite".to_string(),
+            "gemini-2.5-pro".to_string(),
+            "gemini-2.0-flash".to_string(),
+            "gemini-2.0-flash-lite".to_string(),
+            "gemini-1.5-flash".to_string(),
+            "gemini-1.5-pro".to_string(),
+        ],
+        is_local_provider: false,
+    });
+
+    // Kōrero (v1.1.0): Ollama local inference. Default model gemma3:4b (~4-6 GB RAM,
+    // 128K context, GPU-accelerated via DirectML on Windows). User can change the
+    // base URL if running Ollama on a non-standard port.
+    // Kōrero (v1.3.0): is_local_provider=true shows the "Local" badge and enables
+    // the in-app pull workflow. suggested_models covers the most common options so
+    // the dropdown is useful before the user clicks "Fetch models".
+    providers.push(PostProcessProvider {
+        id: "ollama".to_string(),
+        label: "Ollama (local)".to_string(),
         base_url: "http://localhost:11434/v1".to_string(),
         allow_base_url_edit: true,
         models_endpoint: Some("/models".to_string()),
         supports_structured_output: false,
+        suggested_models: vec![
+            // Kōrero (v1.14.6): Gemma 4 12B — released 2026-06-03, Apache 2.0,
+            // near-26B-MoE quality, ~8-9 GB VRAM at Ollama's default quant
+            // (16 GB for the full model). Listed first as the best local
+            // option on capable hardware. NOTE: tag follows the gemma3:12b
+            // convention but was unverified at commit time — if the in-app
+            // pull 404s, confirm at ollama.com/library/gemma4.
+            "gemma4:12b".to_string(),
+            "gemma3:4b".to_string(),
+            "gemma3:12b".to_string(),
+            "gemma3:27b".to_string(),
+            "llama3.2:3b".to_string(),
+            "llama3.1:8b".to_string(),
+            "mistral:7b".to_string(),
+            "phi4:14b".to_string(),
+            "qwen2.5:7b".to_string(),
+        ],
+        is_local_provider: true,
+    });
+
+    // Custom provider always comes last. URL defaulted to :8080 to distinguish
+    // from Ollama's :11434 default -- avoids two identical-looking entries.
+    providers.push(PostProcessProvider {
+        id: "custom".to_string(),
+        label: "Custom".to_string(),
+        base_url: "http://localhost:8080/v1".to_string(),
+        allow_base_url_edit: true,
+        models_endpoint: Some("/models".to_string()),
+        supports_structured_output: false,
+        suggested_models: vec![],
+        is_local_provider: false,
     });
 
     providers
@@ -624,7 +882,22 @@ fn default_model_for_provider(provider_id: &str) -> String {
     if provider_id == APPLE_INTELLIGENCE_PROVIDER_ID {
         return APPLE_INTELLIGENCE_DEFAULT_MODEL_ID.to_string();
     }
-    String::new()
+    // Korero: pre-select sensible default model per provider
+    match provider_id {
+        "deepseek" => "deepseek-chat".to_string(),
+        "anthropic" => "claude-sonnet-4-6".to_string(),
+        "openai" => "gpt-4o-mini".to_string(),
+        "groq" => "llama-3.3-70b-versatile".to_string(),
+        // Korero (v1.2.0): bumped from gemini-2.0-flash to gemini-2.5-flash.
+        // Flash 2.5 is faster and higher quality for complex prompts (Red Team,
+        // meeting notes). Migration in ensure_post_process_defaults() auto-
+        // upgrades existing installs that still have the old default.
+        "gemini" => "gemini-2.5-flash".to_string(),
+        // Kōrero (v1.1.0): gemma3:4b (not gemma:4b -- that's the older Gemma 1/2 tag).
+        // Run `ollama pull gemma3:4b` before first use. ~4-6 GB RAM.
+        "ollama" => "gemma3:4b".to_string(),
+        _ => String::new(),
+    }
 }
 
 fn default_post_process_models() -> HashMap<String, String> {
@@ -639,11 +912,47 @@ fn default_post_process_models() -> HashMap<String, String> {
 }
 
 fn default_post_process_prompts() -> Vec<LLMPrompt> {
-    vec![LLMPrompt {
-        id: "default_improve_transcriptions".to_string(),
-        name: "Improve Transcriptions".to_string(),
-        prompt: "Clean this transcript:\n1. Fix spelling, capitalization, and punctuation errors\n2. Convert number words to digits (twenty-five → 25, ten percent → 10%, five dollars → $5)\n3. Replace spoken punctuation with symbols (period → ., comma → ,, question mark → ?)\n4. Remove filler words (um, uh, like as filler)\n5. Keep the language in the original version (if it was french, keep it in french for example)\n\nPreserve exact meaning and word order. Do not paraphrase or reorder content.\n\nReturn only the cleaned transcript.\n\nTranscript:\n${output}".to_string(),
-    }]
+    vec![
+        LLMPrompt {
+            id: "korero_clean_transcript".to_string(),
+            name: "Clean transcript (NZ English)".to_string(),
+            // Kōrero (v1.7.0): added rule 6 (coherent prose); relaxed "word order"
+            // constraint to "do not add content" so rule 6 can smooth sentence
+            // boundaries without conflicting with the earlier "do not reorder" guard.
+            // Migration in ensure_post_process_defaults() upgrades existing installs
+            // that still carry the v1.6.0 default text.
+            prompt: "Clean this transcript using NZ English spelling (colour, organise, whānau, etc.):\n1. Fix spelling, capitalisation, and punctuation errors\n2. Convert number words to digits (twenty-five → 25, ten percent → 10%, five dollars → $5)\n3. Replace spoken punctuation with symbols (period → ., comma → ,, question mark → ?)\n4. Remove filler words (um, uh, like as filler)\n5. Preserve te reo Māori words exactly as spoken\n6. Ensure sentences and paragraphs read as coherent prose — join fragments that clearly belong together and smooth any sentence boundaries broken by dictation\n\nPreserve exact meaning. Do not add content or invent details. Use NZ English throughout.\n\nReturn only the cleaned transcript.\n\nTranscript:\n${output}".to_string(),
+        },
+        LLMPrompt {
+            id: "korero_client_email".to_string(),
+            name: "Client email body".to_string(),
+            prompt: "Convert this dictation into a direct, warm-but-professional email body for a client. Use NZ English. Keep all specifics. Do NOT add a greeting or signoff — the sender will add those. Drop filler words and false starts. Return only the email body text.\n\nDictation:\n${output}".to_string(),
+        },
+        LLMPrompt {
+            id: "korero_whatsapp_slack".to_string(),
+            name: "WhatsApp / Slack message".to_string(),
+            prompt: "Convert this dictation into a terse Slack or WhatsApp message. NZ English, sentence case, no formatting, no preamble. Drop all filler. Keep it under 3 sentences if at all possible. Return only the message text.\n\nDictation:\n${output}".to_string(),
+        },
+        LLMPrompt {
+            id: "korero_meeting_note".to_string(),
+            name: "Meeting note (Decision/Action/Question)".to_string(),
+            prompt: "Restructure this dictation as a meeting note with three sections:\n\n**Decisions:** (what was decided)\n**Actions:** (who does what, by when)\n**Open questions:** (what's still unresolved)\n\nUse NZ English. Drop chronological filler. Each bullet should be one sentence. Return only the structured note.\n\nDictation:\n${output}".to_string(),
+        },
+        // Kōrero (v1.16.0): out-of-the-box prompt for dictation that blends
+        // NZ English and te reo Māori — restores macrons, never translates
+        // te reo, fixes common mis-hearings. Merged into existing installs by
+        // the prompt-defaults sync.
+        LLMPrompt {
+            id: "korero_reo_blend".to_string(),
+            name: "NZ English + te reo Māori".to_string(),
+            prompt: "Tidy this dictation into clear New Zealand English that naturally blends te reo Māori and English. Rules:\n\n1. Keep every te reo Māori word or phrase in te reo — never translate it to English\n2. Restore macrons (ā ē ī ō ū): Māori, whānau, kōrero, Aotearoa, hapū, iwi, marae, tikanga, taonga, kaupapa, mahi, tamariki, mokopuna, mōrena\n3. Fix obvious mis-hearings of te reo (e.g. 'far no' → 'whānau', 'koe deer' → 'kia ora', 'fakapapa' → 'whakapapa', 'curry row' → 'kōrero')\n4. Fix punctuation and sentence breaks; use New Zealand English spelling (organise, colour); keep the speaker's meaning and tone exactly\n\nReturn ONLY the corrected text — no commentary.\n\nDictation:\n${output}".to_string(),
+        },
+        LLMPrompt {
+            id: "korero_red_team".to_string(),
+            name: "Red Team review".to_string(),
+            prompt: "I just dictated a draft argument or plan. Red-team it:\n\n1. Identify the weakest premise\n2. List three counterarguments a smart critic would raise\n3. Note any missing evidence or unstated assumptions\n4. THEN return the cleaned-up version of my dictation (NZ English)\n\nBe direct and clinical. Do not flatter. Format as four short sections with bold labels.\n\nDictation:\n${output}".to_string(),
+        },
+    ]
 }
 
 fn default_whisper_gpu_device() -> i32 {
@@ -675,6 +984,19 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
                     existing.supports_structured_output = provider.supports_structured_output;
                     changed = true;
                 }
+                // Kōrero (v1.3.0): sync suggested_models and is_local_provider.
+                // These fields are new in v1.3.0; existing deserialized providers
+                // have empty/false defaults from #[serde(default)]. Replace with
+                // the canonical default values so upgrades get the full model list
+                // (Gemini) and the Local badge + pull workflow (Ollama).
+                if existing.suggested_models != provider.suggested_models {
+                    existing.suggested_models = provider.suggested_models.clone();
+                    changed = true;
+                }
+                if existing.is_local_provider != provider.is_local_provider {
+                    existing.is_local_provider = provider.is_local_provider;
+                    changed = true;
+                }
             }
             None => {
                 // Provider doesn't exist, add it
@@ -693,7 +1015,14 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
         let default_model = default_model_for_provider(&provider.id);
         match settings.post_process_models.get_mut(&provider.id) {
             Some(existing) => {
-                if existing.is_empty() && !default_model.is_empty() {
+                // Korero (v1.2.0): auto-upgrade gemini-2.0-flash -> gemini-2.5-flash.
+                // 2.5 is faster and higher quality. Users who have manually changed
+                // their model to something other than the old default are unaffected.
+                if provider.id == "gemini" && existing.as_str() == "gemini-2.0-flash" {
+                    debug!("Migrating gemini model from gemini-2.0-flash to gemini-2.5-flash");
+                    *existing = default_model.clone();
+                    changed = true;
+                } else if existing.is_empty() && !default_model.is_empty() {
                     *existing = default_model.clone();
                     changed = true;
                 }
@@ -707,8 +1036,70 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
         }
     }
 
+    // Kōrero (v1.7.0): migrate built-in prompt text for existing users.
+    // For each default prompt: if the user's stored prompt still carries the
+    // previous default text (sentinel check), upgrade it to the current version.
+    // Users who edited their prompt away from the default are unaffected.
+    //
+    // Current migration: korero_clean_transcript — adds rule 6 (coherent prose).
+    // Detection: the v1.6.0 default contained "Preserve exact meaning and word order."
+    // as its constraint sentence; the v1.7.0 text uses "Preserve exact meaning." only.
+    for default_prompt in &default_post_process_prompts() {
+        match settings
+            .post_process_prompts
+            .iter_mut()
+            .find(|p| p.id == default_prompt.id)
+        {
+            Some(existing) => {
+                if existing.id == "korero_clean_transcript"
+                    && existing.prompt.contains("Preserve exact meaning and word order.")
+                {
+                    debug!("Migrating korero_clean_transcript prompt to v1.7.0 (rule 6 + relaxed word-order constraint)");
+                    existing.prompt = default_prompt.prompt.clone();
+                    changed = true;
+                }
+            }
+            None => {
+                // Prompt ID missing entirely — add it
+                settings.post_process_prompts.push(default_prompt.clone());
+                changed = true;
+            }
+        }
+    }
+
     changed
 }
+
+fn default_custom_words() -> Vec<String> {
+    // Kōrero: generic NZ-English seed dictionary. Improves recognition of
+    // te reo Māori and NZ-isms that Whisper/Parakeet routinely mis-transcribe.
+    // Contains NO personal data (see 2026-05-30 note below). Edit via
+    // Settings → Custom Words UI to add your own names/companies locally.
+    vec![
+        // Kōrero (2026-05-30): personal People + Companies/clients entries were
+        // removed from this shipped default so the public build / installer never
+        // discloses the maintainer's contacts. Add your own via Settings -> Custom Words.
+        // Generic tooling / product terms (no personal data)
+        "Monday.com", "Copilot", "M365", "OneDrive", "Replit",
+        "Cowork", "Fireflies", "Tauri", "MCP", "Anthropic", "Kōrero",
+        // Te reo Māori
+        "whānau", "mihi", "kōrero", "mahi", "Aotearoa",
+        "Tāmaki", "iwi", "hapū", "tangata",
+        // NZ-isms / acronyms
+        "GST", "IRD", "ACC", "EPA", "FY26", "FY27",
+        "KiwiSaver", "Plunket", "Te Whatu Ora",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
+/// Kōrero (v1.7.0, S1): in-memory settings cache registered as Tauri managed
+/// state.  After the setup hook seeds this from the initial disk+keychain load,
+/// every `get_settings()` call reads from RAM instead of hitting the store file
+/// and the OS keychain.  `write_settings()` updates both the cache and disk
+/// atomically so readers always see a consistent value.
+pub struct SettingsCache(pub Arc<RwLock<AppSettings>>);
 
 pub const SETTINGS_STORE_PATH: &str = "settings_store.json";
 
@@ -731,6 +1122,24 @@ pub fn get_default_settings() -> AppSettings {
             description: "Converts your speech into text.".to_string(),
             default_binding: default_shortcut.to_string(),
             current_binding: default_shortcut.to_string(),
+        },
+    );
+    // Kōrero (v1.14.1): alternative dictation shortcut, chosen to be pressable
+    // with the RIGHT hand alone (Right Ctrl + Right Shift + Enter) for
+    // one-handed use — e.g. holding the baby with the left. NOTE: the OS
+    // shortcut layer doesn't distinguish left/right modifiers, so this must
+    // not collide with other generic combos (ctrl+shift+space is taken by
+    // post-processing). Same action as "Transcribe"; rebindable in General.
+    // Missing-binding merge in load_or_create_app_settings adds this to
+    // existing installs automatically.
+    bindings.insert(
+        "transcribe_alt".to_string(),
+        ShortcutBinding {
+            id: "transcribe_alt".to_string(),
+            name: "Transcribe (alternative)".to_string(),
+            description: "A second shortcut for dictation — handy one-handed (default: Right Ctrl + Right Shift + Enter).".to_string(),
+            default_binding: "ctrl+shift+enter".to_string(),
+            current_binding: "ctrl+shift+enter".to_string(),
         },
     );
     #[cfg(target_os = "windows")]
@@ -779,11 +1188,14 @@ pub fn get_default_settings() -> AppSettings {
         clamshell_microphone: None,
         selected_output_device: None,
         translate_to_english: false,
-        selected_language: "auto".to_string(),
+        selected_language: default_selected_language(),
         overlay_position: default_overlay_position(),
         debug_mode: false,
         log_level: default_log_level(),
-        custom_words: Vec::new(),
+        custom_words: default_custom_words(),
+        transcript_corrections: Vec::new(),
+        denoise_enabled: false,
+        save_crash_reports: default_save_crash_reports(),
         model_unload_timeout: ModelUnloadTimeout::default(),
         word_correction_threshold: default_word_correction_threshold(),
         history_limit: default_history_limit(),
@@ -798,9 +1210,9 @@ pub fn get_default_settings() -> AppSettings {
         post_process_api_keys: default_post_process_api_keys(),
         post_process_models: default_post_process_models(),
         post_process_prompts: default_post_process_prompts(),
-        post_process_selected_prompt_id: None,
+        post_process_selected_prompt_id: Some("korero_clean_transcript".to_string()),
         mute_while_recording: false,
-        append_trailing_space: false,
+        append_trailing_space: true,  // Kōrero: smoother inline dictation
         app_language: default_app_language(),
         experimental_enabled: false,
         lazy_stream_close: false,
@@ -888,10 +1300,96 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
         store.set("settings", serde_json::to_value(&settings).unwrap());
     }
 
+    // Kōrero: one-shot migration of any plaintext keys still in the JSON,
+    // then hydrate from the keychain so the returned struct has live keys.
+    // The custom Serialize impl on SecretMap guarantees the next disk write
+    // will not re-emit plaintext.
+    //
+    // BEFORE migrating, back up settings_store.json so a partial keychain
+    // failure can't silently destroy the user's plaintext keys. Migration
+    // blanks values per-provider; if one provider's keychain write succeeds
+    // but another fails, the succeeded provider's plaintext is gone forever
+    // without this backup. The backup is taken only on the FIRST migration
+    // attempt — once .pre-keychain.json.bak exists, we leave it alone so
+    // a successful migration doesn't itself overwrite the safety net.
+    if settings
+        .post_process_api_keys
+        .values()
+        .any(|v| !v.is_empty())
+    {
+        if let Err(err) = backup_settings_before_keychain_migration(app) {
+            warn!(
+                "secret_store: pre-migration backup failed ({err}). Aborting migration to preserve plaintext."
+            );
+            // No event here — the plaintext is preserved and the user can
+            // retry next launch. Emitting would be noise on every startup
+            // until the backup path becomes writable.
+        } else {
+            let (migrated, failures) =
+                settings.post_process_api_keys.migrate_plaintext_to_keyring();
+            if migrated {
+                debug!("secret_store: rewriting settings store after plaintext migration");
+                store.set("settings", serde_json::to_value(&settings).unwrap());
+            }
+            emit_keychain_error(app, "migrate", failures);
+        }
+    }
+    settings.post_process_api_keys.hydrate_from_keyring();
+
+    // Kōrero (v1.11.0): seed the denoiser flag from the loaded setting at startup
+    // (write_settings keeps it in sync thereafter).
+    crate::denoise::set_enabled(settings.denoise_enabled);
+
     settings
 }
 
+/// Copy `settings_store.json` to `settings_store.pre-keychain.json.bak`
+/// before keychain migration runs. Idempotent — preserves the first-ever
+/// backup so a successful migration never overwrites the safety net.
+///
+/// Returns Err if the source can't be located OR the copy itself fails. The
+/// caller treats a backup failure as a hard stop on migration (better to keep
+/// plaintext on disk than lose it irrecoverably).
+fn backup_settings_before_keychain_migration(app: &AppHandle) -> Result<(), String> {
+    let src = crate::portable::resolve_app_data(app, SETTINGS_STORE_PATH)
+        .map_err(|e| format!("could not resolve settings path: {e}"))?;
+    if !src.exists() {
+        // Clean install, nothing to back up. Treat as success — the migration
+        // path will find no plaintext anyway and immediately no-op.
+        return Ok(());
+    }
+    let backup = src.with_file_name("settings_store.pre-keychain.json.bak");
+    if backup.exists() {
+        debug!(
+            "secret_store: keychain migration backup already exists at {:?}, leaving it untouched",
+            backup
+        );
+        return Ok(());
+    }
+    std::fs::copy(&src, &backup)
+        .map_err(|e| format!("failed to copy {:?} -> {:?}: {e}", src, backup))?;
+    debug!(
+        "secret_store: keychain migration backup written to {:?}",
+        backup
+    );
+    Ok(())
+}
+
 pub fn get_settings(app: &AppHandle) -> AppSettings {
+    // Kōrero (v1.7.0, S1): fast path — read from in-memory cache when available.
+    // The cache is seeded in the setup hook after the first disk+keychain load.
+    // try_state() returns None only during that initial load itself, so the slow
+    // path below runs exactly once per process lifetime.
+    if let Some(cache) = app.try_state::<SettingsCache>() {
+        return cache
+            .0
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+    }
+
+    // Slow path: disk + OS keychain.  Used only during setup before the cache
+    // is registered.
     let store = app
         .store(crate::portable::store_path(SETTINGS_STORE_PATH))
         .expect("Failed to initialize store");
@@ -912,15 +1410,36 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
         store.set("settings", serde_json::to_value(&settings).unwrap());
     }
 
+    // Kōrero: hydrate API keys from the OS keychain on every read. The disk
+    // copy is always blanked by SecretMap::serialize, so this is the only path
+    // by which the frontend / LLM client sees real secret material.
+    settings.post_process_api_keys.hydrate_from_keyring();
+
     settings
 }
 
 pub fn write_settings(app: &AppHandle, settings: AppSettings) {
+    // Kōrero (v1.11.0): keep the denoiser's process-global flag in sync with the
+    // persisted setting on every write (read before `settings` is moved below).
+    crate::denoise::set_enabled(settings.denoise_enabled);
+
     let store = app
         .store(crate::portable::store_path(SETTINGS_STORE_PATH))
         .expect("Failed to initialize store");
 
+    // Kōrero: write secrets to the keychain BEFORE writing the JSON. The
+    // SecretMap Serialize impl writes empty strings to disk regardless, so the
+    // ordering is purely belt-and-braces — if anything reads the JSON between
+    // the two writes it will get blanks, not plaintext.
+    let failures = settings.post_process_api_keys.persist_to_keyring();
+    emit_keychain_error(app, "save", failures);
     store.set("settings", serde_json::to_value(&settings).unwrap());
+
+    // Kōrero (v1.7.0, S1): update the in-memory cache so subsequent
+    // get_settings() calls reflect the new values without a disk round-trip.
+    if let Some(cache) = app.try_state::<SettingsCache>() {
+        *cache.0.write().unwrap_or_else(|e| e.into_inner()) = settings;
+    }
 }
 
 pub fn get_bindings(app: &AppHandle) -> HashMap<String, ShortcutBinding> {
@@ -938,52 +1457,9 @@ pub fn get_stored_binding(app: &AppHandle, id: &str) -> ShortcutBinding {
 }
 
 pub fn get_history_limit(app: &AppHandle) -> usize {
-    let settings = get_settings(app);
-    settings.history_limit
+    get_settings(app).history_limit
 }
 
 pub fn get_recording_retention_period(app: &AppHandle) -> RecordingRetentionPeriod {
-    let settings = get_settings(app);
-    settings.recording_retention_period
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_settings_disable_auto_submit() {
-        let settings = get_default_settings();
-        assert!(!settings.auto_submit);
-        assert_eq!(settings.auto_submit_key, AutoSubmitKey::Enter);
-    }
-
-    #[test]
-    fn debug_output_redacts_api_keys() {
-        let mut settings = get_default_settings();
-        settings
-            .post_process_api_keys
-            .insert("openai".to_string(), "sk-proj-secret-key-12345".to_string());
-        settings.post_process_api_keys.insert(
-            "anthropic".to_string(),
-            "sk-ant-secret-key-67890".to_string(),
-        );
-        settings
-            .post_process_api_keys
-            .insert("empty_provider".to_string(), "".to_string());
-
-        let debug_output = format!("{:?}", settings);
-
-        assert!(!debug_output.contains("sk-proj-secret-key-12345"));
-        assert!(!debug_output.contains("sk-ant-secret-key-67890"));
-        assert!(debug_output.contains("[REDACTED]"));
-    }
-
-    #[test]
-    fn secret_map_debug_redacts_values() {
-        let map = SecretMap(HashMap::from([("key".into(), "secret".into())]));
-        let out = format!("{:?}", map);
-        assert!(!out.contains("secret"));
-        assert!(out.contains("[REDACTED]"));
-    }
+    get_settings(app).recording_retention_period
 }

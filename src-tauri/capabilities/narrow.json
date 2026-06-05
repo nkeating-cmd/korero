@@ -1,0 +1,33 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "narrow",
+  "description": "Kōrero — minimum capability set derived from a static audit of frontend Tauri API usage. PROPOSED — runtime-validate before adopting. To activate: rename `default.json` to `default.json.broad` and rename this file to `default.json`. Revert by reversing.",
+  "windows": ["main", "recording_overlay"],
+  "permissions": [
+    "core:event:default",
+    "core:app:default",
+    "core:path:default",
+    "core:webview:default",
+    "core:window:default",
+    "core:resources:default",
+    "opener:default",
+    "store:default",
+    "process:default",
+    "dialog:default",
+    "clipboard-manager:allow-write-text",
+    "global-shortcut:allow-is-registered",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-unregister-all",
+    "macos-permissions:default",
+    "fs:read-files",
+    "fs:allow-resource-read-recursive",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "$APPDATA/com.nkeating.korero" },
+        { "path": "$APPDATA/com.nkeating.korero/**/*" }
+      ]
+    }
+  ]
+}

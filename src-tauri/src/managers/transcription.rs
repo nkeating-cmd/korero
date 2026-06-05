@@ -107,7 +107,7 @@ impl TranscriptionManager {
                     let settings = get_settings(&app_handle_cloned);
                     let timeout = settings.model_unload_timeout;
 
-                    // Skip Immediately — that variant is handled by
+                    // Skip Immediately â€” that variant is handled by
                     // maybe_unload_immediately() after each transcription.
                     // Treating it as 0s here would unload the model mid-recording.
                     if timeout == ModelUnloadTimeout::Immediately {
@@ -119,7 +119,7 @@ impl TranscriptionManager {
                     let is_recording = app_handle_cloned
                         .try_state::<Arc<AudioRecordingManager>>()
                         .map_or(false, |a| a.is_recording());
-                    if is_recording {
+                    if is_recording || crate::meeting::is_meeting_active() {
                         manager_cloned.touch_activity();
                         continue;
                     }
@@ -226,9 +226,12 @@ impl TranscriptionManager {
     }
 
     fn now_ms() -> u64 {
+        // Korero: unwrap_or_default returns Duration::ZERO on the impossible
+        // case of a pre-1970 system clock. The idle-timer keeps working
+        // with stale data rather than panicking.
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis() as u64
     }
 
@@ -412,23 +415,36 @@ impl TranscriptionManager {
         Ok(())
     }
 
-    /// Kicks off the model loading in a background thread if it's not already loaded
+    /// Kicks off the model loading in a background thread if it is not already loaded.
+    ///
+    /// korero-initiate-load-guard: claims the loading slot via the RAII
+    /// LoadingGuard so the is_loading flag is ALWAYS cleared (and waiters on
+    /// loading_condvar woken) when loading finishes -- including if load_model
+    /// PANICS inside native engine code (e.g. a DirectML/Parakeet reload failure
+    /// after an idle unload). The previous version set/cleared the flag by hand
+    /// in the spawned thread; an unwinding panic skipped the clear, leaving
+    /// is_loading = true forever, so every later transcribe() blocked on the
+    /// condvar indefinitely -- shortcuts recorded but produced no text until the
+    /// app was restarted. Mirrors switch_active_model's guard usage.
     pub fn initiate_model_load(&self) {
-        let mut is_loading = self.is_loading.lock().unwrap();
-        if *is_loading || self.is_model_loaded() {
+        // Claim the slot. None => a load is already in progress.
+        let guard = match self.try_start_loading() {
+            Some(g) => g,
+            None => return,
+        };
+        // Already loaded -> nothing to do; guard drops here and clears the flag.
+        if self.is_model_loaded() {
             return;
         }
-
-        *is_loading = true;
         let self_clone = self.clone();
         thread::spawn(move || {
+            // Move the guard in: its Drop clears is_loading and notifies waiters
+            // on EVERY exit path, including an unwinding panic from load_model.
+            let _guard = guard;
             let settings = get_settings(&self_clone.app_handle);
             if let Err(e) = self_clone.load_model(&settings.selected_model) {
                 error!("Failed to load model: {}", e);
             }
-            let mut is_loading = self_clone.is_loading.lock().unwrap();
-            *is_loading = false;
-            self_clone.loading_condvar.notify_all();
         });
     }
 
@@ -520,7 +536,7 @@ impl TranscriptionManager {
                 }
             };
 
-            // Release the lock before transcribing — no mutex held during the engine call
+            // Release the lock before transcribing â€” no mutex held during the engine call
             drop(engine_guard);
 
             let transcribe_result = catch_unwind(AssertUnwindSafe(
@@ -635,13 +651,13 @@ impl TranscriptionManager {
 
             match transcribe_result {
                 Ok(inner_result) => {
-                    // Success or normal error — put the engine back
+                    // Success or normal error â€” put the engine back
                     let mut engine_guard = self.lock_engine();
                     *engine_guard = Some(engine);
                     inner_result?
                 }
                 Err(panic_payload) => {
-                    // Engine panicked — do NOT put it back (it's in an unknown state).
+                    // Engine panicked â€” do NOT put it back (it's in an unknown state).
                     // The engine is dropped here, effectively unloading it.
                     let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
                         s.to_string()
@@ -705,6 +721,13 @@ impl TranscriptionManager {
             &corrected_result,
             &settings.app_language,
             &settings.custom_filler_words,
+        );
+
+        // Korero (v1.15.0): deterministic user-taught corrections (wrong -> right),
+        // applied last so they win over fuzzy matching and filtering.
+        let filtered_result = crate::corrections::apply_corrections(
+            &filtered_result,
+            &settings.transcript_corrections,
         );
 
         let et = std::time::Instant::now();
@@ -784,10 +807,10 @@ fn cached_gpu_devices() -> &'static [GpuDeviceOption] {
         // ggml's Vulkan backend uses FMA3 instructions internally.
         // On older CPUs without FMA3 (e.g. Sandy Bridge Xeons) this causes
         // a SIGILL crash that cannot be caught. Skip enumeration entirely
-        // on those CPUs — GPU-accelerated whisper won't work there anyway.
+        // on those CPUs â€” GPU-accelerated whisper won't work there anyway.
         #[cfg(target_arch = "x86_64")]
         if !std::arch::is_x86_feature_detected!("fma") {
-            warn!("CPU lacks FMA3 support — skipping GPU device enumeration");
+            warn!("CPU lacks FMA3 support â€” skipping GPU device enumeration");
             return Vec::new();
         }
 
@@ -830,7 +853,7 @@ pub fn get_available_accelerators() -> AvailableAccelerators {
 impl Drop for TranscriptionManager {
     fn drop(&mut self) {
         // Skip shutdown unless this is the very last clone. TranscriptionManager
-        // is cloned by initiate_model_load() and the watcher thread — those
+        // is cloned by initiate_model_load() and the watcher thread â€” those
         // clones dropping must not kill the watcher. The watcher thread holds
         // its own clone, so engine's strong_count is always >= 2 while the
         // watcher is alive. When it reaches 1, only this instance remains

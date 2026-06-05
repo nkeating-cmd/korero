@@ -3,6 +3,30 @@ use log::debug;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, REFERER, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::Duration;
+
+// Kōrero: bound LLM HTTP calls so a dead provider can't hang the post-process
+// pipeline forever. 30s total covers slow reasoning models (DeepSeek-R1, o1)
+// without becoming a UI freeze; 5s connect catches DNS / TLS failure fast.
+const LLM_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const LLM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+// Kōrero (v1.5.0): cap generated tokens for post-processing prompts.
+// Transcription outputs are short; 1500 tokens is generous and prevents
+// slow responses from models that run long on ambiguous prompts.
+// Providers that ignore max_tokens (e.g. some local Ollama configs) are unaffected.
+const DEFAULT_PP_MAX_TOKENS: u32 = 1500;
+
+// Kōrero (2026-05-17 PM, T2.2): User-Agent / X-Title pinned to the package
+// version at compile time so the headers track Cargo.toml automatically. Was
+// previously hardcoded "Korero/0.8.3" — a doc-and-code drift waiting to
+// happen. Referer still credits upstream Handy as a courtesy.
+const KORERO_USER_AGENT: &str = concat!(
+    "Korero/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/cjpais/Handy)"
+);
+const KORERO_X_TITLE: &str = "Korero";
 
 #[derive(Debug, Serialize)]
 struct ChatMessage {
@@ -42,6 +66,9 @@ struct ChatCompletionRequest {
     reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<ReasoningConfig>,
+    // Kōrero (v1.5.0): caps generation length to bound PP latency for short transcriptions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,15 +92,14 @@ fn build_headers(provider: &PostProcessProvider, api_key: &str) -> Result<Header
 
     // Common headers
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    // Kōrero fork: own user-agent + title for analytics on the LLM providers.
+    // Referer kept pointing at upstream as a credit to cjpais.
     headers.insert(
         REFERER,
         HeaderValue::from_static("https://github.com/cjpais/Handy"),
     );
-    headers.insert(
-        USER_AGENT,
-        HeaderValue::from_static("Handy/1.0 (+https://github.com/cjpais/Handy)"),
-    );
-    headers.insert("X-Title", HeaderValue::from_static("Handy"));
+    headers.insert(USER_AGENT, HeaderValue::from_static(KORERO_USER_AGENT));
+    headers.insert("X-Title", HeaderValue::from_static(KORERO_X_TITLE));
 
     // Provider-specific auth headers
     if !api_key.is_empty() {
@@ -96,11 +122,18 @@ fn build_headers(provider: &PostProcessProvider, api_key: &str) -> Result<Header
     Ok(headers)
 }
 
-/// Create an HTTP client with provider-specific headers
+/// Create an HTTP client with provider-specific headers.
+///
+/// Kōrero adds explicit timeouts. Without them, reqwest will wait indefinitely
+/// for a slow provider, blocking the transcription post-process flow and any
+/// downstream UI state. Defaults are conservative — long enough for reasoning
+/// models on a slow link, short enough to surface real failures.
 fn create_client(provider: &PostProcessProvider, api_key: &str) -> Result<reqwest::Client, String> {
     let headers = build_headers(provider, api_key)?;
     reqwest::Client::builder()
         .default_headers(headers)
+        .timeout(LLM_REQUEST_TIMEOUT)
+        .connect_timeout(LLM_CONNECT_TIMEOUT)
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {}", e))
 }
@@ -144,9 +177,36 @@ pub async fn send_chat_completion_with_schema(
     reasoning_effort: Option<String>,
     reasoning: Option<ReasoningConfig>,
 ) -> Result<Option<String>, String> {
+    // Kōrero (v1.13.x) egress allowlist: transcripts can be confidential, so for
+    // providers whose URL is NOT user-editable, refuse to send if the base_url has
+    // been altered from its built-in default (e.g. a tampered settings_store.json
+    // pointing at an exfiltration host). User-owned providers (custom / local
+    // Ollama, allow_base_url_edit = true) are intentionally exempt.
+    if !provider.allow_base_url_edit {
+        let defaults = crate::settings::get_default_settings();
+        if let Some(def) = defaults
+            .post_process_providers
+            .iter()
+            .find(|p| p.id == provider.id)
+        {
+            if def.base_url.trim_end_matches('/') != provider.base_url.trim_end_matches('/') {
+                return Err(format!(
+                    "Blocked: the endpoint for provider '{}' was altered to an unexpected URL. \
+                     Transcripts are not sent to unverified hosts.",
+                    provider.id
+                ));
+            }
+        }
+    }
+
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
 
+    // Kōrero log-exposure rule (audit 2026-05-17):
+    //   LOG: URL, model id, response status. SAFE — keys live in headers.
+    //   NEVER LOG: api_key, build_headers() output, request body, response body,
+    //   user_content (transcript text — privacy), or anything containing
+    //   `messages`. Adding such a log statement undoes the keychain migration.
     debug!("Sending chat completion request to: {}", url);
 
     let client = create_client(provider, &api_key)?;
@@ -184,6 +244,8 @@ pub async fn send_chat_completion_with_schema(
         response_format,
         reasoning_effort,
         reasoning,
+        // Kōrero (v1.5.0): cap tokens to bound post-processing latency.
+        max_tokens: Some(DEFAULT_PP_MAX_TOKENS),
     };
 
     let response = client

@@ -7,10 +7,12 @@ interface MicrophoneIconProps {
   className?: string;
 }
 
+// Kōrero fork (v1.12.0): default colour is white (was a stray pre-aurora yellow
+// #f5c842 that clashed with the cyan brand); parents can override via `color`.
 const MicrophoneIcon: React.FC<MicrophoneIconProps> = ({
   width = 24,
   height = 24,
-  color = "#FAA2CA",
+  color = "#ffffff",
   className = "",
 }) => {
   return (

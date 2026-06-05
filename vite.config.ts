@@ -19,6 +19,13 @@ export default defineConfig(async () => ({
 
   // Multiple entry points for main app and overlay
   build: {
+    // Korero (2026-05-26): raise chunk warning limit from 500 → 1000 KB.
+    // Vite's default 500 KB threshold is appropriate for web apps where bundle
+    // size affects network load time. Tauri serves bundles from local disk —
+    // network latency is irrelevant. The main app chunk (~665 KB) already has
+    // the only meaningful split (overlay is a separate entry point). Suppress
+    // the informational noise without hiding real structural problems.
+    chunkSizeWarningLimit: 1000,
     rollupOptions: {
       input: {
         main: resolve(__dirname, "index.html"),

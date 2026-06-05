@@ -55,6 +55,21 @@ fn find_best_match<'a>(
             continue;
         }
 
+        // Korero (v1.15.1): prefix-extension guard. If one string is a strict
+        // prefix of the other and the extension is >= 2 chars, the candidate
+        // is almost certainly a complete word in its own right ("project" vs
+        // "ProjectIQ"). Soundex codes truncate at 4 symbols, so such pairs
+        // ALWAYS look phonetically identical and the boost over-corrects.
+        // Multi-token utterances of the long word ("project IQ") still match
+        // via the n-gram path (exact equality, unaffected), and taught
+        // corrections remain the deterministic override for exceptions.
+        if len_diff >= 2.0
+            && (custom_word_nospace.starts_with(candidate)
+                || candidate.starts_with(custom_word_nospace.as_str()))
+        {
+            continue;
+        }
+
         // Calculate Levenshtein distance (normalized by length)
         let levenshtein_dist = levenshtein(candidate, custom_word_nospace);
         let max_len = candidate.len().max(custom_word_nospace.len()) as f64;
@@ -68,7 +83,12 @@ fn find_best_match<'a>(
         let phonetic_match = soundex(candidate, custom_word_nospace);
 
         // Combine scores: favor phonetic matches, but also consider string similarity
-        let combined_score = if phonetic_match {
+        // Kōrero (v1.3.0): Levenshtein floor — only apply the 0.3× phonetic boost
+        // when words are already close (score ≤ 0.40). Above this threshold the words
+        // are too different to be the same word said differently; coincidental Soundex
+        // matches (e.g. "have"/hapū → H100; "when i say"/WhānauOS → W520) no longer
+        // produce false substitutions.
+        let combined_score = if phonetic_match && levenshtein_score <= 0.40 {
             levenshtein_score * 0.3 // Give significant boost to phonetic matches
         } else {
             levenshtein_score
@@ -108,9 +128,26 @@ pub fn apply_custom_words(text: &str, custom_words: &[String], threshold: f64) -
     let custom_words_lower: Vec<String> = custom_words.iter().map(|w| w.to_lowercase()).collect();
 
     // Pre-compute versions with spaces removed for n-gram comparison
+    // Kōrero (v1.3.0): strip Māori macrons from custom words before comparison.
+    // Whisper outputs macron-free ASCII ("hapu"); without this, the custom word
+    // "hapū" would have Levenshtein distance 1 (u≠ū), score 0.25 > threshold 0.18,
+    // so the correct substitution never fires. Nested fn is fine in Rust item scope.
+    fn strip_macrons(s: &str) -> String {
+        s.chars()
+            .map(|c| match c {
+                'ā' | 'Ā' => 'a',
+                'ē' | 'Ē' => 'e',
+                'ī' | 'Ī' => 'i',
+                'ō' | 'Ō' => 'o',
+                'ū' | 'Ū' => 'u',
+                _ => c,
+            })
+            .collect()
+    }
+
     let custom_words_nospace: Vec<String> = custom_words_lower
         .iter()
-        .map(|w| w.replace(' ', ""))
+        .map(|w| strip_macrons(&w.replace(' ', "")))
         .collect();
 
     let words: Vec<&str> = text.split_whitespace().collect();

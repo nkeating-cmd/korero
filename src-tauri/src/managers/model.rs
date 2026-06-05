@@ -1073,6 +1073,24 @@ impl ModelManager {
             response = client.get(&url).send().await?;
         }
 
+        // Korero (v1.2.0): handle HTTP 416 Range Not Satisfiable.
+        // Occurs when the .partial file offset exceeds the server's current file
+        // size (e.g. server file was replaced or re-uploaded since the partial
+        // was written). Delete the stale partial and restart from zero.
+        if resume_from > 0
+            && response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE
+        {
+            warn!(
+                "Range not satisfiable for model {} (partial offset past server EOF) \
+                 -- deleting partial and restarting",
+                model_id
+            );
+            drop(response);
+            let _ = fs::remove_file(&partial_path);
+            resume_from = 0;
+            response = client.get(&url).send().await?;
+        }
+
         // Check for success or partial content status
         if !response.status().is_success()
             && response.status() != reqwest::StatusCode::PARTIAL_CONTENT

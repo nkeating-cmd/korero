@@ -1,4 +1,4 @@
-use crate::audio_toolkit::{list_input_devices, vad::SmoothedVad, AudioRecorder, SileroVad};
+﻿use crate::audio_toolkit::{list_input_devices, vad::SmoothedVad, AudioRecorder, SileroVad};
 use crate::helpers::clamshell;
 use crate::settings::{get_settings, AppSettings};
 use crate::utils;
@@ -101,7 +101,7 @@ fn set_mute(mute: bool) {
 
 const WHISPER_SAMPLE_RATE: usize = 16000;
 
-/* ──────────────────────────────────────────────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 #[derive(Clone, Debug)]
 pub enum RecordingState {
@@ -115,7 +115,7 @@ pub enum MicrophoneMode {
     OnDemand,
 }
 
-/* ──────────────────────────────────────────────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 fn create_audio_recorder(
     vad_path: &str,
@@ -140,7 +140,7 @@ fn create_audio_recorder(
     Ok(recorder)
 }
 
-/* ──────────────────────────────────────────────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 #[derive(Clone)]
 pub struct AudioRecordingManager {
@@ -274,8 +274,11 @@ impl AudioRecordingManager {
                     tauri::path::BaseDirectory::Resource,
                 )
                 .map_err(|e| anyhow::anyhow!("Failed to resolve VAD path: {}", e))?;
+            let vad_path_str = vad_path.to_str().ok_or_else(|| {
+                anyhow::anyhow!("VAD model path is not valid UTF-8: {:?}", vad_path)
+            })?;
             *recorder_opt = Some(create_audio_recorder(
-                vad_path.to_str().unwrap(),
+                vad_path_str,
                 &self.app_handle,
             )?);
         }
@@ -321,11 +324,11 @@ impl AudioRecordingManager {
         }
 
         *open_flag = true;
-        // This timing covers through cpal's stream.play() returning — i.e. the
+        // This timing covers through cpal's stream.play() returning â€” i.e. the
         // point cpal surfaces as "stream running." It does NOT guarantee the
         // host audio device is producing samples yet; the first input callback
         // fires asynchronously one buffer period later (hardware dependent,
-        // typically ~10–200ms on macOS, longer on Bluetooth/USB).
+        // typically ~10â€“200ms on macOS, longer on Bluetooth/USB).
         info!(
             "Microphone stream initialized in {:?}",
             start_time.elapsed()

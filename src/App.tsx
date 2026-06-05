@@ -3,6 +3,8 @@ import { toast, Toaster } from "sonner";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { platform } from "@tauri-apps/plugin-os";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import {
   checkAccessibilityPermission,
   checkMicrophonePermission,
@@ -13,6 +15,7 @@ import AccessibilityPermissions from "./components/AccessibilityPermissions";
 import Footer from "./components/footer";
 import Onboarding, { AccessibilityOnboarding } from "./components/onboarding";
 import { Sidebar, SidebarSection, SECTIONS_CONFIG } from "./components/Sidebar";
+import { HomeDashboard } from "./components/settings/home/HomeDashboard";
 import { useSettings } from "./hooks/useSettings";
 import { useSettingsStore } from "./stores/settingsStore";
 import { commands } from "@/bindings";
@@ -20,7 +23,15 @@ import { getLanguageDirection, initializeRTL } from "@/lib/utils/rtl";
 
 type OnboardingStep = "accessibility" | "model" | "done";
 
-const renderSettingsContent = (section: SidebarSection) => {
+const renderSettingsContent = (
+  section: SidebarSection,
+  onNavigate: (section: SidebarSection) => void,
+) => {
+  // Kōrero (v1.12.0): the Home dashboard needs a navigation callback to switch
+  // sections from its quick-action cards; other sections take no props.
+  if (section === "home") {
+    return <HomeDashboard onNavigate={(s) => onNavigate(s as SidebarSection)} />;
+  }
   const ActiveComponent =
     SECTIONS_CONFIG[section]?.component || SECTIONS_CONFIG.general.component;
   return <ActiveComponent />;
@@ -35,7 +46,7 @@ function App() {
   // (vs a new user who needs full onboarding including model selection)
   const [isReturningUser, setIsReturningUser] = useState(false);
   const [currentSection, setCurrentSection] =
-    useState<SidebarSection>("general");
+    useState<SidebarSection>("home");
   const { settings, updateSetting } = useSettings();
   const direction = getLanguageDirection(i18n.language);
   const refreshAudioDevices = useSettingsStore(
@@ -46,6 +57,30 @@ function App() {
   );
   const hasCompletedPostOnboardingInit = useRef(false);
 
+  // Kōrero (v1.16.0): update notification — Rust checks the fork's GitHub
+  // releases once at startup (8 s delayed, silent on failure) and emits this
+  // when a newer version exists. Notify-only: the toast links the release
+  // page; nothing installs itself.
+  useEffect(() => {
+    const un = listen<{ version: string; url: string }>(
+      "korero://update-available",
+      (e) => {
+        toast.message(`Kōrero v${e.payload.version} is available`, {
+          duration: 15000,
+          action: {
+            label: "Download",
+            onClick: () => {
+              openUrl(e.payload.url).catch(() => {});
+            },
+          },
+        });
+      },
+    );
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
   useEffect(() => {
     checkOnboardingStatus();
   }, []);
@@ -54,6 +89,30 @@ function App() {
   useEffect(() => {
     initializeRTL(i18n.language);
   }, [i18n.language]);
+
+  // Kōrero (2026-05-17 PM, T2.4a — inlined from apply-patches.ps1):
+  // Surface OS-keychain write failures so the user knows their API key didn't
+  // persist. Without this the failure is silent and manifests later as
+  // "the app forgot my key", with the actual cause buried in handy.log.
+  // Rust emits `korero://keychain-error` with { failed_providers, phase }
+  // when persist_to_keyring or migrate_plaintext_to_keyring partially fails.
+  useEffect(() => {
+    const unlistenPromise = listen<{ failed_providers: string[]; phase: string }>(
+      "korero://keychain-error",
+      (event) => {
+        const providers = event.payload.failed_providers.join(", ");
+        const action = event.payload.phase === "migrate" ? "migrate" : "save";
+        const plural = event.payload.failed_providers.length === 1 ? "" : "s";
+        toast.error(
+          `Couldn't ${action} API key${plural} for: ${providers}. OS keychain may be locked or unavailable.`,
+          { duration: 10000 }
+        );
+      }
+    );
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
 
   // Initialize Enigo, shortcuts, and refresh audio devices when main app loads
   useEffect(() => {
@@ -252,15 +311,17 @@ function App() {
       dir={direction}
       className="h-screen flex flex-col select-none cursor-default"
     >
+      {/* Kōrero fork: toasts use glass-card-thick material to stand out
+          over the dark backdrop without losing the liquid-glass aesthetic. */}
       <Toaster
-        theme="system"
+        theme="dark"
         toastOptions={{
           unstyled: true,
           classNames: {
             toast:
-              "bg-background border border-mid-gray/20 rounded-lg shadow-lg px-4 py-3 flex items-center gap-3 text-sm",
-            title: "font-medium",
-            description: "text-mid-gray",
+              "glass-card-thick flex items-center gap-3 text-sm text-text",
+            title: "font-semibold text-text",
+            description: "text-text-muted",
           },
         }}
       />
@@ -275,7 +336,14 @@ function App() {
           <div className="flex-1 overflow-y-auto">
             <div className="flex flex-col items-center p-4 gap-4">
               <AccessibilityPermissions />
-              {renderSettingsContent(currentSection)}
+              {/* Kōrero (v1.12.0): keyed wrapper so switching sections replays a
+                  subtle fade/rise transition (honours prefers-reduced-motion). */}
+              <div
+                key={currentSection}
+                className="korero-page w-full flex flex-col items-center gap-4"
+              >
+                {renderSettingsContent(currentSection, setCurrentSection)}
+              </div>
             </div>
           </div>
         </div>
@@ -286,4 +354,15 @@ function App() {
   );
 }
 
-export default App;
+// Kōrero (v1.7.0, B4): wrap in ErrorBoundary so render crashes show a fallback
+// rather than a blank settings window. The boundary is outside App so it
+// catches errors thrown by any child, including hooks inside App itself.
+function AppRoot() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  );
+}
+
+export default AppRoot;

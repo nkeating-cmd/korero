@@ -186,11 +186,18 @@ export const usePostProcessProviderState = (): PostProcessProviderState => {
       upsert(candidate);
     }
 
+    // Korero (v1.3.0): add suggested models from the provider's static list.
+    // These ensure the dropdown is useful before the user clicks "Fetch models".
+    // Deduplicated against API results by the seen Set above.
+    for (const candidate of selectedProvider?.suggested_models ?? []) {
+      upsert(candidate);
+    }
+
     // Ensure current model is in the list
     upsert(model);
 
     return options;
-  }, [availableModelsRaw, model]);
+  }, [availableModelsRaw, model, selectedProvider]);
 
   const isBaseUrlUpdating = isUpdating(
     `post_process_base_url:${selectedProviderId}`,

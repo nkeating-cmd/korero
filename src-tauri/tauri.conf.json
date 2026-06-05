@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Handy",
-  "version": "0.8.3",
-  "identifier": "com.pais.handy",
+  "productName": "K\u014drero",
+  "version": "1.16.0",
+  "identifier": "com.nkeating.korero",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
@@ -13,11 +13,13 @@
     "macOSPrivateApi": true,
     "windows": [],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self' tauri:; img-src 'self' data: tauri: asset: https://asset.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data: tauri:; script-src 'self' tauri:; connect-src 'self' ipc: http://ipc.localhost tauri: https://api.deepseek.com https://api.openai.com https://openrouter.ai https://api.anthropic.com https://api.groq.com https://api.z.ai https://api.cerebras.ai https://bedrock-mantle.us-east-1.api.aws https://generativelanguage.googleapis.com",
       "assetProtocol": {
         "enable": true,
         "scope": {
-          "allow": ["**"],
+          "allow": [
+            "**"
+          ],
           "requireLiteralLeadingDot": false
         }
       }
@@ -25,9 +27,13 @@
   },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": true,
-    "targets": "all",
-    "resources": ["resources/**/*"],
+    "createUpdaterArtifacts": false,
+    "targets": [
+      "nsis"
+    ],
+    "resources": [
+      "resources/**/*"
+    ],
     "license": "MIT",
     "icon": [
       "icons/32x32.png",
@@ -45,7 +51,9 @@
     },
     "linux": {
       "deb": {
-        "depends": ["libgtk-layer-shell0"]
+        "depends": [
+          "libgtk-layer-shell0"
+        ]
       },
       "rpm": {
         "compression": {
@@ -56,20 +64,6 @@
         "bundleMediaFramework": true,
         "files": {}
       }
-    },
-    "windows": {
-      "signCommand": "trusted-signing-cli -e https://eus.codesigning.azure.net/ -a CJ-Signing -c cjpais-dev -d Handy %1",
-      "nsis": {
-        "template": "nsis/installer.nsi"
-      }
-    }
-  },
-  "plugins": {
-    "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJBQjcyMDk1MjA2NjAxRjkKUldUNUFXWWdsU0MzdXRRZi8zYzhqV2FaNUVDbDd2Rk5VM1IvWWowVXdmRFNKQ1BrMXF5RFFsLy8K",
-      "endpoints": [
-        "https://github.com/cjpais/Handy/releases/latest/download/latest.json"
-      ]
     }
   }
 }

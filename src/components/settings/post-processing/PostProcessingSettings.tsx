@@ -1,3 +1,16 @@
+// Korero overlay -- PostProcessingSettings.tsx
+// Changes vs upstream (cjpais/Handy):
+//   v1.2.0: import PostProcessingToggle; add toggle SettingsGroup at the top
+//           of PostProcessingSettings.
+//   v1.3.0: import OllamaPullButton; add "Local" badge next to the provider
+//           dropdown when is_local_provider; add OllamaPullButton below the
+//           model select when is_local_provider.
+//
+// NOTE: this file is in the overlay (Handy-changes) NOT patched by
+// apply-patches.ps1.  The three earlier patches for this file were removed
+// in v1.3.1 after the String.Replace all-occurrences bug caused 4x
+// duplication of the OllamaPullButton block.
+
 import React, { useEffect, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { RefreshCcw } from "lucide-react";
@@ -20,7 +33,10 @@ import { ApiKeyField } from "../PostProcessingSettingsApi/ApiKeyField";
 import { ModelSelect } from "../PostProcessingSettingsApi/ModelSelect";
 import { usePostProcessProviderState } from "../PostProcessingSettingsApi/usePostProcessProviderState";
 import { ShortcutInput } from "../ShortcutInput";
+import { CorrectionsManager } from "../../ui/Corrections";
 import { useSettings } from "../../../hooks/useSettings";
+import { PostProcessingToggle } from "../PostProcessingToggle";
+import { OllamaPullButton } from "../PostProcessingSettingsApi/OllamaPullButton";
 
 const PostProcessingSettingsApiComponent: React.FC = () => {
   const { t } = useTranslation();
@@ -35,12 +51,20 @@ const PostProcessingSettingsApiComponent: React.FC = () => {
         layout="horizontal"
         grouped={true}
       >
+        {/* Korero (v1.3.0): Local badge shown next to provider dropdown when
+            is_local_provider is true (e.g. Ollama).  Uses emerald styling to
+            distinguish from cloud providers at a glance. */}
         <div className="flex items-center gap-2">
           <ProviderSelect
             options={state.providerOptions}
             value={state.selectedProviderId}
             onChange={state.handleProviderSelect}
           />
+          {state.selectedProvider?.is_local_provider && (
+            <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+              Local
+            </span>
+          )}
         </div>
       </SettingContainer>
 
@@ -52,7 +76,10 @@ const PostProcessingSettingsApiComponent: React.FC = () => {
         ) : null
       ) : (
         <>
-          {state.selectedProvider?.id === "custom" && (
+          {/* Korero (v1.3.1 fix): show BaseUrlField whenever allow_base_url_edit
+              is true, not just for id==="custom". Ollama also has
+              allow_base_url_edit:true; the old condition hid its URL field. */}
+          {state.selectedProvider?.allow_base_url_edit && (
             <SettingContainer
               title={t("settings.postProcessing.api.baseUrl.title")}
               description={t("settings.postProcessing.api.baseUrl.description")}
@@ -137,6 +164,25 @@ const PostProcessingSettingsApiComponent: React.FC = () => {
               />
             </ResetButton>
           </div>
+        </SettingContainer>
+      )}
+
+      {/* Korero (v1.3.0): in-app model pull for local providers (Ollama).
+          Shows connection status, model storage path, and a pull button.
+          Rendered only when is_local_provider is true. */}
+      {!state.isAppleProvider && state.selectedProvider?.is_local_provider && (
+        <SettingContainer
+          title="Pull model"
+          description={`Download ${state.model || "the selected model"} from Ollama's registry so it is available locally.`}
+          descriptionMode="tooltip"
+          layout="stacked"
+          grouped={true}
+        >
+          <OllamaPullButton
+            baseUrl={state.baseUrl}
+            modelName={state.model}
+            onModelPulled={state.handleRefreshModels}
+          />
         </SettingContainer>
       )}
     </>
@@ -428,6 +474,12 @@ export const PostProcessingSettings: React.FC = () => {
 
   return (
     <div className="max-w-3xl w-full mx-auto space-y-6">
+      {/* Korero (v1.2.0): enable/disable toggle surfaced here so the user can
+          turn off post-processing without hunting through Advanced > Experimental. */}
+      <SettingsGroup title={t("settings.advanced.groups.experimental")}>
+        <PostProcessingToggle descriptionMode="tooltip" grouped={true} />
+      </SettingsGroup>
+
       <SettingsGroup title={t("settings.postProcessing.hotkey.title")}>
         <ShortcutInput
           shortcutId="transcribe_with_post_process"
@@ -443,6 +495,10 @@ export const PostProcessingSettings: React.FC = () => {
       <SettingsGroup title={t("settings.postProcessing.prompts.title")}>
         <PostProcessingSettingsPrompts />
       </SettingsGroup>
+
+      {/* Kōrero (v1.15.0): corrections memory — teach the transcriber the
+          words it keeps getting wrong. */}
+      <CorrectionsManager />
     </div>
   );
 };

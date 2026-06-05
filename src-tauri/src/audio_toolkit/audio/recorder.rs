@@ -286,7 +286,13 @@ impl AudioRecorder {
         // in run_consumer() downsample to 16kHz. This avoids forcing hardware into
         // a non-native rate which can cause issues on some devices (Bluetooth
         // codecs, certain ALSA drivers, etc.).
-        let default_config = device.default_input_config()?;
+        let default_config = match device.default_input_config() {
+            Ok(c) => c,
+            // Korero (v1.13.0): output devices expose no input config; fall back
+            // to the output config so we can open a WASAPI loopback (input) stream
+            // on the default output device and capture system audio ("Others").
+            Err(_) => device.default_output_config()?,
+        };
         let target_rate = default_config.sample_rate();
 
         // Try to find the best sample format at the device's default rate
@@ -409,6 +415,13 @@ fn run_consumer(
     let mut processed_samples = Vec::<f32>::new();
     let mut recording = false;
 
+    // korero-denoise-init: optional RNNoise denoiser, 48 kHz capture only.
+    let mut denoiser = if in_sample_rate == crate::denoise::REQUIRED_SAMPLE_RATE {
+        Some(crate::denoise::Denoiser::new())
+    } else {
+        None
+    };
+
     // ---------- spectrum visualisation setup ---------------------------- //
     const BUCKETS: usize = 16;
     const WINDOW_SIZE: usize = 512;
@@ -460,6 +473,13 @@ fn run_consumer(
         }
 
         // ---------- existing pipeline ------------------------------------ //
+        // korero-denoise-main: denoise the raw 48 kHz stream before resampling.
+        // Gated on `recording` so we never burn CPU (or advance RNNoise state)
+        // on idle/always-on audio when the user isn't dictating.
+        let raw = match denoiser.as_mut() {
+            Some(d) if recording && crate::denoise::is_enabled() => d.process(&raw),
+            _ => raw,
+        };
         frame_resampler.push(&raw, &mut |frame: &[f32]| {
             handle_frame(frame, recording, &vad, &mut processed_samples)
         });
@@ -487,6 +507,11 @@ fn run_consumer(
                     loop {
                         match sample_rx.recv_timeout(Duration::from_secs(2)) {
                             Ok(AudioChunk::Samples(remaining)) => {
+                                // korero-denoise-drain
+                                let remaining = match denoiser.as_mut() {
+                                    Some(d) if crate::denoise::is_enabled() => d.process(&remaining),
+                                    _ => remaining,
+                                };
                                 frame_resampler.push(&remaining, &mut |frame: &[f32]| {
                                     handle_frame(frame, true, &vad, &mut processed_samples)
                                 });
@@ -499,6 +524,17 @@ fn run_consumer(
                         }
                     }
 
+                    // korero-denoise-flush: push the denoiser's buffered tail.
+                    if let Some(d) = denoiser.as_mut() {
+                        if crate::denoise::is_enabled() {
+                            let tail = d.flush();
+                            if !tail.is_empty() {
+                                frame_resampler.push(&tail, &mut |frame: &[f32]| {
+                                    handle_frame(frame, true, &vad, &mut processed_samples)
+                                });
+                            }
+                        }
+                    }
                     frame_resampler.finish(&mut |frame: &[f32]| {
                         handle_frame(frame, true, &vad, &mut processed_samples)
                     });

@@ -391,6 +391,14 @@ impl ShortcutAction for TranscribeAction {
         let start_time = Instant::now();
         debug!("TranscribeAction::start called for binding: {}", binding_id);
 
+        // Korero (v1.13.0) korero-meeting-guard: ignore dictation shortcuts while
+        // a meeting is being recorded so the two capture paths cannot fight over
+        // the microphone.
+        if crate::meeting::is_meeting_active() {
+            log::warn!("Dictation shortcut ignored: a meeting is being recorded.");
+            return;
+        }
+
         // Load model in the background
         let tm = app.state::<Arc<TranscriptionManager>>();
         let rm = app.state::<Arc<AudioRecordingManager>>();
@@ -701,6 +709,14 @@ pub static ACTION_MAP: Lazy<HashMap<String, Arc<dyn ShortcutAction>>> = Lazy::ne
     let mut map = HashMap::new();
     map.insert(
         "transcribe".to_string(),
+        Arc::new(TranscribeAction {
+            post_process: false,
+        }) as Arc<dyn ShortcutAction>,
+    );
+    // Korero (v1.14.1): one-handed alternative dictation shortcut -- the
+    // exact same action as "transcribe", under its own rebindable binding.
+    map.insert(
+        "transcribe_alt".to_string(),
         Arc::new(TranscribeAction {
             post_process: false,
         }) as Arc<dyn ShortcutAction>,

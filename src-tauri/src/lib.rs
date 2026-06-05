@@ -6,12 +6,21 @@ pub mod audio_toolkit;
 pub mod cli;
 mod clipboard;
 mod commands;
+mod crash; // Kōrero (v1.12.0): global panic hook + crash report files
+mod corrections; // Kōrero (v1.15.0): user-taught transcription corrections
+mod update_check; // Kōrero (v1.16.0): notify-only update check (own repo only)
+mod meeting; // Kōrero (v1.13.0): meeting recorder (mic + system loopback)
+mod meeting_capture; // Kōrero (v1.13.2, Phase A): streaming-to-disk meeting capture
+#[cfg(windows)]
+mod meeting_capture_wasapi; // Kōrero (v1.13.6): native WASAPI loopback for "Others"
+mod denoise; // Kōrero (v1.11.0): optional RNNoise mic denoiser (nnnoiseless)
 mod helpers;
 mod input;
 mod llm_client;
 mod managers;
 mod overlay;
 pub mod portable;
+mod secret_store;
 mod settings;
 mod shortcut;
 mod signal_handle;
@@ -35,7 +44,7 @@ use signal_hook::consts::{SIGUSR1, SIGUSR2};
 #[cfg(unix)]
 use signal_hook::iterator::Signals;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tauri::image::Image;
 pub use transcription_coordinator::TranscriptionCoordinator;
 
@@ -43,8 +52,12 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Listener, Manager};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
+// Kōrero (2026-05-17 PM): persist window size + position across launches so
+// Nic doesn't have to resize away from the default every session.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tauri_plugin_window_state::{StateFlags, WindowExt as WindowStateExt};
 
-use crate::settings::get_settings;
+use crate::settings::{get_settings, SettingsCache};
 
 // Global atomic to store the file log level filter
 // We use u8 to store the log::LevelFilter as a number
@@ -290,6 +303,43 @@ fn initialize_core_logic(app_handle: &AppHandle) {
         let _ = autostart_manager.disable();
     }
 
+    // Kōrero (v1.9.0, M1): pre-warm the transcription model in the background so
+    // the first Ctrl+Space fires without a cold-start model-load delay.
+    // initiate_model_load() is idempotent (no-ops if already loading or loaded),
+    // spawns its own thread, reads selected_model from the settings cache, and
+    // logs a warning on failure (non-fatal — app falls back to lazy load).
+    {
+        let tm = app_handle.state::<Arc<TranscriptionManager>>();
+        tm.initiate_model_load();
+        log::info!("Model pre-warm initiated at startup.");
+    }
+
+    // Kōrero (v1.9.0, W1): pre-initialize shortcuts on Windows so Ctrl+Space is
+    // live within ~1 s of launch rather than waiting for React to hydrate and
+    // call initializeShortcuts(). Skipped on macOS/Linux — macOS needs the
+    // frontend to confirm Accessibility permission first; Linux global-shortcut
+    // support is unstable. The frontend's initializeShortcuts() command is
+    // idempotent: it checks ShortcutsInitialized in app state and no-ops if we
+    // already set it here.
+    // catch_unwind: rdev global hooks can fail on pathological system
+    // configurations. Non-fatal — the frontend's initializeShortcuts() call
+    // runs as a fallback after React hydration if this block panics.
+    #[cfg(windows)]
+    {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::shortcut::init_shortcuts(app_handle);
+        }));
+        match result {
+            Ok(()) => {
+                app_handle.manage(crate::commands::ShortcutsInitialized);
+                log::info!("Shortcuts pre-initialized at startup (Windows).");
+            }
+            Err(_) => {
+                log::warn!("Shortcut pre-init panicked (non-fatal — frontend will retry on first use).");
+            }
+        }
+    }
+
     // Create the recording overlay window (hidden by default)
     utils::create_recording_overlay(app_handle);
 }
@@ -315,6 +365,11 @@ fn show_main_window_command(app: AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(cli_args: CliArgs) {
+    // Kōrero (v1.12.0): install the global panic hook before anything else so a
+    // panic anywhere in startup or runtime is logged and (if enabled) written to
+    // a crash report. The crash directory + on/off flag are populated in setup.
+    crash::install_panic_hook();
+
     // Detect portable mode before anything else
     portable::init();
 
@@ -361,6 +416,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::suspend_binding,
             shortcut::resume_binding,
             shortcut::change_mute_while_recording_setting,
+            shortcut::change_denoise_enabled_setting,
             shortcut::change_append_trailing_space_setting,
             shortcut::change_lazy_stream_close_setting,
             shortcut::change_app_language_setting,
@@ -418,6 +474,35 @@ pub fn run(cli_args: CliArgs) {
             commands::transcription::set_model_unload_timeout,
             commands::transcription::get_model_load_status,
             commands::transcription::unload_model_manually,
+            // Kōrero fork (v1.12.0): Notes page dictation commands.
+            commands::notes::note_start_dictation,
+            commands::notes::note_stop_dictation,
+            commands::notes::note_cancel_dictation,
+            // Kōrero fork (v1.12.0): crash-report controls.
+            crash::set_save_crash_reports,
+            crash::open_crash_reports_dir,
+            // Kōrero fork (v1.13.0): meeting recorder commands.
+            meeting::meeting_start_capture,
+            meeting::meeting_stop_capture,
+            meeting::meeting_transcribe_file,
+            meeting::meeting_list_recordings,
+            meeting::meeting_export_transcript,
+            meeting::meeting_query,
+            meeting::meeting_post_process,
+            meeting::meeting_provider_is_local,
+            // Kōrero fork (v1.13.4): meetings metadata store on disk.
+            meeting::meetings_store_load,
+            meeting::meetings_store_save,
+            // Kōrero fork (v1.13.5): capture diagnostics (meters + device test).
+            meeting::meeting_capture_devices,
+            meeting::meeting_test_capture,
+            // Kōrero fork (v1.13.6): recording retention / deletion.
+            meeting::meeting_delete_recording,
+            // Kōrero fork (v1.14.2): restore recording UI after page remount.
+            meeting::meeting_recording_status,
+            // Kōrero fork (v1.14.3): whole-note post-processing (prompt + model
+            // selectable per run).
+            commands::notes::note_post_process,
             commands::history::get_history_entries,
             commands::history::toggle_history_entry_saved,
             commands::history::get_audio_file_path,
@@ -425,6 +510,9 @@ pub fn run(cli_args: CliArgs) {
             commands::history::retry_history_entry_transcription,
             commands::history::update_history_limit,
             commands::history::update_recording_retention_period,
+            commands::ollama::pull_ollama_model,
+            commands::ollama::check_ollama_connection,
+            commands::history_extra::update_post_processed_text,
             helpers::clamshell::is_laptop,
         ])
         .events(collect_events![managers::history::HistoryUpdatePayload,]);
@@ -459,11 +547,11 @@ pub fn run(cli_args: CliArgs) {
                     Target::new(if let Some(data_dir) = portable::data_dir() {
                         TargetKind::Folder {
                             path: data_dir.join("logs"),
-                            file_name: Some("handy".into()),
+                            file_name: Some("korero".into()), // Kōrero (v1.1.0): was "handy"
                         }
                     } else {
                         TargetKind::LogDir {
-                            file_name: Some("handy".into()),
+                            file_name: Some("korero".into()), // Kōrero (v1.1.0): was "handy"
                         }
                     })
                     .filter(|metadata| {
@@ -493,7 +581,7 @@ pub fn run(cli_args: CliArgs) {
         }))
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        // Kōrero fork: updater plugin removed — see Cargo.toml comment.
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_macos_permissions::init())
@@ -504,26 +592,79 @@ pub fn run(cli_args: CliArgs) {
             MacosLauncher::LaunchAgent,
             Some(vec![]),
         ))
+        // Kōrero (2026-05-17 PM): window-state plugin auto-saves window size
+        // and position on close, auto-restores on next launch. The explicit
+        // restore_state call after window build below is required because
+        // Kōrero builds its main window programmatically (not via tauri.conf
+        // declarative windows), so the plugin's auto-restore hook doesn't fire.
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(cli_args.clone())
         .setup(move |app| {
             specta_builder.mount_events(app);
 
             // Create main window programmatically so we can set data_directory
             // for portable mode (redirects WebView2 cache to portable Data dir)
+            // Kōrero (2026-05-17 PM): default bumped from 820x640 to 900x820
+            // Kōrero (v1.7.0): default reduced from 900×820 to 820×640 so the
+            // window launches at a compact size that fits most settings pages
+            // without blank space. Users can resize freely; the window-state
+            // plugin persists their preferred size on close and restores it on
+            // the next launch, so the default only applies to first run.
             let mut win_builder =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("/".into()))
-                    .title("Handy")
-                    .inner_size(680.0, 570.0)
-                    .min_inner_size(680.0, 570.0)
+                    .title("Kōrero")
+                    .inner_size(820.0, 640.0)
+                    .min_inner_size(720.0, 560.0)
                     .resizable(true)
-                    .maximizable(false)
+                    .maximizable(true)
                     .visible(false);
 
             if let Some(data_dir) = portable::data_dir() {
                 win_builder = win_builder.data_directory(data_dir.join("webview"));
             }
 
-            win_builder.build()?;
+            let main_window = win_builder.build()?;
+
+            // Kōrero (v1.9.0, W2): one-time window-state migration.
+            // Pre-v1.7.0 builds stored 900×820 in .window-state.json. If that stale
+            // file is still present it overrides the new 820×640 default on every
+            // launch. We delete it once (on first v1.9.0 launch) and write a marker
+            // so subsequent launches restore normally — the user's own resize choices
+            // accumulate in a fresh file and persist from that point forward.
+            // Failure is non-fatal: if we can't delete, restore_state handles it.
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            {
+                if let Ok(data_dir) = app.path().app_data_dir() {
+                    let marker = data_dir.join(".korero-window-reset-v190");
+                    if !marker.exists() {
+                        let state_file = data_dir.join(".window-state.json");
+                        if state_file.exists() {
+                            match std::fs::remove_file(&state_file) {
+                                Ok(()) => log::info!(
+                                    "window-state: cleared pre-v1.7.0 state file (one-time migration)."
+                                ),
+                                Err(e) => log::warn!(
+                                    "window-state: could not clear stale state file: {e}"
+                                ),
+                            }
+                        }
+                        let _ = std::fs::write(&marker, "v1.9.0");
+                    }
+                }
+            }
+
+            // Kōrero (2026-05-17 PM): restore saved window state (size,
+            // position, maximised). The plugin auto-saves on close; we call
+            // restore manually because programmatic windows don't trip the
+            // plugin's auto-restore hook. StateFlags::all() covers size +
+            // position + maximised + fullscreen + visible. Failure is non-
+            // fatal — if the state file is missing or corrupt, the window
+            // launches at the inner_size defaults above and a fresh state
+            // file is written on next close.
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            if let Err(err) = main_window.restore_state(StateFlags::all()) {
+                log::warn!("window-state: failed to restore main window state: {err}");
+            }
 
             let mut settings = get_settings(&app.handle());
 
@@ -537,8 +678,30 @@ pub fn run(cli_args: CliArgs) {
             let file_log_level: log::Level = tauri_log_level.into();
             // Store the file log level in the atomic for the filter to use
             FILE_LOG_LEVEL.store(file_log_level.to_level_filter() as u8, Ordering::Relaxed);
+
+            // Kōrero (v1.12.0): seed crash-report saving from settings and point
+            // the panic hook at <app data>/crash-reports.
+            crash::SAVE_CRASH_REPORTS.store(settings.save_crash_reports, Ordering::Relaxed);
+            if let Ok(data_dir) = portable::app_data_dir(&app.handle()) {
+                crash::set_crash_dir(data_dir.join("crash-reports"));
+            }
+
             let app_handle = app.handle().clone();
             app.manage(TranscriptionCoordinator::new(app_handle.clone()));
+            // Kōrero (v1.13.0): meeting recorder singleton (mic + system loopback).
+            app.manage(std::sync::Arc::new(meeting::MeetingRecorder::new()));
+            // Kōrero (v1.13.6): age out meeting WAVs past the 30-day retention
+            // window + any orphaned device-test files.
+            meeting::cleanup_old_recordings(app.handle());
+            // Kōrero (v1.16.0): one-shot update notification (fork repo only;
+            // delayed 8 s; silent on any failure).
+            update_check::spawn_update_check(app.handle().clone());
+
+            // Kōrero (v1.7.0, S1): seed the settings cache from the already-loaded
+            // settings (which include hydrated keychain keys and any CLI overrides).
+            // Registered BEFORE initialize_core_logic so every get_settings() call
+            // during init hits RAM, not disk + keychain.
+            app.manage(SettingsCache(Arc::new(RwLock::new(settings.clone()))));
 
             initialize_core_logic(&app_handle);
 

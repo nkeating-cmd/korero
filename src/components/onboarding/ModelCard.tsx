@@ -79,23 +79,29 @@ const ModelCard: React.FC<ModelCardProps> = ({
   const displayName = getTranslatedModelName(model, t);
   const displayDescription = getTranslatedModelDescription(model, t);
 
+  // Kōrero fork: replaced upstream's outline+fill cards with the liquid-glass
+  // material system. Cards now sit on the dark backdrop as proper translucent
+  // surfaces with backdrop blur, edge highlight, and ambient shadow.
   const baseClasses =
-    "flex flex-col rounded-xl px-4 py-3 gap-2 text-left transition-all duration-200";
+    "group flex flex-col px-5 py-4 gap-2 text-left";
 
   const getVariantClasses = () => {
     if (status === "active") {
-      return "border-2 border-logo-primary/50 bg-logo-primary/10";
+      // Currently-installed model — strongest yellow-tinted glass
+      return "glass-card-selected";
     }
     if (isFeatured) {
-      return "border-2 border-logo-primary/25 bg-logo-primary/5";
+      // "Recommended" model — yellow-tinted glass, subtler than selected
+      return "glass-card";
     }
-    return "border-2 border-mid-gray/20";
+    // Non-recommended models — default glass material
+    return "glass-card-thin";
   };
 
   const getInteractiveClasses = () => {
     if (!isClickable) return "";
     if (disabled) return "opacity-50 cursor-not-allowed";
-    return "cursor-pointer hover:border-logo-primary/50 hover:bg-logo-primary/5 hover:shadow-lg hover:scale-[1.01] active:scale-[0.99] group";
+    return "glass-card-interactive";
   };
 
   const handleClick = () => {
@@ -191,7 +197,7 @@ const ModelCard: React.FC<ModelCardProps> = ({
         )}
       </div>
 
-      <hr className="w-full border-mid-gray/20" />
+      <hr className="w-full border-glass-border" />
 
       {/* Bottom row: tags + action buttons (full width) */}
       <div className="flex items-center gap-3 w-full -mb-0.5 mt-0.5 h-5">

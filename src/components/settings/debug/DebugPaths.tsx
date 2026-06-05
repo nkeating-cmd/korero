@@ -7,6 +7,11 @@ interface DebugPathsProps {
   grouped?: boolean;
 }
 
+// Kōrero fork: Tauri identifier is `com.nkeating.korero`, so AppData
+// resolves to %APPDATA%/com.nkeating.korero/ on Windows. Update the
+// displayed paths to match.
+const APP_DATA_DIR = "com.nkeating.korero";
+
 export const DebugPaths: React.FC<DebugPathsProps> = ({
   descriptionMode = "inline",
   grouped = false,
@@ -20,13 +25,15 @@ export const DebugPaths: React.FC<DebugPathsProps> = ({
       descriptionMode={descriptionMode}
       grouped={grouped}
     >
-      <div className="text-sm text-gray-600 space-y-2">
+      <div className="text-sm text-text-muted space-y-2">
         <div>
           <span className="font-medium">
             {t("settings.debug.paths.appData")}
           </span>{" "}
           {/* eslint-disable-next-line i18next/no-literal-string */}
-          <span className="font-mono text-xs select-text">%APPDATA%/handy</span>
+          <span className="font-mono text-xs select-text">
+            %APPDATA%/{APP_DATA_DIR}
+          </span>
         </div>
         <div>
           <span className="font-medium">
@@ -34,7 +41,7 @@ export const DebugPaths: React.FC<DebugPathsProps> = ({
           </span>{" "}
           {/* eslint-disable-next-line i18next/no-literal-string */}
           <span className="font-mono text-xs select-text">
-            %APPDATA%/handy/models
+            %APPDATA%/{APP_DATA_DIR}/models
           </span>
         </div>
         <div>
@@ -43,7 +50,7 @@ export const DebugPaths: React.FC<DebugPathsProps> = ({
           </span>{" "}
           {/* eslint-disable-next-line i18next/no-literal-string */}
           <span className="font-mono text-xs select-text">
-            %APPDATA%/handy/settings_store.json
+            %APPDATA%/{APP_DATA_DIR}/settings_store.json
           </span>
         </div>
       </div>

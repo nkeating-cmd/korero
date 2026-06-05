@@ -9,6 +9,17 @@ import { AppDataDirectory } from "../AppDataDirectory";
 import { AppLanguageSelector } from "../AppLanguageSelector";
 import { LogDirectory } from "../debug";
 
+/**
+ * Kōrero fork (v1.12.0): About page.
+ *
+ * Forked from upstream Handy to (1) drop the upstream "Support Development"
+ * donate row — not relevant to this personal fork — and (2) point Source Code
+ * at this fork's repository instead of cjpais/Handy. The Acknowledgments
+ * section is kept to credit Handy + whisper.cpp per the MIT licence.
+ */
+
+const KORERO_REPO_URL = "https://github.com/nkeating-cmd/korero";
+
 export const AboutSettings: React.FC = () => {
   const { t } = useTranslation();
   const [version, setVersion] = useState("");
@@ -27,14 +38,6 @@ export const AboutSettings: React.FC = () => {
     fetchVersion();
   }, []);
 
-  const handleDonateClick = async () => {
-    try {
-      await openUrl("https://handy.computer/donate");
-    } catch (error) {
-      console.error("Failed to open donate link:", error);
-    }
-  };
-
   return (
     <div className="max-w-3xl w-full mx-auto space-y-6">
       <SettingsGroup title={t("settings.about.title")}>
@@ -49,16 +52,6 @@ export const AboutSettings: React.FC = () => {
         </SettingContainer>
 
         <SettingContainer
-          title={t("settings.about.supportDevelopment.title")}
-          description={t("settings.about.supportDevelopment.description")}
-          grouped={true}
-        >
-          <Button variant="primary" size="md" onClick={handleDonateClick}>
-            {t("settings.about.supportDevelopment.button")}
-          </Button>
-        </SettingContainer>
-
-        <SettingContainer
           title={t("settings.about.sourceCode.title")}
           description={t("settings.about.sourceCode.description")}
           grouped={true}
@@ -66,7 +59,7 @@ export const AboutSettings: React.FC = () => {
           <Button
             variant="secondary"
             size="md"
-            onClick={() => openUrl("https://github.com/cjpais/Handy")}
+            onClick={() => openUrl(KORERO_REPO_URL)}
           >
             {t("settings.about.sourceCode.button")}
           </Button>

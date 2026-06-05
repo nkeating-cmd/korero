@@ -6,24 +6,16 @@ interface BadgeProps {
   className?: string;
 }
 
-const Badge: React.FC<BadgeProps> = ({
-  children,
-  variant = "primary",
-  className = "",
-}) => {
+/**
+ * Korero fork: badges become glass pills with aurora-cyan accent for primary.
+ */
+const Badge: React.FC<BadgeProps> = ({ children, variant = "primary", className = "" }) => {
   const variantClasses = {
-    primary: "bg-logo-primary",
-    success: "bg-green-500/20 text-green-400",
-    secondary: "bg-mid-gray/20 text-text/70",
+    primary: "glass-pill glass-pill-accent",
+    success: "glass-pill pill-positive",
+    secondary: "glass-pill text-text-muted",
   };
-
-  return (
-    <span
-      className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${variantClasses[variant]} ${className}`}
-    >
-      {children}
-    </span>
-  );
+  return <span className={`${variantClasses[variant]} ${className}`}>{children}</span>;
 };
 
 export default Badge;

@@ -1,95 +1,454 @@
-.recording-overlay {
-  height: 36px;
-  width: 172px;
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  padding: 6px;
-  background: #000000cc;
-  border-radius: 18px;
-  opacity: 0;
-  transition: opacity 300ms ease-out;
-  box-sizing: border-box;
+/* Korero recording overlay — polished state-distinct animations.
+   Kōrero (v1.9.0): liquid-glass pill, smooth system fonts, refined glow. */
+
+:root {
+  --aurora-cyan:    #5DD8FF;
+  --aurora-purple:  #9B7FE8;
+  --aurora-pink:    #E87AC5;
+  --aurora-magenta: #FF7AB3;
+
+  /* Kōrero (v1.5.0): neon accent palette — transcribing/processing states. */
+  --cyber-cyan:    #00F5FF;
+  --cyber-green:   #00FF41;
+  --cyber-magenta: #FF00CC;
+
+  /* Kōrero (v1.9.0): border raised from 0.10 to 0.12 for cleaner glass edge. */
+  --overlay-border: rgba(255, 255, 255, 0.12);
+
+  /* Kōrero (v1.10.0): single source of truth for the Aptos-led font stack.
+     The overlay is a separate Vite entry and never loads App.css, so the stack
+     must be defined here; referenced by html/body and .shimmer-text via var(). */
+  --font-sans: "Aptos", "Aptos Display", "Segoe UI Variable Text", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Inter", sans-serif;
 }
 
+html, body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: visible; /* let drop-shadow halo render outside the pill */
+  width: 100%;
+  height: 100%;
+
+  /* Kōrero (v1.10.0): the overlay is a SEPARATE Vite entry (src/overlay/index.html)
+     and does NOT import App.css, so `font-family: inherit` on .shimmer-text was
+     falling back to the WebView2 default — it never matched the app UI. Set the
+     same Aptos-led stack here explicitly so the transcribing/processing label
+     matches the rest of the app and the overlay animation. */
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Centre the pill within the Tauri overlay window.
+   The Tauri window is sized slightly larger than the CSS pill so the
+   drop-shadow halo has breathing room and longer labels ("Transcribing…")
+   aren't clipped on the right edge. */
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ============================================================
+   Overlay pill — liquid glass, state-distinct ambient hue.
+   ============================================================ */
+.korero-overlay {
+  /* Auto-size between sensible bounds. Tauri window is 320×64 (see overlay.rs
+     patch) so we have 40px of horizontal room each side. */
+  height: 40px;
+  min-width: 180px;
+  max-width: 280px;
+  width: max-content;
+  display: grid;
+  grid-template-columns: 22px 1fr 22px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+
+  /* Kōrero (v1.9.0): liquid-glass gradient — a subtle top-highlight that
+     suggests translucency without backdrop-filter. backdrop-filter causes a
+     visible square halo on WebView2 transparent windows because the blur
+     is applied to the rectangular border-box before border-radius clipping.
+     A top-to-bottom gradient achieves depth without that artefact. */
+  background: linear-gradient(
+    160deg,
+    rgba(28, 32, 52, 0.93) 0%,
+    rgba(10, 13, 26, 0.90) 100%
+  );
+
+  border: 1px solid var(--overlay-border);
+  border-radius: 20px;
+
+  /* Kōrero (v1.9.0): five-layer shadow — top/bottom/side edge highlights
+     simulate glass refraction; the two outer shadows give depth and a close
+     ambient shadow. Shadow blur capped at 16px: the Tauri window is 64px tall,
+     leaving only 12px of vertical slack; deeper blurs clip at the boundary. */
+  box-shadow:
+    inset 0   1px 0 0 rgba(255, 255, 255, 0.18),
+    inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
+    inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
+    inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
+    0 4px 16px 0 rgba(0, 0, 0, 0.52),
+    0 1px  3px 0 rgba(0, 0, 0, 0.28);
+
+  color: #ffffff;
+  opacity: 0;
+  transform: translateY(6px) scale(0.96);
+  transition:
+    opacity   220ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+  /* box-shadow transition removed — recording/latch use CSS keyframe animations
+     which force a GPU compositor layer, sidestepping the static-shadow artefact. */
+  box-sizing: border-box;
+  will-change: opacity, transform;
+}
+
+.korero-overlay.fade-in {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+/* ── State: recording — breathing cyan glow ──────────────────────────────── */
+.korero-overlay[data-state="recording"] {
+  animation: korero-recording-glow 2.6s ease-in-out infinite;
+}
+
+@keyframes korero-recording-glow {
+  0%, 100% {
+    box-shadow:
+      inset 0   1px 0 0 rgba(255, 255, 255, 0.18),
+      inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
+      inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
+      inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
+      0 4px 16px 0 rgba(0, 0, 0, 0.52),
+      0 1px  3px 0 rgba(0, 0, 0, 0.28),
+      0 0   8px 0 rgba(93, 216, 255, 0.28);
+  }
+  50% {
+    box-shadow:
+      inset 0   1px 0 0 rgba(255, 255, 255, 0.18),
+      inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
+      inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
+      inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
+      0 4px 16px 0 rgba(0, 0, 0, 0.52),
+      0 1px  3px 0 rgba(0, 0, 0, 0.28),
+      0 0  14px 2px rgba(93, 216, 255, 0.52);
+  }
+}
+
+/* ── States: transcribing / processing — drop-shadow for border-radius glow ─
+   Static box-shadow renders rectangular on WebView2 transparent windows
+   (shadow clips to border-box before border-radius). filter:drop-shadow()
+   composites after border-radius so the glow follows the pill shape.
+   Recording/latch use animated box-shadow (GPU compositor layer sidesteps
+   the artefact for animated shadows). */
+.korero-overlay[data-state="transcribing"] {
+  box-shadow:
+    inset 0   1px 0 0 rgba(255, 255, 255, 0.18),
+    inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
+    inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
+    inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
+    0 4px 16px 0 rgba(0, 0, 0, 0.52),
+    0 1px  3px 0 rgba(0, 0, 0, 0.28);
+  border-color: rgba(0, 245, 255, 0.38);
+  filter: drop-shadow(0 0 7px rgba(0, 245, 255, 0.45));
+}
+
+.korero-overlay[data-state="processing"] {
+  box-shadow:
+    inset 0   1px 0 0 rgba(255, 255, 255, 0.18),
+    inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
+    inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
+    inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
+    0 4px 16px 0 rgba(0, 0, 0, 0.52),
+    0 1px  3px 0 rgba(0, 0, 0, 0.28);
+  border-color: rgba(255, 0, 204, 0.35);
+  filter: drop-shadow(0 0 7px rgba(255, 0, 204, 0.40));
+}
+
+/* ============================================================
+   Left / right cells
+   ============================================================ */
+/* overlay-left clips the mic-pulse animation (scale 2×, 44px) that bleeds
+   outside the 22px cell and would paint a faint square artefact. */
 .overlay-left {
   display: flex;
   align-items: center;
+  justify-content: center;
+  height: 100%;
+  overflow: hidden;
+}
+
+.overlay-right {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
 }
 
 .overlay-middle {
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
+  min-width: 0;
 }
 
-.overlay-right {
+/* Icon + shimmer text share a flex row for non-recording states so they
+   centre as a unit within the 1fr column. */
+.overlay-shimmer-group {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  gap: 7px;
 }
 
+/* ============================================================
+   STATE ICONS
+   ============================================================ */
+.state-icon {
+  display: block;
+}
+
+/* ── Recording: Mic with pulsing aurora ring ─────────────────────────────── */
+.mic-wrap {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mic-icon {
+  color: var(--aurora-cyan);
+  filter: drop-shadow(0 0 6px rgba(93, 216, 255, 0.65));
+  z-index: 1;
+}
+
+.mic-pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(93, 216, 255, 0.55) 0%,
+    rgba(93, 216, 255, 0.0) 70%
+  );
+  animation: korero-mic-pulse 1.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+@keyframes korero-mic-pulse {
+  0%   { transform: scale(0.5);  opacity: 0.0; }
+  35%  { transform: scale(1.0);  opacity: 1.0; }
+  100% { transform: scale(2.0);  opacity: 0.0; }
+}
+
+/* ── Transcribing: Cpu icon — neon green strobe ──────────────────────────── */
+.transcribe-icon {
+  color: var(--cyber-green);
+  filter: drop-shadow(0 0 5px rgba(0, 255, 65, 0.70));
+  animation: cyber-strobe 2.5s linear infinite;
+  will-change: opacity, filter;
+}
+
+@keyframes cyber-strobe {
+  0%,  76%, 100% { opacity: 1;   filter: drop-shadow(0 0 5px rgba(0, 255, 65, 0.70)); }
+  78%            { opacity: 0.1; filter: drop-shadow(0 0 2px rgba(0, 255, 65, 0.20)); }
+  80%            { opacity: 1;   filter: drop-shadow(0 0 8px rgba(0, 255, 65, 1.00)); }
+  82%            { opacity: 0.2; filter: drop-shadow(0 0 2px rgba(0, 255, 65, 0.25)); }
+  84%            { opacity: 1;   filter: drop-shadow(0 0 5px rgba(0, 255, 65, 0.70)); }
+}
+
+/* ── Processing: Loader spinner — magenta ────────────────────────────────── */
+.spin-icon {
+  color: var(--cyber-magenta);
+  filter: drop-shadow(0 0 5px rgba(255, 0, 204, 0.70));
+  animation: korero-spin 1.0s linear infinite;
+  will-change: transform;
+}
+
+@keyframes korero-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* ============================================================
+   RECORDING — aurora-gradient waveform bars
+   ============================================================ */
 .bars-container {
   display: flex;
-  align-items: end;
+  align-items: center;
   justify-content: center;
   gap: 3px;
-  padding-bottom: 0px;
-  height: 24px;
+  height: 22px;
   overflow: hidden;
 }
 
 .bar {
-  width: 6px;
-  background: #ffe5ee;
-  max-height: 20px;
+  /* scaleY driven by RAF loop in RecordingOverlay.tsx — GPU compositor only,
+     no layout reflow. transform-origin: bottom center so bars grow upward. */
+  width: 4px;
+  height: 20px;
   border-radius: 2px;
-  transition: height 80ms linear;
-  min-height: 4px;
+  transform-origin: bottom center;
+  transform: scaleY(0.15);
+  background: linear-gradient(
+    180deg,
+    var(--aurora-cyan)   0%,
+    var(--aurora-purple) 55%,
+    var(--aurora-pink)  100%
+  );
+  box-shadow: 0 0 4px rgba(155, 127, 232, 0.55);
+  transition: transform 60ms ease-out, opacity 120ms ease-out;
 }
 
-.recording-overlay.fade-in {
-  opacity: 1;
-}
-
-.transcribing-text {
-  color: white;
+/* ============================================================
+   TRANSCRIBING / PROCESSING — smooth neon label text
+   Kōrero (v1.9.0): replaced Consolas monospace + uppercase + 0.10em tracking
+   (cyberpunk HUD aesthetic) with the app's inherited system font (Segoe UI /
+   Inter on Windows). Glow and colour retained — only the typography changes.
+   The chromatic-aberration glitch burst is replaced with a gentle opacity
+   pulse that reads as "active" without the terminal-screen feel.
+   ============================================================ */
+.shimmer-text {
+  /* Kōrero (v1.10.0): explicit Aptos-led stack (not `inherit`) — the overlay
+     entry never loads App.css, so inherit resolved to the WebView2 default.
+     This now matches the app UI and the overlay's own animation typography. */
+  font-family: var(--font-sans);
   font-size: 12px;
-  font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  animation: transcribing-pulse 1.5s infinite ease-in-out;
+  font-weight: 500;
+  letter-spacing: 0.005em;
+  /* text-transform: none — normal case, not uppercase */
+  /* letter-spacing: normal — no wide tracking */
+  white-space: nowrap;
+  color: var(--cyber-cyan);
+  text-shadow:
+    0 0  6px rgba(0, 245, 255, 0.70),
+    0 0 12px rgba(0, 245, 255, 0.30);
+  animation: shimmer-fade 2.4s ease-in-out infinite;
+  will-change: opacity;
 }
 
-@keyframes transcribing-pulse {
-  0%,
-  100% {
-    opacity: 0.6;
+/* Gentle breathing fade — suggests "working" without the terminal-glitch feel. */
+@keyframes shimmer-fade {
+  0%, 100% {
+    opacity: 1;
+    text-shadow:
+      0 0  6px rgba(0, 245, 255, 0.70),
+      0 0 12px rgba(0, 245, 255, 0.30);
   }
   50% {
-    opacity: 1;
+    opacity: 0.78;
+    text-shadow:
+      0 0  8px rgba(0, 245, 255, 0.90),
+      0 0 16px rgba(0, 245, 255, 0.50);
   }
 }
 
+/* ============================================================
+   CANCEL BUTTON
+   ============================================================ */
 .cancel-button {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
-  background: transparent;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.85);
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 0;
   cursor: pointer;
   transition:
-    background-color 150ms ease-out,
-    transform 100ms ease-out;
-  flex-shrink: 0;
+    background-color 160ms ease-out,
+    color            160ms ease-out,
+    transform        100ms ease-out,
+    border-color     160ms ease-out,
+    box-shadow       200ms ease-out;
 }
 
 .cancel-button:hover {
-  background: #faa2ca33;
-  transform: scale(1.05);
+  background: rgba(232, 122, 197, 0.22);
+  border-color: rgba(232, 122, 197, 0.55);
+  color: #ffffff;
+  transform: scale(1.10);
+  box-shadow: 0 0 12px rgba(232, 122, 197, 0.55);
 }
 
 .cancel-button:active {
-  transform: scale(0.95);
+  transform: scale(0.92);
+}
+
+/* ============================================================
+   RECORDING-LATCHED (v1.8.0) — amber/orange latch-mode theme.
+   Same layout as "recording" (bars + mic icon), distinct amber palette
+   so the user knows the key can be released — tap once to stop.
+   ============================================================ */
+.korero-overlay[data-state="recording-latched"] {
+  animation: korero-latch-glow 2.6s ease-in-out infinite;
+  border-color: rgba(255, 171, 0, 0.30);
+}
+
+@keyframes korero-latch-glow {
+  0%, 100% {
+    box-shadow:
+      inset 0   1px 0 0 rgba(255, 255, 255, 0.18),
+      inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
+      inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
+      inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
+      0 4px 16px 0 rgba(0, 0, 0, 0.52),
+      0 1px  3px 0 rgba(0, 0, 0, 0.28),
+      0 0   8px 0 rgba(255, 171, 0, 0.28);
+  }
+  50% {
+    box-shadow:
+      inset 0   1px 0 0 rgba(255, 255, 255, 0.18),
+      inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
+      inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
+      inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
+      0 4px 16px 0 rgba(0, 0, 0, 0.52),
+      0 1px  3px 0 rgba(0, 0, 0, 0.28),
+      0 0  14px 2px rgba(255, 171, 0, 0.55);
+  }
+}
+
+.korero-overlay[data-state="recording-latched"] .mic-icon {
+  color: #FFAB00;
+  filter: drop-shadow(0 0 6px rgba(255, 171, 0, 0.70));
+}
+
+.korero-overlay[data-state="recording-latched"] .mic-pulse {
+  background: radial-gradient(
+    circle,
+    rgba(255, 171, 0, 0.55) 0%,
+    rgba(255, 171, 0, 0.00) 70%
+  );
+}
+
+.korero-overlay[data-state="recording-latched"] .bar {
+  background: linear-gradient(
+    180deg,
+    #FFD060 0%,
+    #FF8C00 55%,
+    #FF5000 100%
+  );
+  box-shadow: 0 0 4px rgba(255, 140, 0, 0.55);
+}
+
+/* ============================================================
+   Reduced-motion fallback
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  .korero-overlay[data-state="recording"]         { animation: none; }
+  .korero-overlay[data-state="recording-latched"] { animation: none; }
+  /* Remove drop-shadow glow; retain box-shadow depth only */
+  .korero-overlay[data-state="transcribing"],
+  .korero-overlay[data-state="processing"]        { filter: none; }
+  .mic-pulse       { animation: none; opacity: 0.4; transform: scale(1); }
+  .transcribe-icon { animation: none; will-change: auto; }
+  .spin-icon       { animation: korero-spin 2s linear infinite; }
+  .shimmer-text    { animation: none; }
+  .bar             { transition: none; }
 }
