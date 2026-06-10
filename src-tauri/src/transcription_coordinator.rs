@@ -144,7 +144,9 @@ impl TranscriptionCoordinator {
                                 // handles RecordingLatched in case the user
                                 // switches modes between sessions.
                                 match &stage {
-                                    Stage::Idle => {
+                                    // Kōrero (v1.18.0): Processing no longer
+                                    // blocks the next recording (see handle_ptt).
+                                    Stage::Idle | Stage::Processing => {
                                         start(&app, &mut stage, &binding_id, &hotkey_string);
                                     }
                                     Stage::Recording(id) if id == &binding_id => {
@@ -177,7 +179,15 @@ impl TranscriptionCoordinator {
                         }
 
                         Some(Command::ProcessingFinished) => {
-                            stage = Stage::Idle;
+                            // Kōrero (v1.18.0): only reset when actually in
+                            // Processing. A new recording may already be live
+                            // (press-during-processing) — clobbering it to
+                            // Idle would orphan the recorder: the release/stop
+                            // press would no longer match Stage::Recording and
+                            // the mic would record forever.
+                            if matches!(stage, Stage::Processing) {
+                                stage = Stage::Idle;
+                            }
                         }
                     }
                 }
@@ -268,7 +278,13 @@ fn handle_ptt(
         pending_stop.take();
 
         match stage {
-            Stage::Idle => {
+            // Kōrero (v1.18.0, UX roadmap item 5 — zero-latency sequencing):
+            // a press during Processing starts the NEXT recording immediately
+            // instead of being swallowed ("pipeline busy"). The in-flight
+            // transcription continues in its own task; the model serialises
+            // utterances internally, and ProcessingFinished no longer
+            // clobbers a live Recording stage (see the guarded reset).
+            Stage::Idle | Stage::Processing => {
                 start(app, stage, binding_id, hotkey_string);
             }
             Stage::RecordingLatched(id) if id == binding_id => {

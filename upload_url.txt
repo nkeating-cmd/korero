@@ -1,0 +1,1 @@
+https://uploads.github.com/repos/nkeating-cmd/korero/releases/337054984/assets{?name,label}

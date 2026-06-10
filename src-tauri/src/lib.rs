@@ -431,6 +431,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::handy_keys::start_handy_keys_recording,
             shortcut::handy_keys::stop_handy_keys_recording,
             trigger_update_check,
+            update_check::install_update,
             show_main_window_command,
             commands::cancel_operation,
             commands::is_portable,
@@ -587,7 +588,11 @@ pub fn run(cli_args: CliArgs) {
         }))
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
-        // Kōrero fork: updater plugin removed — see Cargo.toml comment.
+        // Kōrero (v1.18.0): updater plugin RESTORED — endpoint locked to the
+        // fork repo in tauri.conf.json, artifacts minisign-verified against
+        // the pubkey there. The fork-time removal protected against pulling
+        // upstream Handy builds; the locked endpoint preserves that property.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_macos_permissions::init())

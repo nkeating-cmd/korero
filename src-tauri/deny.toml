@@ -20,7 +20,20 @@ feature-depth = 1
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "warn"
-ignore = []
+# Korero (v1.18.0): only error on unmaintained DIRECT dependencies. The 22
+# transitive unmaintained advisories (gtk3-rs bindings, atty, bincode, ...)
+# come in via upstream Tauri/Handy and are not actionable from this fork.
+# Vulnerability advisories still error regardless of depth (cargo audit is
+# the second net for those).
+unmaintained = "workspace"
+ignore = [
+    # Korero (v1.18.0): gtk / gtk-layer-shell are LINUX-ONLY direct deps
+    # inherited from upstream Handy (this fork ships Windows NSIS only).
+    # The gtk3-rs bindings are unmaintained but unused in shipped binaries.
+    # Revisit only if a Linux build is ever produced.
+    { id = "RUSTSEC-2024-0415", reason = "gtk: linux-only dep, not in Windows binary" },
+    { id = "RUSTSEC-2024-0422", reason = "gtk-layer-shell: linux-only dep, not in Windows binary" },
+]
 
 # ----- licenses -----------------------------------------------------------
 # Korero ships under MIT (matching upstream Handy). Allowed licenses must be
@@ -44,7 +57,14 @@ allow = [
 confidence-threshold = 0.8
 # Per-crate exceptions go here. Document WHY for every entry.
 exceptions = [
-    # { allow = ["CDDL-1.0"], crate = "inferno" },
+    # Korero (v1.18.0): whisper-rs/-sys are Unlicense (public domain
+    # equivalent, MIT-compatible). Scoped per-crate rather than allowing
+    # Unlicense globally.
+    { allow = ["Unlicense"], crate = "whisper-rs" },
+    { allow = ["Unlicense"], crate = "whisper-rs-sys" },
+    # Korero (v1.18.0): Mozilla's CA bundle ships under CDLA-Permissive-2.0
+    # (data licence, permissive, attribution-free). Pulled in by rustls.
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-root-certs" },
 ]
 # Force-fail on anything copyleft-strong.
 [[licenses.clarify]]
@@ -60,7 +80,10 @@ license-files = [
 # the Tauri ecosystem currently has unavoidable duplicates.
 [bans]
 multiple-versions = "warn"
-wildcards = "deny"
+# Korero (v1.18.0): "warn" not "deny" -- the 4 wildcard hits are korero's own
+# [patch.crates-io] git entries (cjpais forks), which carry no version field
+# by design; the git source + SHA pin (pin-deps.ps1) is the real control.
+wildcards = "warn"
 highlight = "all"
 deny = [
     # Add specific deps to ban here, e.g. unmaintained or known-bad crates.

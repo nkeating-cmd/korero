@@ -59,8 +59,11 @@ function App() {
 
   // Kōrero (v1.16.0): update notification — Rust checks the fork's GitHub
   // releases once at startup (8 s delayed, silent on failure) and emits this
-  // when a newer version exists. Notify-only: the toast links the release
-  // page; nothing installs itself.
+  // when a newer version exists.
+  // v1.18.0: the toast action now installs in place via the updater plugin
+  // (signature-verified, fork-repo endpoint only) and restarts. If the
+  // install path fails for any reason — portable build, blocked installer,
+  // signature mismatch — fall back to opening the release page.
   useEffect(() => {
     const un = listen<{ version: string; url: string }>(
       "korero://update-available",
@@ -68,9 +71,21 @@ function App() {
         toast.message(`Kōrero v${e.payload.version} is available`, {
           duration: 15000,
           action: {
-            label: "Download",
+            label: "Install now",
             onClick: () => {
-              openUrl(e.payload.url).catch(() => {});
+              toast.promise(
+                commands.installUpdate().then((r) => {
+                  if (r.status === "error") throw new Error(r.error);
+                }),
+                {
+                  loading: "Downloading update…",
+                  success: "Update installed — restarting…",
+                  error: () => {
+                    openUrl(e.payload.url).catch(() => {});
+                    return "Install failed — opening the release page instead.";
+                  },
+                },
+              );
             },
           },
         });

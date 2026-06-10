@@ -5,14 +5,41 @@
 //! Works for both the installed and the portable edition, needs no signing
 //! keys, and can never install anything by itself.
 //!
-//! Full silent auto-update (tauri-plugin-updater) is deliberately deferred
-//! until the minisign keypair + CI release pipeline exist. Historical note:
-//! the updater plugin was removed at fork time so updates could never pull
-//! UPSTREAM Handy builds over the patched fork — this check only ever looks
-//! at nkeating-cmd/korero.
+//! v1.18.0: the deferral above is RESOLVED — tauri-plugin-updater is back,
+//! pointed exclusively at nkeating-cmd/korero (latest.json endpoint in
+//! tauri.conf.json), artifacts minisign-signed. The notify flow below stays
+//! as the discovery surface; `install_update` does the one-click install.
+//! The fork-safety property is preserved: both the notify check AND the
+//! updater endpoint only ever see the fork repo, never upstream Handy.
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
+
+/// Kōrero (v1.18.0): one-click update install, called from the update toast.
+/// Uses the updater plugin (endpoint + pubkey from tauri.conf.json): checks,
+/// downloads, verifies the minisign signature, installs, then restarts the
+/// app. Any failure returns Err so the UI can fall back to opening the
+/// release page for a manual download.
+#[tauri::command]
+#[specta::specta]
+pub async fn install_update(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let updater = app.updater().map_err(|e| format!("updater init: {e}"))?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| format!("update check: {e}"))?
+        .ok_or_else(|| "No update available.".to_string())?;
+
+    update
+        .download_and_install(|_chunk, _total| {}, || {})
+        .await
+        .map_err(|e| format!("download/install: {e}"))?;
+
+    // NSIS install succeeded; relaunch into the new version.
+    app.restart();
+}
 
 const RELEASES_API: &str = "https://api.github.com/repos/nkeating-cmd/korero/releases/latest";
 const RELEASES_PAGE: &str = "https://github.com/nkeating-cmd/korero/releases/latest";

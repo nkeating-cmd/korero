@@ -1,6 +1,6 @@
 [package]
 name = "korero"
-version = "1.17.1"
+version = "1.18.0"
 description = "Kōrero — speech-to-text, NZ English"
 authors = ["Nic Keating <nkeating@gmail.com>", "cjpais (upstream)"]
 edition = "2021"
@@ -46,6 +46,12 @@ tauri-plugin-os = "2.3.2"
 tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-macos-permissions = "2.3.0"
 tauri-plugin-process = "2.3.1"
+# Korero (v1.18.0): silent auto-update. Safe to re-add because the updater
+# endpoint in tauri.conf.json points ONLY at nkeating-cmd/korero releases --
+# the original fork-time removal was to stop UPSTREAM Handy releases being
+# offered, which this preserves. Artifacts signed with the minisign key at
+# %USERPROFILE%\.tauri\korero.key (never in the repo).
+tauri-plugin-updater = "2"
 rusqlite_migration = "2.3"
 tauri-plugin-fs = "2.4.4"
 # Kōrero (v1.11.0): optional RNNoise microphone denoiser. Pure-Rust port of

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "K\u014drero",
-  "version": "1.17.1",
+  "version": "1.18.0",
   "identifier": "com.nkeating.korero",
   "build": {
     "beforeDevCommand": "bun run dev",
@@ -25,9 +25,17 @@
       }
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/nkeating-cmd/korero/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ3RjBENjkwNTE3RkYxRDEKUldUUjhYOVJrTmJ3MTVmbkwwUTFsc1pGbWJyaVMvdVRBb01EQWxhajZ3U0VLKzhHdStrSys2V2gK"
+    }
+  },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": true,
     "targets": [
       "nsis"
     ],
