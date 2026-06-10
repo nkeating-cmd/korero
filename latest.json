@@ -1,0 +1,11 @@
+{
+    "platforms":  {
+                      "windows-x86_64":  {
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUUjhYOVJrTmJ3MTQ5anQ3S2lqaGdFeW5POSszSDlxRDJ5QitoRHpuSjhlZGlqd242NDR2MnFYNjlacENCN3dVL1lBMms2UFNlejRwVXEzRzdLMnJKbkUwaVRUQk84TEE4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgxMDkwMjY4CWZpbGU6S8WNcmVyb18xLjE4LjBfeDY0LXNldHVwLmV4ZQo2dkU3dlpuM2dDSjMrWlVRRTRQajhsMkJRQ0FsRVgrWm5vZGJuRjdySVU1KzNqV012WHl5VFREUGd5SG5MVkk1TGJlb1RxdEhxYWZWWGpRSk5wOVhBdz09Cg==",
+                                             "url":  "https://github.com/nkeating-cmd/korero/releases/download/v1.18.0/Korero_1.18.0_x64-setup.exe"
+                                         }
+                  },
+    "pub_date":  "2026-06-10T11:18:34Z",
+    "version":  "1.18.0",
+    "notes":  "Auto-update, zero-latency dictation sequencing, security + licence compliance green."
+}

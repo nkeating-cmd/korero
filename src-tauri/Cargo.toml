@@ -1,6 +1,6 @@
 [package]
 name = "korero"
-version = "1.18.0"
+version = "1.18.1"
 description = "Kōrero — speech-to-text, NZ English"
 authors = ["Nic Keating <nkeating@gmail.com>", "cjpais (upstream)"]
 edition = "2021"
@@ -52,6 +52,9 @@ tauri-plugin-process = "2.3.1"
 # offered, which this preserves. Artifacts signed with the minisign key at
 # %USERPROFILE%\.tauri\korero.key (never in the repo).
 tauri-plugin-updater = "2"
+# Korero (v1.18.1): contextual-routing spike -- direct Win32 calls for the
+# active window title. 0.59 line already in the lock via the Tauri stack.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 rusqlite_migration = "2.3"
 tauri-plugin-fs = "2.4.4"
 # Kōrero (v1.11.0): optional RNNoise microphone denoiser. Pure-Rust port of

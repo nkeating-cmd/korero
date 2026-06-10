@@ -78,8 +78,25 @@ const Onboarding: React.FC<OnboardingProps> = ({ onModelSelected }) => {
     downloadProgress,
     downloadStats,
   } = useModelStore();
-  const [step, setStep] = useState<"welcome" | "models">("welcome");
+  const [step, setStep] = useState<"welcome" | "hotkey" | "models">("welcome");
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  // Kōrero (v1.18.1, UX roadmap item 7): hotkey-forcing step — pressing the
+  // combo once during onboarding builds the muscle memory the researcher
+  // found onboarding funnels fail to create. Detected via webview keydown
+  // (the rdev global hook does not consume events, so the focused onboarding
+  // window still sees them). Skippable — never a wall.
+  const [hotkeyPressed, setHotkeyPressed] = useState(false);
+  useEffect(() => {
+    if (step !== "hotkey") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === "Space") {
+        e.preventDefault();
+        setHotkeyPressed(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [step]);
 
   const isDownloading = selectedModelId !== null;
 
@@ -181,14 +198,62 @@ const Onboarding: React.FC<OnboardingProps> = ({ onModelSelected }) => {
         <div className="flex flex-col items-center gap-2 shrink-0 pb-2">
           <button
             type="button"
-            onClick={() => setStep("models")}
+            onClick={() => setStep("hotkey")}
             className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-glass-accent-strong text-text font-medium text-sm hover:bg-white/15 transition-colors border border-white/10"
           >
-            Choose your transcription model <ArrowRight size={16} />
+            Next: try the hotkey <ArrowRight size={16} />
           </button>
           <p className="text-xs text-text-subtle">
             Downloads once, then runs 100% on-device.
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ---- Step 1b (v1.18.1): hotkey muscle-memory step -----------------------
+  if (step === "hotkey") {
+    return (
+      <div className="h-screen w-screen flex flex-col items-center justify-center px-8 gap-6">
+        <Keyboard size={40} className="text-aurora-cyan" />
+        <h1 className="text-3xl font-semibold tracking-tight text-text">
+          Try your dictation hotkey
+        </h1>
+        <p className="text-text-muted text-base max-w-md text-center">
+          Press and hold <kbd className="px-2 py-0.5 rounded bg-white/10 border border-white/15 font-mono text-sm">Ctrl</kbd>
+          {" + "}
+          <kbd className="px-2 py-0.5 rounded bg-white/10 border border-white/15 font-mono text-sm">Space</kbd>{" "}
+          right now. This is the one gesture you will use everywhere — pressing
+          it once makes it stick. (No model yet, so nothing records — any
+          message it shows is expected.)
+        </p>
+        {hotkeyPressed ? (
+          <p className="text-sm font-medium text-pill-positive">
+            Got it — that is the whole trick. Hold to dictate, release to paste.
+          </p>
+        ) : (
+          <p className="text-sm text-text-subtle animate-pulse">
+            Waiting for Ctrl+Space…
+          </p>
+        )}
+        <div className="flex items-center gap-3 pt-2">
+          <button
+            type="button"
+            onClick={() => setStep("models")}
+            disabled={!hotkeyPressed}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-glass-accent-strong text-text font-medium text-sm hover:bg-white/15 transition-colors border border-white/10 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Choose your transcription model <ArrowRight size={16} />
+          </button>
+          {!hotkeyPressed && (
+            <button
+              type="button"
+              onClick={() => setStep("models")}
+              className="text-xs text-text-subtle underline hover:text-text-muted"
+            >
+              Skip
+            </button>
+          )}
         </div>
       </div>
     );

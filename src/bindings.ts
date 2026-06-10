@@ -1035,6 +1035,14 @@ async installUpdate() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async getActiveWindowTitle() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_active_window_title") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async isLaptop() : Promise<Result<boolean, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("is_laptop") };

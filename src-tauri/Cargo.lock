@@ -3232,7 +3232,7 @@ dependencies = [
 
 [[package]]
 name = "korero"
-version = "1.18.0"
+version = "1.18.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3292,6 +3292,7 @@ dependencies = [
  "vad-rs",
  "wasapi",
  "windows 0.61.3",
+ "windows-sys 0.59.0",
  "winreg 0.55.0",
 ]
 

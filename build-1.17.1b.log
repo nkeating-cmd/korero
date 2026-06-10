@@ -1,0 +1,532 @@
+Korero build  |  mode=all  version=1.17.1  root=C:\Users\nkeat\OneDrive\Documents\Claude\Projects\App Development
+
+[1/6] Preflight -- MSVC environment
+  MSVC env loaded from C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools
+
+[2/6] Killing stale bun / node / korero processes (frees port 1420)
+
+[3/6] Syncing Handy-changes overlay -> C:\dev\korero
+
+============================================================
+  KORERO bulletproof sync (v2)
+============================================================
+  Source: C:\Users\nkeat\OneDrive\Documents\Claude\Projects\App Development\Handy-changes
+  Dest:   C:\dev\korero
+
+
+  Checking for dev-tree drift...
+
+  WARNING: 61 file(s) in C:\dev\korero are NEWER than the overlay source.
+  These may contain edits made directly in the dev tree that will be OVERWRITTEN.
+
+    index.html  (+2167152s newer in dev tree)
+    package.json  (+593131s newer in dev tree)
+    README.md  (+193474s newer in dev tree)
+    tailwind.config.js  (+2167152s newer in dev tree)
+    THIRD_PARTY_NOTICES.md  (+786609s newer in dev tree)
+    vite.config.ts  (+1301758s newer in dev tree)
+    .github\workflows\ci.yml  (+1065s newer in dev tree)
+    src\App.css  (+593074s newer in dev tree)
+    src\App.tsx  (+418912s newer in dev tree)
+    src\components\ErrorBoundary.tsx  (+1104972s newer in dev tree)
+    src\components\Sidebar.tsx  (+459585s newer in dev tree)
+    src\components\footer\Footer.tsx  (+1580s newer in dev tree)
+    src\components\footer\PrivacyPills.tsx  (+1599s newer in dev tree)
+    src\components\icons\CancelIcon.tsx  (+2167153s newer in dev tree)
+    src\components\icons\HandyTextLogo.tsx  (+1020611s newer in dev tree)
+    src\components\icons\MicrophoneIcon.tsx  (+680424s newer in dev tree)
+    src\components\icons\TranscriptionIcon.tsx  (+680410s newer in dev tree)
+    src\components\onboarding\ModelCard.tsx  (+2167153s newer in dev tree)
+    src\components\onboarding\Onboarding.tsx  (+1547s newer in dev tree)
+    src\components\settings\NoiseSuppression.tsx  (+790800s newer in dev tree)
+    src\components\settings\about\AboutSettings.tsx  (+624617s newer in dev tree)
+    src\components\settings\debug\DebugPaths.tsx  (+2167154s newer in dev tree)
+    src\components\settings\general\GeneralSettings.tsx  (+516930s newer in dev tree)
+    src\components\settings\help\HelpSettings.tsx  (+1525s newer in dev tree)
+    src\components\settings\history\HistorySettings.tsx  (+414663s newer in dev tree)
+    src\components\settings\home\HomeDashboard.tsx  (+636362s newer in dev tree)
+    src\components\settings\meetings\CaptureMeters.tsx  (+520153s newer in dev tree)
+    src\components\settings\meetings\MeetingsSettings.tsx  (+101473s newer in dev tree)
+    src\components\settings\notes\NotesSettings.tsx  (+441819s newer in dev tree)
+    src\components\settings\post-processing\PostProcessingSettings.tsx  (+1258s newer in dev tree)
+    src\components\settings\PostProcessingSettingsApi\OllamaPullButton.tsx  (+193501s newer in dev tree)
+    src\components\ui\Badge.tsx  (+2167155s newer in dev tree)
+    src\components\ui\Corrections.tsx  (+414676s newer in dev tree)
+    src\components\ui\Dropdown.tsx  (+1227342s newer in dev tree)
+    src\components\ui\Markdown.tsx  (+531685s newer in dev tree)
+    src\components\ui\MarkdownInner.tsx  (+531688s newer in dev tree)
+    src\components\ui\SettingsGroup.tsx  (+2167155s newer in dev tree)
+    src\overlay\RecordingOverlay.css  (+1019452s newer in dev tree)
+    src\overlay\RecordingOverlay.tsx  (+1040466s newer in dev tree)
+    src-tauri\Cargo.toml  (+1099s newer in dev tree)
+    src-tauri\deny.toml  (+2102480s newer in dev tree)
+    src-tauri\tauri.conf.json  (+1118s newer in dev tree)
+    src-tauri\capabilities\default.json  (+441846s newer in dev tree)
+    src-tauri\capabilities\desktop.json  (+2167158s newer in dev tree)
+    src-tauri\capabilities\narrow.json  (+441799s newer in dev tree)
+    src-tauri\src\corrections.rs  (+447676s newer in dev tree)
+    src-tauri\src\crash.rs  (+680746s newer in dev tree)
+    src-tauri\src\denoise.rs  (+810040s newer in dev tree)
+    src-tauri\src\lib.rs  (+101799s newer in dev tree)
+    src-tauri\src\llm_client.rs  (+101199s newer in dev tree)
+    src-tauri\src\meeting.rs  (+331s newer in dev tree)
+    src-tauri\src\meeting_capture.rs  (+102234s newer in dev tree)
+    src-tauri\src\meeting_capture_wasapi.rs  (+520250s newer in dev tree)
+    src-tauri\src\secret_store.rs  (+2102426s newer in dev tree)
+    src-tauri\src\settings.rs  (+1194s newer in dev tree)
+    src-tauri\src\transcription_coordinator.rs  (+516959s newer in dev tree)
+    src-tauri\src\tray.rs  (+1112407s newer in dev tree)
+    src-tauri\src\update_check.rs  (+418938s newer in dev tree)
+    src-tauri\src\commands\history_extra.rs  (+1122370s newer in dev tree)
+    src-tauri\src\commands\notes.rs  (+447647s newer in dev tree)
+    src-tauri\src\commands\ollama.rs  (+101851s newer in dev tree)
+
+  -Yes set -- proceeding non-interactively (overwriting dev-tree changes).
+
+  SKIP  APPLY_CHANGES.md (excluded)
+  OK    bun.lock
+  OK    index.html
+  OK    package.json
+  OK    README.md
+  OK    tailwind.config.js
+  OK    THIRD_PARTY_NOTICES.md
+  OK    UPSTREAM_SHA.txt
+  OK    vite.config.ts
+  OK    .github\workflows\ci.yml
+  OK    src\App.css
+  OK    src\App.tsx
+  OK    src\components\ErrorBoundary.tsx
+  OK    src\components\Sidebar.tsx
+  OK    src\components\footer\Footer.tsx
+  OK    src\components\footer\PrivacyPills.tsx
+  OK    src\components\icons\CancelIcon.tsx
+  OK    src\components\icons\HandyTextLogo.tsx
+  OK    src\components\icons\MicrophoneIcon.tsx
+  OK    src\components\icons\TranscriptionIcon.tsx
+  OK    src\components\onboarding\ModelCard.tsx
+  OK    src\components\onboarding\Onboarding.tsx
+  OK    src\components\settings\NoiseSuppression.tsx
+  OK    src\components\settings\about\AboutSettings.tsx
+  OK    src\components\settings\debug\DebugPaths.tsx
+  OK    src\components\settings\general\GeneralSettings.tsx
+  OK    src\components\settings\help\HelpSettings.tsx
+  OK    src\components\settings\history\HistorySettings.tsx
+  OK    src\components\settings\home\HomeDashboard.tsx
+  OK    src\components\settings\meetings\CaptureMeters.tsx
+  OK    src\components\settings\meetings\MeetingsSettings.tsx
+  OK    src\components\settings\notes\NotesSettings.tsx
+  OK    src\components\settings\post-processing\PostProcessingSettings.tsx
+  OK    src\components\settings\PostProcessingSettingsApi\OllamaPullButton.tsx
+  OK    src\components\ui\Badge.tsx
+  OK    src\components\ui\Corrections.tsx
+  OK    src\components\ui\Dropdown.tsx
+  OK    src\components\ui\Markdown.tsx
+  OK    src\components\ui\MarkdownInner.tsx
+  OK    src\components\ui\SettingsGroup.tsx
+  OK    src\overlay\RecordingOverlay.css
+  OK    src\overlay\RecordingOverlay.tsx
+  OK    src-tauri\Cargo.lock
+  OK    src-tauri\Cargo.toml
+  OK    src-tauri\deny.toml
+  OK    src-tauri\tauri.conf.json
+  OK    src-tauri\capabilities\default.json
+  OK    src-tauri\capabilities\desktop.json
+  OK    src-tauri\capabilities\narrow.json
+  BIN   src-tauri\icons\128x128.png  (10058 bytes, binary copy)
+  BIN   src-tauri\icons\128x128@2x.png  (12958 bytes, binary copy)
+  BIN   src-tauri\icons\32x32.png  (1825 bytes, binary copy)
+  BIN   src-tauri\icons\64x64.png  (4417 bytes, binary copy)
+  BIN   src-tauri\icons\icon.ico  (32504 bytes, binary copy)
+  BIN   src-tauri\resources\aurora_start.wav  (11510 bytes, binary copy)
+  BIN   src-tauri\resources\aurora_stop.wav  (21212 bytes, binary copy)
+  BIN   src-tauri\resources\handy.png  (2764 bytes, binary copy)
+  BIN   src-tauri\resources\recording.png  (2623 bytes, binary copy)
+  BIN   src-tauri\resources\transcribing.png  (2968 bytes, binary copy)
+  BIN   src-tauri\resources\tray_idle.png  (2396 bytes, binary copy)
+  BIN   src-tauri\resources\tray_idle_dark.png  (2552 bytes, binary copy)
+  BIN   src-tauri\resources\tray_recording.png  (2623 bytes, binary copy)
+  BIN   src-tauri\resources\tray_recording_dark.png  (2690 bytes, binary copy)
+  BIN   src-tauri\resources\tray_transcribing.png  (2968 bytes, binary copy)
+  BIN   src-tauri\resources\tray_transcribing_dark.png  (3035 bytes, binary copy)
+  OK    src-tauri\src\corrections.rs
+  OK    src-tauri\src\crash.rs
+  OK    src-tauri\src\denoise.rs
+  OK    src-tauri\src\lib.rs
+  OK    src-tauri\src\llm_client.rs
+  OK    src-tauri\src\meeting.rs
+  OK    src-tauri\src\meeting_capture.rs
+  OK    src-tauri\src\meeting_capture_wasapi.rs
+  OK    src-tauri\src\secret_store.rs
+  OK    src-tauri\src\settings.rs
+  OK    src-tauri\src\transcription_coordinator.rs
+  OK    src-tauri\src\tray.rs
+  OK    src-tauri\src\update_check.rs
+  OK    src-tauri\src\commands\history_extra.rs
+  OK    src-tauri\src\commands\notes.rs
+  OK    src-tauri\src\commands\ollama.rs
+
+============================================================
+  Summary
+============================================================
+  OK clean:      64
+  BIN copied:    16
+  FIXED (NULs):  0
+  REJECTED:      0
+  SKIPPED:       1
+
+All files synced cleanly.
+
+  Reset src\bindings.ts from upstream reference
+  Reset src-tauri\src\audio_toolkit\audio\recorder.rs from upstream reference
+
+[4/6] Applying patches
+
+============================================================
+ APPLYING KORERO NARROW PATCHES
+============================================================
+ Target: C:\dev\korero
+
+  -> overlay.rs: overlay window dims (fresh + v1 source forms)
+     File: src-tauri\src\overlay.rs
+     SKIP: already patched
+  -> AccessibilityOnboarding.tsx: drop HandyTextLogo render
+     File: src\components\onboarding\AccessibilityOnboarding.tsx
+     SKIP: already patched
+  -> Onboarding.tsx: drop HandyTextLogo render
+     File: src\components\onboarding\Onboarding.tsx
+     OK: patched
+  -> translation.json: permissions description
+     File: src\i18n\locales\en\translation.json
+     SKIP: already patched
+  -> translation.json: shortcuts title
+     File: src\i18n\locales\en\translation.json
+     SKIP: already patched
+  -> translation.json: autostart description
+     File: src\i18n\locales\en\translation.json
+     SKIP: already patched
+  -> translation.json: tray icon description
+     File: src\i18n\locales\en\translation.json
+     SKIP: already patched
+  -> translation.json: update-check description
+     File: src\i18n\locales\en\translation.json
+     SKIP: already patched
+  -> translation.json: version description
+     File: src\i18n\locales\en\translation.json
+     SKIP: already patched
+  -> translation.json: data location description
+     File: src\i18n\locales\en\translation.json
+     SKIP: already patched
+  -> translation.json: sponsor description
+     File: src\i18n\locales\en\translation.json
+     SKIP: already patched
+  -> translation.json: about/whisper credit
+     File: src\i18n\locales\en\translation.json
+     SKIP: already patched
+  -> translation.json: accessibility permissions description
+     File: src\i18n\locales\en\translation.json
+     SKIP: already patched
+  -> translation.json: language setting description
+     File: src\i18n\locales\en\translation.json
+     SKIP: already patched
+  -> audio.rs: VAD path non-UTF-8 panic
+     File: src-tauri\src\managers\audio.rs
+     SKIP: already patched
+  -> transcription.rs: now_ms unwrap on pre-1970 clock
+     File: src-tauri\src\managers\transcription.rs
+     SKIP: already patched
+  -> model.rs: handle HTTP 416 Range Not Satisfiable on resumed download
+     File: src-tauri\src\managers\model.rs
+     SKIP: already patched
+  -> secret_store.rs: suppress dead_code warning on delete_api_key
+     File: src-tauri\src\secret_store.rs
+     OK: patched
+  -> overlay.rs: background_color transparent for WebView2
+     File: src-tauri\src\overlay.rs
+     SKIP: already patched
+  -> commands/mod.rs: add pub mod ollama
+     File: src-tauri\src\commands\mod.rs
+     SKIP: already present (specta-generated)
+  -> lib.rs: register pull_ollama_model in collect_commands![]
+     File: src-tauri\src\lib.rs
+     OK: patched
+  -> usePostProcessProviderState.ts: insert suggested_models loop
+     File: src\components\settings\PostProcessingSettingsApi\usePostProcessProviderState.ts
+     SKIP: already patched
+  -> usePostProcessProviderState.ts: add selectedProvider to modelOptions deps
+     File: src\components\settings\PostProcessingSettingsApi\usePostProcessProviderState.ts
+     SKIP: already patched
+  -> text.rs: add strip_macrons + apply to custom_words_nospace
+     File: src-tauri\src\audio_toolkit\text.rs
+     SKIP: already patched
+  -> text.rs: add Levenshtein floor to phonetic boost in find_best_match
+     File: src-tauri\src\audio_toolkit\text.rs
+     SKIP: already patched
+  -> bindings.ts: add pullOllamaModel command
+     File: src\bindings.ts
+     OK: patched
+  -> bindings.ts: extend PostProcessProvider type with v1.3.0 fields
+     File: src\bindings.ts
+     OK: patched
+  -> lib.rs: register check_ollama_connection
+     File: src-tauri\src\lib.rs
+     OK: patched
+  -> bindings.ts: add checkOllamaConnection stub
+     File: src\bindings.ts
+     OK: patched
+  -> managers/history.rs: add update_post_processed_text method
+     File: src-tauri\src\managers\history.rs
+     SKIP: already patched
+  -> commands/mod.rs: declare pub mod history_extra
+     File: src-tauri\src\commands\mod.rs
+     SKIP: already patched
+  -> lib.rs: register update_post_processed_text in collect_commands!
+     File: src-tauri\src\lib.rs
+     OK: patched
+  -> bindings.ts: add updatePostProcessedText stub
+     File: src\bindings.ts
+     OK: patched
+  -> recorder.rs: init optional denoiser (48 kHz only)
+     File: src-tauri\src\audio_toolkit\audio\recorder.rs
+     OK: patched
+  -> recorder.rs: denoise raw stream (main loop)
+     File: src-tauri\src\audio_toolkit\audio\recorder.rs
+     OK: patched
+  -> recorder.rs: denoise drained tail (stop)
+     File: src-tauri\src\audio_toolkit\audio\recorder.rs
+     OK: patched
+  -> recorder.rs: flush denoiser tail before finish
+     File: src-tauri\src\audio_toolkit\audio\recorder.rs
+     OK: patched
+  -> shortcut/mod.rs: change_denoise_enabled_setting command
+     File: src-tauri\src\shortcut\mod.rs
+     SKIP: already present (specta-generated)
+  -> settingsStore.ts: denoise_enabled settingUpdater
+     File: src\stores\settingsStore.ts
+     SKIP: already present (specta-generated)
+  -> bindings.ts: AppSettings.denoise_enabled field (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> bindings.ts: changeDenoiseEnabledSetting command (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> transcription.rs: panic-safe initiate_model_load (loading guard)
+     File: src-tauri\src\managers\transcription.rs
+     SKIP: already present (specta-generated)
+  -> commands/mod.rs: add pub mod notes
+     File: src-tauri\src\commands\mod.rs
+     SKIP: already present (specta-generated)
+  -> bindings.ts: note dictation command stubs (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> bindings.ts: AppSettings.save_crash_reports field (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> bindings.ts: crash report command stubs (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> transcription.rs: idle watcher honours meeting-active
+     File: src-tauri\src\managers\transcription.rs
+     SKIP: already present (specta-generated)
+  -> bindings.ts: meeting recorder command stubs (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> bindings.ts: meeting merge + prewarm command stubs (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> recorder.rs: get_preferred_config output-config fallback (loopback)
+     File: src-tauri\src\audio_toolkit\audio\recorder.rs
+     OK: patched
+  -> bindings.ts: meeting export/query command stubs (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> bindings.ts: meetingProviderIsLocal stub (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> bindings.ts: meetings store command stubs (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> bindings.ts: meeting diagnostics command stubs (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> bindings.ts: meetingDeleteRecording stub (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> actions.rs: register transcribe_alt in ACTION_MAP
+     File: src-tauri\src\actions.rs
+     SKIP: already present (specta-generated)
+  -> bindings.ts: meetingRecordingStatus stub (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> bindings.ts: notePostProcess stub (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> bindings.ts: AppSettings.transcript_corrections field (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> transcription.rs: apply user-taught corrections after filtering
+     File: src-tauri\src\managers\transcription.rs
+     SKIP: already present (specta-generated)
+  -> text.rs: prefix-extension guard in find_best_match
+     File: src-tauri\src\audio_toolkit\text.rs
+     SKIP: already present (specta-generated)
+  -> bindings.ts: Ollama doctor command stubs (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> actions.rs: ignore dictation shortcut while a meeting records
+     File: src-tauri\src\actions.rs
+     SKIP: already present (specta-generated)
+  -> bindings.ts: meetingPostProcess stub (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> shortcut/mod.rs: add alias field to add_post_process_prompt literal
+     File: src-tauri\src\shortcut\mod.rs
+     SKIP: already present (specta-generated)
+  -> SoundPicker.tsx: add Aurora theme option
+     File: src\components\settings\SoundPicker.tsx
+     SKIP: already present (specta-generated)
+  -> bindings.ts: extend SoundTheme union with aurora (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+  -> bindings.ts: extend LLMPrompt type with alias (pre-seed)
+     File: src\bindings.ts
+     OK: patched
+
+============================================================
+ DONE.  applied=33  skipped=35  failed=0  patches=68
+ Log:    C:\dev\korero\KORERO_PATCHES_APPLIED.txt
+============================================================
+
+
+[4b] Security scan (cargo audit / deny -- non-fatal)
+  cargo audit:
+  Security scan reported issues (non-fatal):     Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
+
+[5/6] bun install
+bun install v1.3.14 (0d9b296a)
+
+$ bun scripts/check-nix-deps.ts
+
+Checked 370 installs across 444 packages (no changes) [3.49s]
+
+[6/6] bun run tauri build (NSIS .exe + raw exe; 10-25 min cold)
+$ tauri build
+        Info Looking up installed tauri packages to check mismatched versions...
+     Running beforeBuildCommand `bun run build`
+$ tsc && vite build
+[36mvite v6.4.1 [32mbuilding for production...[36m[39m
+(node:44780) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+transforming...
+[32m✓[39m 2187 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                        [39m[1m[2m  0.53 kB[22m[1m[22m[2m │ gzip:   0.33 kB[22m
+[2mdist/[22m[32msrc/overlay/index.html            [39m[1m[2m  0.72 kB[22m[1m[22m[2m │ gzip:   0.37 kB[22m
+[2mdist/[22m[35massets/overlay-CEg8labU.css       [39m[1m[2m  6.63 kB[22m[1m[22m[2m │ gzip:   1.87 kB[22m
+[2mdist/[22m[35massets/main-CQk9_hPU.css          [39m[1m[2m 58.63 kB[22m[1m[22m[2m │ gzip:  10.90 kB[22m
+[2mdist/[22m[36massets/overlay-BbI_Owmd.js        [39m[1m[2m  2.68 kB[22m[1m[22m[2m │ gzip:   1.14 kB[22m
+[2mdist/[22m[36massets/MarkdownInner-BBHQOOas.js  [39m[1m[2m157.13 kB[22m[1m[22m[2m │ gzip:  47.60 kB[22m
+[2mdist/[22m[36massets/main-Dm5A18aV.js           [39m[1m[2m366.78 kB[22m[1m[22m[2m │ gzip: 106.82 kB[22m
+[2mdist/[22m[36massets/index-Bx5ZOQMC.js          [39m[1m[2m671.41 kB[22m[1m[22m[2m │ gzip: 185.70 kB[22m
+[32m✓ built in 3.85s[39m
+   Compiling windows_x86_64_msvc v0.48.5
+   Compiling windows-sys v0.61.2
+   Compiling windows-sys v0.59.0
+   Compiling windows-sys v0.60.2
+   Compiling windows_x86_64_msvc v0.53.1
+   Compiling tar v0.4.46
+   Compiling windows-targets v0.53.5
+   Compiling windows-targets v0.48.5
+   Compiling windows-sys v0.48.0
+   Compiling anstyle-wincon v3.0.11
+   Compiling anstyle-query v1.1.5
+   Compiling anstream v0.6.21
+   Compiling winapi-util v0.1.11
+   Compiling same-file v1.0.6
+   Compiling termcolor v1.4.1
+   Compiling walkdir v2.5.0
+   Compiling clap_builder v4.5.60
+   Compiling clap v3.2.25
+   Compiling tauri-utils v2.8.2 (https://github.com/cjpais/tauri.git?branch=handy-2.10.2#ad9ba944)
+   Compiling schannel v0.1.28
+   Compiling clap v4.5.60
+   Compiling winreg v0.55.0
+   Compiling dirs-sys v0.5.0
+   Compiling nu-ansi-term v0.50.3
+   Compiling tempfile v3.25.0
+   Compiling dirs v6.0.0
+   Compiling embed-resource v3.0.6
+   Compiling wasm-bindgen-test v0.3.60
+   Compiling native-tls v0.2.18
+   Compiling cbindgen v0.29.2
+   Compiling tauri-winres v0.3.5
+   Compiling ureq v3.2.0
+   Compiling socket2 v0.6.2
+   Compiling muda v0.17.1
+   Compiling arboard v3.6.1
+   Compiling rfd v0.16.0
+   Compiling nnnoiseless v0.5.2
+   Compiling window-vibrancy v0.6.0
+   Compiling is-terminal v0.4.17
+   Compiling global-hotkey v0.7.0
+   Compiling env_logger v0.10.2
+   Compiling tray-icon v0.21.3
+   Compiling ort-sys v2.0.0-rc.12
+   Compiling tauri-runtime v2.10.0 (https://github.com/cjpais/tauri.git?branch=handy-2.10.2#ad9ba944)
+   Compiling ferrous-opencc v0.2.3
+   Compiling ort v2.0.0-rc.12
+   Compiling mio v1.1.1
+   Compiling softbuffer v0.4.8
+   Compiling os_info v3.14.0
+   Compiling tauri-runtime-wry v2.10.0 (https://github.com/cjpais/tauri.git?branch=handy-2.10.2#ad9ba944)
+   Compiling tokio v1.49.0
+   Compiling tauri-plugin v2.5.3
+   Compiling tauri-build v2.5.5
+   Compiling tauri-codegen v2.5.4
+   Compiling transcribe-rs v0.3.11
+   Compiling vad-rs v0.1.6 (https://github.com/cjpais/vad-rs#2a412ed8)
+   Compiling tauri v2.10.2
+   Compiling tauri-macros v2.5.4
+   Compiling tauri-plugin-fs v2.4.5
+   Compiling tauri-plugin-autostart v2.5.1
+   Compiling tauri-plugin-os v2.3.2
+   Compiling tauri-plugin-window-state v2.4.1
+   Compiling tauri-plugin-store v2.4.2
+   Compiling tauri-plugin-opener v2.5.3
+   Compiling tauri-plugin-global-shortcut v2.3.1
+   Compiling tauri-plugin-log v2.8.0
+   Compiling tauri-plugin-process v2.3.1
+   Compiling tauri-plugin-clipboard-manager v2.3.2
+   Compiling tauri-plugin-dialog v2.6.0
+   Compiling tauri-plugin-macos-permissions v2.3.0
+   Compiling korero v1.17.1 (C:\dev\korero\src-tauri)
+   Compiling tokio-util v0.7.18
+   Compiling tower v0.5.3
+   Compiling tokio-native-tls v0.3.1
+warning: korero@1.17.1: Generated tray translations: 20 languages, 7 fields
+   Compiling h2 v0.4.13
+   Compiling tower-http v0.6.8
+   Compiling hyper v1.8.1
+   Compiling hyper-util v0.1.20
+   Compiling hyper-tls v0.6.0
+   Compiling reqwest v0.12.28
+   Compiling tauri-plugin-single-instance v2.4.0
+   Compiling tauri-specta v2.0.0-rc.21
+    Finished `release` profile [optimized] target(s) in 5m 48s
+       Built application at: C:\dev\korero\src-tauri\target\release\korero.exe
+        Info Target: x64
+     Running makensis to produce C:\dev\korero\src-tauri\target\release\bundle\nsis\Kōrero_1.17.1_x64-setup.exe
+    Finished 1 bundle at:
+        C:\dev\korero\src-tauri\target\release\bundle\nsis\Kōrero_1.17.1_x64-setup.exe
+
+
+INSTALLER (NSIS): C:\dev\korero\src-tauri\target\release\bundle\nsis\Korero_1.17.1_x64-setup.exe
+
+[+] Assembling portable build
+
+PORTABLE folder: C:\dev\korero\src-tauri\target\release\Korero-portable-1.17.1
+PORTABLE zip:    C:\dev\korero\src-tauri\target\release\Korero-portable-1.17.1.zip
+
+Done (mode=all, v1.17.1).
+Verify: Settings > General (latch tip nests under Push-to-Talk, no stray divider);
+trigger a dictation -- 'Transcribing'/'Processing' should render in Aptos, matching the app.

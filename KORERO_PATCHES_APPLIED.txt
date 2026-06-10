@@ -1,0 +1,107 @@
+﻿Korero narrow patches applied 2026-06-11 08:33:50
+
+SKIP  overlay.rs: overlay window dims (fresh + v1 source forms) -- already patched
+SKIP  AccessibilityOnboarding.tsx: drop HandyTextLogo render -- already patched
+OK    Onboarding.tsx: drop HandyTextLogo render
+      Why: Same as AccessibilityOnboarding -- strip the in-screen wordmark.
+SKIP  translation.json: permissions description -- already patched
+SKIP  translation.json: shortcuts title -- already patched
+SKIP  translation.json: autostart description -- already patched
+SKIP  translation.json: tray icon description -- already patched
+SKIP  translation.json: update-check description -- already patched
+SKIP  translation.json: version description -- already patched
+SKIP  translation.json: data location description -- already patched
+SKIP  translation.json: sponsor description -- already patched
+SKIP  translation.json: about/whisper credit -- already patched
+SKIP  translation.json: accessibility permissions description -- already patched
+SKIP  translation.json: language setting description -- already patched
+SKIP  audio.rs: VAD path non-UTF-8 panic -- already patched
+SKIP  transcription.rs: now_ms unwrap on pre-1970 clock -- already patched
+SKIP  model.rs: handle HTTP 416 Range Not Satisfiable on resumed download -- already patched
+OK    secret_store.rs: suppress dead_code warning on delete_api_key
+      Why: delete_api_key is part of the public secret_store API and is kept for future use (e.g. key rotation, provider deletion). It is not called in the current build, which triggers a dead_code lint warning. Suppress with #[allow(dead_code)] rather than removing the function or making it private -- it is a deliberate public API boundary.
+SKIP  overlay.rs: background_color transparent for WebView2 -- already patched
+SKIP  commands/mod.rs: add pub mod ollama -- SkipIfPresent token already in file
+OK    lib.rs: register pull_ollama_model in collect_commands![]
+      Why: Registers the new pull_ollama_model command so specta exports its TypeScript binding and Tauri routes frontend invocations to it.
+SKIP  usePostProcessProviderState.ts: insert suggested_models loop -- already patched
+SKIP  usePostProcessProviderState.ts: add selectedProvider to modelOptions deps -- already patched
+SKIP  text.rs: add strip_macrons + apply to custom_words_nospace -- already patched
+SKIP  text.rs: add Levenshtein floor to phonetic boost in find_best_match -- already patched
+OK    bindings.ts: add pullOllamaModel command
+      Why: Korero (v1.3.0): specta generates bindings.ts during the Rust build (or at app startup in dev), but tsc runs BEFORE Rust via beforeBuildCommand. The v1.2.0 bindings.ts lacks pullOllamaModel, causing TS2339 at compile time. Pre-seeding the entry unblocks TypeScript. Single-line Find avoids CRLF mismatch. Format matches specta output exactly (note double-space before 'as any').
+OK    bindings.ts: extend PostProcessProvider type with v1.3.0 fields
+      Why: Korero (v1.3.0): PostProcessProvider gained suggested_models: Vec<String> and is_local_provider: bool in settings.rs. specta maps these to string[] and boolean. Pre-seeding ensures tsc succeeds before specta regenerates. Single-line Find+Replace -- specta emits each type on one line.
+OK    lib.rs: register check_ollama_connection
+      Why: Korero (v1.3.2): registers check_ollama_connection so specta exports its TypeScript binding and Tauri routes frontend probe invocations to it. Single-line Find is safe from CRLF mismatch.
+OK    bindings.ts: add checkOllamaConnection stub
+      Why: Korero (v1.3.2): pre-seed checkOllamaConnection so tsc succeeds in production build before specta regenerates. Returns boolean directly (not Result) -- a failed probe is false, not an error. Single-line Find avoids CRLF mismatch.
+SKIP  managers/history.rs: add update_post_processed_text method -- already patched
+SKIP  commands/mod.rs: declare pub mod history_extra -- already patched
+OK    lib.rs: register update_post_processed_text in collect_commands!
+      Why: Korero (v1.4.0): adds update_post_processed_text to the specta collect_commands! list so Tauri routes frontend IPC invocations to it. Single-line Find -- check_ollama_connection is the last Korero-added command and is unique.
+OK    bindings.ts: add updatePostProcessedText stub
+      Why: Korero (v1.4.0): pre-seeds updatePostProcessedText so tsc succeeds in the production build before specta regenerates bindings. Uses full try/catch format matching specta output (note double-space before 'as any'). Single-line Find -- deleteHistoryEntry is unique.
+OK    recorder.rs: init optional denoiser (48 kHz only)
+      Why: Korero (v1.11.0): construct an RNNoise denoiser at the top of run_consumer when the capture device runs at 48 kHz (RNNoise is 48 kHz-only); None otherwise.
+OK    recorder.rs: denoise raw stream (main loop)
+      Why: Korero (v1.11.0): denoise the raw 48 kHz chunk before resampling, when enabled. Shadows raw with the denoised buffer; no-op (moves raw) when disabled.
+OK    recorder.rs: denoise drained tail (stop)
+      Why: Korero (v1.11.0): denoise chunks drained after Stop, when enabled.
+OK    recorder.rs: flush denoiser tail before finish
+      Why: Korero (v1.11.0): flush the denoiser's buffered (<480) tail into the resampler before finishing.
+SKIP  shortcut/mod.rs: change_denoise_enabled_setting command -- SkipIfPresent token already in file
+SKIP  settingsStore.ts: denoise_enabled settingUpdater -- SkipIfPresent token already in file
+OK    bindings.ts: AppSettings.denoise_enabled field (pre-seed)
+      Why: Korero (v1.11.0): pre-seed the AppSettings field so tsc accepts getSetting/updateSetting('denoise_enabled') before specta regenerates. Single-line Find.
+OK    bindings.ts: changeDenoiseEnabledSetting command (pre-seed)
+      Why: Korero (v1.11.0): pre-seed the command stub so tsc succeeds before specta regenerates. Single-line Find (CRLF-safe); Replace prepends the stub.
+SKIP  transcription.rs: panic-safe initiate_model_load (loading guard) -- SkipIfPresent token already in file
+SKIP  commands/mod.rs: add pub mod notes -- SkipIfPresent token already in file
+OK    bindings.ts: note dictation command stubs (pre-seed)
+      Why: Korero (v1.12.0): pre-seed the three Notes dictation command stubs so tsc compiles before specta regenerates bindings.ts (debug builds) and so they remain correct in release builds (no regeneration). Single-line Find on the setActiveModel anchor; Replace prepends the stubs then re-emits the anchor.
+OK    bindings.ts: AppSettings.save_crash_reports field (pre-seed)
+      Why: Korero (v1.12.0): pre-seed the AppSettings field so getSetting(save_crash_reports) type-checks before specta regenerates. Anchored on the denoise field added by the earlier v1.11.0 patch; single-line, CRLF-safe.
+OK    bindings.ts: crash report command stubs (pre-seed)
+      Why: Korero (v1.12.0): pre-seed setSaveCrashReports + openCrashReportsDir stubs so tsc compiles before specta regenerates (debug) and they remain correct in release. Prepends before the setActiveModel anchor (also used by the notes stub patch, which re-emits the anchor, so both stack cleanly).
+SKIP  transcription.rs: idle watcher honours meeting-active -- SkipIfPresent token already in file
+OK    bindings.ts: meeting recorder command stubs (pre-seed)
+      Why: Korero (v1.13.0): pre-seed the four meeting commands so tsc compiles before specta regenerates (debug) and they remain correct in release. Inline anonymous return types avoid separate type pre-seeds. Prepends before the setActiveModel anchor (re-emitted by earlier stub patches, so all stack).
+OK    bindings.ts: meeting merge + prewarm command stubs (pre-seed)
+      Why: Korero (v1.17.0): pre-seed meetingTranscribeMerge (chronological re-transcribe of a recorded WAV pair -> interleaved TranscriptSeg list) and meetingPrewarmPostProcess (warm the local post-processing model). Prepends before the setActiveModel anchor (re-emitted by earlier stub patches, so all stack).
+OK    recorder.rs: get_preferred_config output-config fallback (loopback)
+      Why: Korero (v1.13.0): meetings open an input stream on the default OUTPUT device for WASAPI loopback (system audio = Others). get_preferred_config called device.default_input_config(), which errors on output devices, so loopback never opened. Fall back to the output config so AudioRecorder can capture loopback; the existing supported_input_configs() Err branch already returns this default.
+OK    bindings.ts: meeting export/query command stubs (pre-seed)
+      Why: Korero (v1.13.0): pre-seed meetingExportTranscript + meetingQuery stubs. Prepends before the setActiveModel anchor (re-emitted by earlier stub patches).
+OK    bindings.ts: meetingProviderIsLocal stub (pre-seed)
+      Why: Korero (v1.13.0): pre-seed meetingProviderIsLocal so the Meetings UI can warn when the post-processing provider is a cloud endpoint (transcript would leave the machine). Prepends before the setActiveModel anchor.
+OK    bindings.ts: meetings store command stubs (pre-seed)
+      Why: Korero (v1.13.4): pre-seed meetingsStoreLoad/meetingsStoreSave so the Meetings UI persists its metadata to a JSON file in appdata (atomic temp+rename) instead of localStorage (5 MB quota silently dropped writes). Prepends before the setActiveModel anchor.
+OK    bindings.ts: meeting diagnostics command stubs (pre-seed)
+      Why: Korero (v1.13.5): pre-seed meetingCaptureDevices/meetingTestCapture so the Meetings UI can show live input meters with device names and run a no-risk device test (same capture path, throwaway WAVs) before a real meeting. Prepends before the setActiveModel anchor.
+OK    bindings.ts: meetingDeleteRecording stub (pre-seed)
+      Why: Korero (v1.13.6): pre-seed meetingDeleteRecording so the Meetings UI can delete saved WAVs (recovery list + freeing disk when a meeting is deleted). Rust side refuses paths outside the meetings folder. Prepends before the setActiveModel anchor.
+SKIP  actions.rs: register transcribe_alt in ACTION_MAP -- SkipIfPresent token already in file
+OK    bindings.ts: meetingRecordingStatus stub (pre-seed)
+      Why: Korero (v1.14.2): pre-seed meetingRecordingStatus so the Meetings page can restore its recording UI (elapsed clock + mic-only flag) after being unmounted mid-meeting. Fixes the orphaned-meeting bug: navigating away and back showed idle while the backend kept recording, with no way to stop it. Prepends before the setActiveModel anchor.
+OK    bindings.ts: notePostProcess stub (pre-seed)
+      Why: Korero (v1.14.3): pre-seed notePostProcess so the Notes page can clean up the WHOLE note (not just the dictated snippet) and re-run processing with a per-run prompt and optional model override. Prepends before the setActiveModel anchor.
+OK    bindings.ts: AppSettings.transcript_corrections field (pre-seed)
+      Why: Korero (v1.15.0): pre-seed the AppSettings field so the corrections manager UI type-checks before specta regenerates. Anchored on the v1.12.0 save_crash_reports field (added by an earlier patch in this array, so order holds). Inline object type avoids needing the exported TranscriptCorrection type.
+SKIP  transcription.rs: apply user-taught corrections after filtering -- SkipIfPresent token already in file
+SKIP  text.rs: prefix-extension guard in find_best_match -- SkipIfPresent token already in file
+OK    bindings.ts: Ollama doctor command stubs (pre-seed)
+      Why: Korero (v1.17.0): pre-seed ollamaStatus/ollamaStart/ollamaInstall so the Post-processing page can detect, start, and install Ollama (winget console launch; website fallback). Status returns a plain object (command is infallible); start/install return Results. Prepends before the setActiveModel anchor.
+SKIP  actions.rs: ignore dictation shortcut while a meeting records -- SkipIfPresent token already in file
+OK    bindings.ts: meetingPostProcess stub (pre-seed)
+      Why: Korero (v1.13.0): pre-seed meetingPostProcess (custom per-meeting post-processing prompt) before the setActiveModel anchor.
+OK    bindings.ts: installUpdate stub (pre-seed)
+      Why: Korero (v1.18.0): pre-seed installUpdate (updater-plugin download+install+restart) so tsc succeeds before specta regenerates. Single-line Find avoids CRLF mismatch.
+OK    bindings.ts: getActiveWindowTitle stub (pre-seed)
+      Why: Korero (v1.18.1): pre-seed getActiveWindowTitle (routing spike) so tsc succeeds before specta regenerates. Single-line Find avoids CRLF mismatch.
+SKIP  shortcut/mod.rs: add alias field to add_post_process_prompt literal -- SkipIfPresent token already in file
+SKIP  SoundPicker.tsx: add Aurora theme option -- SkipIfPresent token already in file
+OK    bindings.ts: extend SoundTheme union with aurora (pre-seed)
+      Why: Korero (v1.17.1): pre-seed the aurora variant so tsc succeeds before specta regenerates. Single-line Find -- specta emits each type on one line.
+OK    bindings.ts: extend LLMPrompt type with alias (pre-seed)
+      Why: Korero (v1.17.0): pre-seed the alias field so tsc succeeds before specta regenerates. Option<String> + serde(default) maps to alias?: string | null (same convention as allow_base_url_edit). Single-line Find -- specta emits each type on one line.

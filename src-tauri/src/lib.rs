@@ -9,6 +9,7 @@ mod commands;
 mod crash; // Kōrero (v1.12.0): global panic hook + crash report files
 mod corrections; // Kōrero (v1.15.0): user-taught transcription corrections
 mod update_check; // Kōrero (v1.16.0): notify-only update check (own repo only)
+mod window_info; // Kōrero (v1.18.1): contextual-routing spike (active window title)
 mod meeting; // Kōrero (v1.13.0): meeting recorder (mic + system loopback)
 mod meeting_capture; // Kōrero (v1.13.2, Phase A): streaming-to-disk meeting capture
 #[cfg(windows)]
@@ -432,6 +433,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::handy_keys::stop_handy_keys_recording,
             trigger_update_check,
             update_check::install_update,
+            window_info::get_active_window_title,
             show_main_window_command,
             commands::cancel_operation,
             commands::is_portable,

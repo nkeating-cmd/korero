@@ -60,6 +60,9 @@ const Callout: React.FC<{
 export const HelpSettings: React.FC = () => {
   const { settings } = useSettings();
   const [saveCrash, setSaveCrash] = useState(true);
+  // Kōrero (v1.18.1): routing-spike button state
+  const [windowSpikeBusy, setWindowSpikeBusy] = useState(false);
+  const [windowSpikeResult, setWindowSpikeResult] = useState("");
 
   useEffect(() => {
     if (settings) setSaveCrash(settings.save_crash_reports ?? true);
@@ -261,6 +264,46 @@ export const HelpSettings: React.FC = () => {
       >
         <LogLevelSelector grouped={true} />
         <LogDirectory grouped={true} />
+        {/* Kōrero (v1.18.1): contextual-routing SPIKE — verdict decides
+            whether v1.20 builds prompt auto-routing. 3 s delay so you can
+            focus the window you want identified. */}
+        <SettingContainer
+          title="Detect active window (spike)"
+          description="Click, then focus another app (Slack, Gmail, Word) within 3 seconds. If the reported title is right, prompt auto-routing is feasible."
+          descriptionMode="inline"
+          grouped={true}
+        >
+          <div className="flex items-center gap-3">
+            <Button
+              variant="secondary"
+              size="md"
+              disabled={windowSpikeBusy}
+              onClick={() => {
+                setWindowSpikeBusy(true);
+                setWindowSpikeResult("Focus the target window now…");
+                setTimeout(async () => {
+                  try {
+                    const r = await commands.getActiveWindowTitle();
+                    setWindowSpikeResult(
+                      r.status === "ok" ? `Detected: "${r.data}"` : `Failed: ${r.error}`,
+                    );
+                  } catch (e) {
+                    setWindowSpikeResult(`Failed: ${String(e)}`);
+                  } finally {
+                    setWindowSpikeBusy(false);
+                  }
+                }, 3000);
+              }}
+            >
+              {windowSpikeBusy ? "Waiting…" : "Detect in 3 s"}
+            </Button>
+            {windowSpikeResult && (
+              <span className="text-xs text-text-muted break-all">
+                {windowSpikeResult}
+              </span>
+            )}
+          </div>
+        </SettingContainer>
         <SettingContainer
           title="Save crash reports"
           description="On a fatal error, write a timestamped crash report with a backtrace to a folder you can open below. Panics are always written to the log regardless of this setting."
