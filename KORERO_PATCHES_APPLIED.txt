@@ -1,4 +1,4 @@
-﻿Korero narrow patches applied 2026-06-11 08:33:50
+﻿Korero narrow patches applied 2026-06-11 08:56:53
 
 SKIP  overlay.rs: overlay window dims (fresh + v1 source forms) -- already patched
 SKIP  AccessibilityOnboarding.tsx: drop HandyTextLogo render -- already patched
@@ -99,6 +99,8 @@ OK    bindings.ts: installUpdate stub (pre-seed)
       Why: Korero (v1.18.0): pre-seed installUpdate (updater-plugin download+install+restart) so tsc succeeds before specta regenerates. Single-line Find avoids CRLF mismatch.
 OK    bindings.ts: getActiveWindowTitle stub (pre-seed)
       Why: Korero (v1.18.1): pre-seed getActiveWindowTitle (routing spike) so tsc succeeds before specta regenerates. Single-line Find avoids CRLF mismatch.
+OK    bindings.ts: updatePostProcessPromptFull stub (pre-seed)
+      Why: Korero (v1.18.1): pre-seed updatePostProcessPromptFull (the real prompt persistence path incl. alias) so tsc succeeds before specta regenerates.
 SKIP  shortcut/mod.rs: add alias field to add_post_process_prompt literal -- SkipIfPresent token already in file
 SKIP  SoundPicker.tsx: add Aurora theme option -- SkipIfPresent token already in file
 OK    bindings.ts: extend SoundTheme union with aurora (pre-seed)

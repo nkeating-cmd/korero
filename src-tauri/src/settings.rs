@@ -921,6 +921,36 @@ fn default_post_process_models() -> HashMap<String, String> {
     map
 }
 
+/// Kōrero (v1.18.1) BUG FIX: the v1.17.1 prompt editor saved edits via the
+/// frontend's `updateSetting("post_process_prompts", …)`, but settingsStore
+/// has no updater for that key — edits changed local React state, logged
+/// "No handler for setting", and were silently LOST on restart. This command
+/// is the persistence path: full prompt update including the alias field
+/// (which the upstream update_post_process_prompt command doesn't carry).
+#[tauri::command]
+#[specta::specta]
+pub fn update_post_process_prompt_full(
+    app: tauri::AppHandle,
+    prompt_id: String,
+    name: String,
+    prompt: String,
+    alias: Option<String>,
+) -> Result<(), String> {
+    let mut settings = get_settings(&app);
+    let Some(p) = settings
+        .post_process_prompts
+        .iter_mut()
+        .find(|p| p.id == prompt_id)
+    else {
+        return Err("Prompt not found.".to_string());
+    };
+    p.name = name;
+    p.prompt = prompt;
+    p.alias = alias;
+    write_settings(&app, settings);
+    Ok(())
+}
+
 fn default_post_process_prompts() -> Vec<LLMPrompt> {
     vec![
         LLMPrompt {

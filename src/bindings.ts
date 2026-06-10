@@ -1043,6 +1043,14 @@ async getActiveWindowTitle() : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async updatePostProcessPromptFull(promptId: string, name: string, prompt: string, alias: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_post_process_prompt_full", { promptId, name, prompt, alias }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async isLaptop() : Promise<Result<boolean, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("is_laptop") };

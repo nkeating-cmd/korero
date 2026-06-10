@@ -434,6 +434,7 @@ pub fn run(cli_args: CliArgs) {
             trigger_update_check,
             update_check::install_update,
             window_info::get_active_window_title,
+            settings::update_post_process_prompt_full,
             show_main_window_command,
             commands::cancel_operation,
             commands::is_portable,

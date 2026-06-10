@@ -281,20 +281,18 @@ const PostProcessingSettingsPromptsComponent: React.FC = () => {
     if (!selectedPromptId || !draftName.trim() || !draftText.trim()) return;
 
     try {
-      // Kōrero (v1.17.0): write the whole prompts array via updateSetting —
-      // the upstream updatePostProcessPrompt command only carries name+prompt,
-      // so saving through it would drop the alias field.
-      const updated = prompts.map((p) =>
-        p.id === selectedPromptId
-          ? {
-              ...p,
-              name: draftName.trim(),
-              prompt: draftText.trim(),
-              alias: draftAlias.trim() ? draftAlias.trim() : null,
-            }
-          : p,
+      // Kōrero (v1.18.1) BUG FIX: v1.17.1 wrote the array via
+      // updateSetting("post_process_prompts", …), but the settings store has
+      // NO updater for that key — edits never persisted (lost on restart).
+      // updatePostProcessPromptFull is the real persistence path and carries
+      // the alias field the upstream command lacks.
+      const result = await commands.updatePostProcessPromptFull(
+        selectedPromptId,
+        draftName.trim(),
+        draftText.trim(),
+        draftAlias.trim() ? draftAlias.trim() : null,
       );
-      await updateSetting("post_process_prompts", updated);
+      if (result.status === "error") throw new Error(result.error);
       await refreshSettings();
     } catch (error) {
       console.error("Failed to update prompt:", error);
