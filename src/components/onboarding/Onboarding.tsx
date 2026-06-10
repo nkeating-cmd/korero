@@ -47,7 +47,7 @@ const FEATURES: {
   {
     icon: Sparkles,
     title: "AI clean-up (optional)",
-    body: "Ctrl+Shift+Space transcribes, then tidies the text with a prompt you choose. Runs fully locally if you install Ollama (ollama.com), or with a cloud provider — set it up any time under Post-processing.",
+    body: "Ctrl+Shift+Space transcribes, then tidies the text with a prompt you choose. Runs 100% on-device if you install Ollama (ollama.com), or with a cloud provider — set it up any time under Post-processing.",
   },
   {
     icon: NotebookPen,
@@ -62,7 +62,7 @@ const FEATURES: {
   {
     icon: Download,
     title: "First step: pick a transcription model",
-    body: "On the next screen, choose a speech model. It downloads once and then everything runs offline — Parakeet V3 is the recommended pick for NZ English.",
+    body: "On the next screen, choose a speech model. It downloads once and then everything runs on-device — your voice never leaves this computer. Parakeet V3 is the recommended pick for NZ English.",
   },
 ];
 
@@ -157,7 +157,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onModelSelected }) => {
             Kōrero
           </h1>
           <p className="text-text-muted text-base max-w-md font-medium mx-auto text-center">
-            Fast, private speech-to-text — everything runs on your machine.
+            Fast, on-device speech-to-text — your voice stays on your computer.
           </p>
         </div>
 
@@ -187,7 +187,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onModelSelected }) => {
             Choose your transcription model <ArrowRight size={16} />
           </button>
           <p className="text-xs text-text-subtle">
-            Downloads once, then works fully offline.
+            Downloads once, then runs 100% on-device.
           </p>
         </div>
       </div>

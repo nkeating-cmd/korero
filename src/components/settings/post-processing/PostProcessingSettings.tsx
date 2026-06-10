@@ -196,6 +196,11 @@ const PostProcessingSettingsPromptsComponent: React.FC = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [draftText, setDraftText] = useState("");
+  const [draftAlias, setDraftAlias] = useState("");
+  // Kōrero (v1.17.0, UX roadmap item 3): Raycast-style fuzzy filter over
+  // prompt aliases + names. Typing "em" surfaces "Client email body"; Enter
+  // selects the top match and clears the filter.
+  const [promptQuery, setPromptQuery] = useState("");
 
   const prompts = getSetting("post_process_prompts") || [];
   const selectedPromptId = getSetting("post_process_selected_prompt_id") || "";
@@ -208,16 +213,45 @@ const PostProcessingSettingsPromptsComponent: React.FC = () => {
     if (selectedPrompt) {
       setDraftName(selectedPrompt.name);
       setDraftText(selectedPrompt.prompt);
+      setDraftAlias(selectedPrompt.alias ?? "");
     } else {
       setDraftName("");
       setDraftText("");
+      setDraftAlias("");
     }
   }, [
     isCreating,
     selectedPromptId,
     selectedPrompt?.name,
     selectedPrompt?.prompt,
+    selectedPrompt?.alias,
   ]);
+
+  // Subsequence fuzzy match, ranked: alias prefix > alias contains >
+  // name prefix > name contains > subsequence-of-name. Empty query = all.
+  const fuzzyRank = (q: string, alias: string, name: string): number => {
+    const query = q.toLowerCase();
+    const a = alias.toLowerCase();
+    const n = name.toLowerCase();
+    if (a.startsWith(query)) return 0;
+    if (a.includes(query)) return 1;
+    if (n.startsWith(query)) return 2;
+    if (n.includes(query)) return 3;
+    let i = 0;
+    for (const ch of n) if (ch === query[i]) i++;
+    return i >= query.length ? 4 : -1;
+  };
+
+  const filteredPrompts = promptQuery.trim()
+    ? prompts
+        .map((p) => ({
+          p,
+          rank: fuzzyRank(promptQuery.trim(), p.alias ?? "", p.name),
+        }))
+        .filter((x) => x.rank >= 0)
+        .sort((x, y) => x.rank - y.rank)
+        .map((x) => x.p)
+    : prompts;
 
   const handlePromptSelect = (promptId: string | null) => {
     if (!promptId) return;
@@ -247,11 +281,20 @@ const PostProcessingSettingsPromptsComponent: React.FC = () => {
     if (!selectedPromptId || !draftName.trim() || !draftText.trim()) return;
 
     try {
-      await commands.updatePostProcessPrompt(
-        selectedPromptId,
-        draftName.trim(),
-        draftText.trim(),
+      // Kōrero (v1.17.0): write the whole prompts array via updateSetting —
+      // the upstream updatePostProcessPrompt command only carries name+prompt,
+      // so saving through it would drop the alias field.
+      const updated = prompts.map((p) =>
+        p.id === selectedPromptId
+          ? {
+              ...p,
+              name: draftName.trim(),
+              prompt: draftText.trim(),
+              alias: draftAlias.trim() ? draftAlias.trim() : null,
+            }
+          : p,
       );
+      await updateSetting("post_process_prompts", updated);
       await refreshSettings();
     } catch (error) {
       console.error("Failed to update prompt:", error);
@@ -291,7 +334,8 @@ const PostProcessingSettingsPromptsComponent: React.FC = () => {
   const isDirty =
     !!selectedPrompt &&
     (draftName.trim() !== selectedPrompt.name ||
-      draftText.trim() !== selectedPrompt.prompt.trim());
+      draftText.trim() !== selectedPrompt.prompt.trim() ||
+      draftAlias.trim() !== (selectedPrompt.alias ?? ""));
 
   return (
     <SettingContainer
@@ -304,12 +348,32 @@ const PostProcessingSettingsPromptsComponent: React.FC = () => {
       grouped={true}
     >
       <div className="space-y-3">
+        {/* Kōrero (v1.17.0): alias fuzzy search — Enter selects top match */}
+        {prompts.length > 3 && !isCreating && (
+          <Input
+            type="text"
+            value={promptQuery}
+            onChange={(e) => setPromptQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && filteredPrompts.length > 0) {
+                e.preventDefault();
+                handlePromptSelect(filteredPrompts[0].id);
+                setPromptQuery("");
+              } else if (e.key === "Escape") {
+                setPromptQuery("");
+              }
+            }}
+            // eslint-disable-next-line i18next/no-literal-string
+            placeholder={'Find a prompt — type an alias ("clean", "email") and press Enter'}
+            variant="compact"
+          />
+        )}
         <div className="flex gap-2">
           <Dropdown
             selectedValue={selectedPromptId || null}
-            options={prompts.map((p) => ({
+            options={filteredPrompts.map((p) => ({
               value: p.id,
-              label: p.name,
+              label: p.alias ? `${p.name}  ·  ${p.alias}` : p.name,
             }))}
             onSelect={(value) => handlePromptSelect(value)}
             placeholder={
@@ -334,19 +398,33 @@ const PostProcessingSettingsPromptsComponent: React.FC = () => {
 
         {!isCreating && hasPrompts && selectedPrompt && (
           <div className="space-y-3">
-            <div className="space-y-2 flex flex-col">
-              <label className="text-sm font-semibold">
-                {t("settings.postProcessing.prompts.promptLabel")}
-              </label>
-              <Input
-                type="text"
-                value={draftName}
-                onChange={(e) => setDraftName(e.target.value)}
-                placeholder={t(
-                  "settings.postProcessing.prompts.promptLabelPlaceholder",
-                )}
-                variant="compact"
-              />
+            <div className="flex gap-3">
+              <div className="space-y-2 flex flex-col flex-1">
+                <label className="text-sm font-semibold">
+                  {t("settings.postProcessing.prompts.promptLabel")}
+                </label>
+                <Input
+                  type="text"
+                  value={draftName}
+                  onChange={(e) => setDraftName(e.target.value)}
+                  placeholder={t(
+                    "settings.postProcessing.prompts.promptLabelPlaceholder",
+                  )}
+                  variant="compact"
+                />
+              </div>
+              <div className="space-y-2 flex flex-col w-36">
+                {/* eslint-disable-next-line i18next/no-literal-string */}
+                <label className="text-sm font-semibold">Alias</label>
+                <Input
+                  type="text"
+                  value={draftAlias}
+                  onChange={(e) => setDraftAlias(e.target.value)}
+                  // eslint-disable-next-line i18next/no-literal-string
+                  placeholder="e.g. clean"
+                  variant="compact"
+                />
+              </div>
             </div>
 
             <div className="space-y-2 flex flex-col">

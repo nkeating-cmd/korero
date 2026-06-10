@@ -129,6 +129,11 @@ pub struct LLMPrompt {
     pub id: String,
     pub name: String,
     pub prompt: String,
+    /// Kōrero (v1.17.0, UX roadmap item 3): short alias for Raycast-style
+    /// fuzzy search in the prompts UI ("clean", "email", …). Optional —
+    /// existing installs deserialise to None via serde default.
+    #[serde(default)]
+    pub alias: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
@@ -284,6 +289,10 @@ impl ModelUnloadTimeout {
 pub enum SoundTheme {
     Marimba,
     Pop,
+    /// Kōrero (v1.17.1, UX roadmap item 4): asymmetric cues — sharp,
+    /// high-frequency start tone vs soft, descending stop tone. The
+    /// asymmetry makes start/stop unambiguous without visual attention.
+    Aurora,
     Custom,
 }
 
@@ -292,6 +301,7 @@ impl SoundTheme {
         match self {
             SoundTheme::Marimba => "marimba",
             SoundTheme::Pop => "pop",
+            SoundTheme::Aurora => "aurora",
             SoundTheme::Custom => "custom",
         }
     }
@@ -916,6 +926,7 @@ fn default_post_process_prompts() -> Vec<LLMPrompt> {
         LLMPrompt {
             id: "korero_clean_transcript".to_string(),
             name: "Clean transcript (NZ English)".to_string(),
+            alias: Some("clean".to_string()),
             // Kōrero (v1.7.0): added rule 6 (coherent prose); relaxed "word order"
             // constraint to "do not add content" so rule 6 can smooth sentence
             // boundaries without conflicting with the earlier "do not reorder" guard.
@@ -926,16 +937,19 @@ fn default_post_process_prompts() -> Vec<LLMPrompt> {
         LLMPrompt {
             id: "korero_client_email".to_string(),
             name: "Client email body".to_string(),
+            alias: Some("email".to_string()),
             prompt: "Convert this dictation into a direct, warm-but-professional email body for a client. Use NZ English. Keep all specifics. Do NOT add a greeting or signoff — the sender will add those. Drop filler words and false starts. Return only the email body text.\n\nDictation:\n${output}".to_string(),
         },
         LLMPrompt {
             id: "korero_whatsapp_slack".to_string(),
             name: "WhatsApp / Slack message".to_string(),
+            alias: Some("chat".to_string()),
             prompt: "Convert this dictation into a terse Slack or WhatsApp message. NZ English, sentence case, no formatting, no preamble. Drop all filler. Keep it under 3 sentences if at all possible. Return only the message text.\n\nDictation:\n${output}".to_string(),
         },
         LLMPrompt {
             id: "korero_meeting_note".to_string(),
             name: "Meeting note (Decision/Action/Question)".to_string(),
+            alias: Some("meeting".to_string()),
             prompt: "Restructure this dictation as a meeting note with three sections:\n\n**Decisions:** (what was decided)\n**Actions:** (who does what, by when)\n**Open questions:** (what's still unresolved)\n\nUse NZ English. Drop chronological filler. Each bullet should be one sentence. Return only the structured note.\n\nDictation:\n${output}".to_string(),
         },
         // Kōrero (v1.16.0): out-of-the-box prompt for dictation that blends
@@ -945,11 +959,13 @@ fn default_post_process_prompts() -> Vec<LLMPrompt> {
         LLMPrompt {
             id: "korero_reo_blend".to_string(),
             name: "NZ English + te reo Māori".to_string(),
+            alias: Some("reo".to_string()),
             prompt: "Tidy this dictation into clear New Zealand English that naturally blends te reo Māori and English. Rules:\n\n1. Keep every te reo Māori word or phrase in te reo — never translate it to English\n2. Restore macrons (ā ē ī ō ū): Māori, whānau, kōrero, Aotearoa, hapū, iwi, marae, tikanga, taonga, kaupapa, mahi, tamariki, mokopuna, mōrena\n3. Fix obvious mis-hearings of te reo (e.g. 'far no' → 'whānau', 'koe deer' → 'kia ora', 'fakapapa' → 'whakapapa', 'curry row' → 'kōrero')\n4. Fix punctuation and sentence breaks; use New Zealand English spelling (organise, colour); keep the speaker's meaning and tone exactly\n\nReturn ONLY the corrected text — no commentary.\n\nDictation:\n${output}".to_string(),
         },
         LLMPrompt {
             id: "korero_red_team".to_string(),
             name: "Red Team review".to_string(),
+            alias: Some("redteam".to_string()),
             prompt: "I just dictated a draft argument or plan. Red-team it:\n\n1. Identify the weakest premise\n2. List three counterarguments a smart critic would raise\n3. Note any missing evidence or unstated assumptions\n4. THEN return the cleaned-up version of my dictation (NZ English)\n\nBe direct and clinical. Do not flatter. Format as four short sections with bold labels.\n\nDictation:\n${output}".to_string(),
         },
     ]

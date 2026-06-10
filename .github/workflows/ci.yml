@@ -1,0 +1,90 @@
+# Kōrero CI — github.com/nkeating-cmd/korero
+#
+# Two jobs:
+#   check   — every push/PR to main: cargo clippy + cargo test + frontend build.
+#             Kills the "staged but never built" failure class: every commit
+#             gets compiled off-machine, independent of the local toolchain.
+#   release — on tags matching v*: full NSIS installer build via tauri-action,
+#             attached to a draft GitHub release. Publishing the release link
+#             activates the in-app update notifications (update_check.rs).
+#
+# Notes:
+#   - NSIS only. MSI/WiX is blocked by the ō macron in the product name.
+#   - whisper-rs needs CMake + LLVM; both are preinstalled on windows-latest.
+#   - rust-cache keeps incremental runs ~10 min instead of ~40.
+#   - This file lives in the Handy-changes overlay and syncs into the repo.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Frontend install + typecheck + build
+        run: |
+          bun install
+          bun run build
+
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --locked -- -D warnings
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --locked
+
+  release:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Frontend install
+        run: bun install
+
+      - name: Build + draft release (NSIS)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Kōrero ${{ github.ref_name }}"
+          releaseDraft: true
+          releaseBody: "See KORERO_STATUS.md changelog for this version."
+          args: --bundles nsis

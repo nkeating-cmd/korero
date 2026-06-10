@@ -919,6 +919,7 @@ pub fn add_post_process_prompt(
     let id = format!("prompt_{}", chrono::Utc::now().timestamp_millis());
 
     let new_prompt = LLMPrompt {
+        alias: None,
         id: id.clone(),
         name,
         prompt,

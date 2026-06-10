@@ -21,7 +21,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Download, Loader2, CheckCircle2, AlertCircle } from "lucide-react";
+import { Download, Loader2, CheckCircle2, AlertCircle, Play } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { commands } from "@/bindings";
 import { Button } from "../../ui/Button";
 
@@ -60,6 +61,12 @@ export const OllamaPullButton: React.FC<OllamaPullButtonProps> = ({
   const [progress, setProgress] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [connStatus, setConnStatus] = useState<ConnStatus>("checking");
+  // v1.17.0: Ollama doctor — is it installed, are we mid-fix, fix feedback,
+  // and a nonce to force a re-probe after starting it.
+  const [installed, setInstalled] = useState<boolean | null>(null);
+  const [fixing, setFixing] = useState(false);
+  const [fixMsg, setFixMsg] = useState<string | null>(null);
+  const [probeNonce, setProbeNonce] = useState(0);
   const unlistenRef = useRef<(() => void) | null>(null);
 
   // -------------------------------------------------------------------------
@@ -78,14 +85,72 @@ export const OllamaPullButton: React.FC<OllamaPullButtonProps> = ({
 
     commands.checkOllamaConnection(baseUrl)
       .then((reachable) => {
-        if (!cancelled) setConnStatus(reachable ? "ok" : "offline");
+        if (!cancelled) {
+          setConnStatus(reachable ? "ok" : "offline");
+          if (reachable) setFixMsg(null);
+          // v1.17.0: when offline, find out whether it's a "not installed"
+          // or a "not running" problem so the fix button can be the right one.
+          if (!reachable) {
+            commands
+              .ollamaStatus(baseUrl)
+              .then((s) => {
+                if (!cancelled) setInstalled(s.installed);
+              })
+              .catch(() => {
+                if (!cancelled) setInstalled(null);
+              });
+          }
+        }
       })
       .catch(() => {
         if (!cancelled) setConnStatus("offline");
       });
 
     return () => { cancelled = true; };
-  }, [baseUrl]);
+  }, [baseUrl, probeNonce]);
+
+  // ---- v1.17.0: fix actions ------------------------------------------------
+  const startOllama = async () => {
+    if (fixing) return;
+    setFixing(true);
+    setFixMsg(null);
+    try {
+      const res = await commands.ollamaStart(baseUrl);
+      if (res.status === "ok" && res.data) {
+        setFixMsg(null);
+      } else if (res.status === "ok") {
+        setFixMsg(
+          "Ollama launched but isn't answering yet — it should go green in a few seconds.",
+        );
+      } else {
+        setFixMsg(res.error);
+        if (res.error.toLowerCase().includes("installed")) setInstalled(false);
+      }
+    } catch (e) {
+      setFixMsg(String(e));
+    } finally {
+      setFixing(false);
+      setProbeNonce((n) => n + 1);
+    }
+  };
+
+  const installOllama = async () => {
+    setFixMsg(null);
+    try {
+      const res = await commands.ollamaInstall();
+      if (res.status === "ok") {
+        setFixMsg(
+          "Installer opened in a console window — when it finishes, come back and click Start Ollama.",
+        );
+      } else {
+        // No winget on this machine — fall back to the website.
+        await openUrl("https://ollama.com").catch(() => {});
+        setFixMsg(res.error);
+      }
+    } catch {
+      await openUrl("https://ollama.com").catch(() => {});
+    }
+  };
 
   // -------------------------------------------------------------------------
   // Event listener cleanup on unmount.
@@ -188,12 +253,52 @@ export const OllamaPullButton: React.FC<OllamaPullButtonProps> = ({
           <>
             <span className="h-1.5 w-1.5 rounded-full bg-red-400 flex-shrink-0" />
             <span className="text-red-400/80">
-              Ollama not reachable at{" "}
+              {installed === false
+                ? "Ollama isn't installed on this machine"
+                : "Ollama isn't running"}
+              {" — "}
               <span className="font-mono">{ollamaApiBase(baseUrl)}</span>
             </span>
           </>
         )}
       </div>
+
+      {/* v1.17.0: fix-it row — the red line is now actionable. */}
+      {connStatus === "offline" && (
+        <div className="flex flex-wrap items-center gap-2">
+          {installed === false ? (
+            <>
+              <Button onClick={installOllama} variant="secondary" size="sm">
+                <Download className="h-3.5 w-3.5 mr-1.5" />
+                Install Ollama
+              </Button>
+              <button
+                onClick={() => { void openUrl("https://ollama.com"); }}
+                className="text-xs text-mid-gray/60 hover:text-mid-gray/90 underline-offset-2 hover:underline transition-colors"
+              >
+                or download from ollama.com
+              </button>
+            </>
+          ) : (
+            <Button
+              onClick={startOllama}
+              variant="secondary"
+              size="sm"
+              disabled={fixing}
+            >
+              {fixing ? (
+                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+              ) : (
+                <Play className="h-3.5 w-3.5 mr-1.5" />
+              )}
+              {fixing ? "Starting Ollama..." : "Start Ollama"}
+            </Button>
+          )}
+          {fixMsg && (
+            <span className="text-xs text-mid-gray/70">{fixMsg}</span>
+          )}
+        </div>
+      )}
 
       {/* ------------------------------------------------------------------ */}
       {/* Pull button row + inline status text                                */}

@@ -634,7 +634,7 @@ async meetingStartCapture() : Promise<Result<boolean, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async meetingStopCapture() : Promise<Result<{ you: string; others: string; mic_path: string | null; system_path: string | null }, string>> {
+async meetingStopCapture() : Promise<Result<{ you: string; others: string; segments: Array<{ source: string; text: string }>; mic_path: string | null; system_path: string | null }, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("meeting_stop_capture") };
 } catch (e) {
@@ -653,6 +653,22 @@ async meetingTranscribeFile(path: string) : Promise<Result<string, string>> {
 async meetingListRecordings() : Promise<Result<Array<{ path: string; file_name: string; modified: number }>, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("meeting_list_recordings") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async meetingTranscribeMerge(micPath: string | null, systemPath: string | null) : Promise<Result<Array<{ source: string; text: string }>, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_transcribe_merge", { micPath, systemPath }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async meetingPrewarmPostProcess() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_prewarm_post_process") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -733,6 +749,25 @@ async meetingRecordingStatus() : Promise<Result<{ elapsed_secs: number; system_c
 async notePostProcess(text: string, prompt: string, model: string | null) : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("note_post_process", { text, prompt, model }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async ollamaStatus(baseUrl: string) : Promise<{ installed: boolean; running: boolean; exe_path: string | null }> {
+    return await TAURI_INVOKE("ollama_status", { baseUrl });
+},
+async ollamaStart(baseUrl: string) : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("ollama_start", { baseUrl }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async ollamaInstall() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("ollama_install") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1037,7 +1072,7 @@ export type ImplementationChangeResult = { success: boolean;
  */
 reset_bindings: string[] }
 export type KeyboardImplementation = "tauri" | "handy_keys"
-export type LLMPrompt = { id: string; name: string; prompt: string }
+export type LLMPrompt = { id: string; name: string; prompt: string; alias?: string | null }
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error"
 export type ModelInfo = { id: string; name: string; description: string; filename: string; url: string | null; sha256: string | null; size_mb: number; is_downloaded: boolean; is_downloading: boolean; partial_size: number; is_directory: boolean; engine_type: EngineType; accuracy_score: number; speed_score: number; supports_translation: boolean; is_recommended: boolean; supported_languages: string[]; supports_language_selection: boolean; is_custom: boolean }
 export type ModelLoadStatus = { is_loaded: boolean; current_model: string | null }
@@ -1051,7 +1086,7 @@ export type PostProcessProvider = { id: string; label: string; base_url: string;
 export type RecordingRetentionPeriod = "never" | "preserve_limit" | "days_3" | "weeks_2" | "months_3"
 export type SecretMap = Partial<{ [key in string]: string }>
 export type ShortcutBinding = { id: string; name: string; description: string; default_binding: string; current_binding: string }
-export type SoundTheme = "marimba" | "pop" | "custom"
+export type SoundTheme = "marimba" | "pop" | "aurora" | "custom"
 export type TypingTool = "auto" | "wtype" | "kwtype" | "dotool" | "ydotool" | "xdotool"
 export type WhisperAcceleratorSetting = "auto" | "cpu" | "gpu"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }

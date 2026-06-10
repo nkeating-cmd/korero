@@ -75,6 +75,13 @@ pub(crate) struct LevelEvent {
 pub(crate) struct LiveSegment {
     pub(crate) source: &'static str,
     pub(crate) samples: Vec<f32>,
+    /// v1.17.0: capture-relative start time of this segment, in milliseconds
+    /// from the first frame the segmenter saw. Both the "you" and "others"
+    /// segmenters count from their own first frame (the two streams start
+    /// within a few ms of each other), so `start_ms` is directly comparable
+    /// ACROSS sources — that is what lets the final transcript interleave both
+    /// speakers in chronological order instead of two per-speaker blocks.
+    pub(crate) start_ms: u64,
 }
 
 /// Bounded sender for live segments (drop-on-full: a lost live segment is
@@ -102,6 +109,13 @@ pub(crate) struct Segmenter {
     trailing_quiet: usize,
     speech_peak: f32,
     dropped: u64,
+    /// v1.17.0: total frames pushed since this segmenter started — the
+    /// capture-relative clock used to stamp each segment's `start_ms`.
+    samples_seen: usize,
+    /// v1.17.0: sample index (within `samples_seen`) at which the currently
+    /// buffered segment began. Captured when the first frame lands in an empty
+    /// buffer, so it survives the quiet-skip and 20 s-cap cut paths alike.
+    seg_start: usize,
 }
 
 impl Segmenter {
@@ -113,6 +127,8 @@ impl Segmenter {
             trailing_quiet: 0,
             speech_peak: 0.0,
             dropped: 0,
+            samples_seen: 0,
+            seg_start: 0,
         }
     }
 
@@ -121,8 +137,14 @@ impl Segmenter {
         if frame.is_empty() {
             return;
         }
+        // v1.17.0: a fresh segment begins on the first frame after an empty
+        // buffer — record its capture-relative start before appending.
+        if self.buf.is_empty() {
+            self.seg_start = self.samples_seen;
+        }
         let rms = (frame.iter().map(|s| s * s).sum::<f32>() / frame.len() as f32).sqrt();
         self.buf.extend_from_slice(frame);
+        self.samples_seen += frame.len();
         if rms < SEG_QUIET_RMS {
             self.trailing_quiet += frame.len();
         } else {
@@ -160,6 +182,7 @@ impl Segmenter {
 
     fn cut(&mut self, min_samples: usize) {
         let samples = std::mem::take(&mut self.buf);
+        let start_ms = (self.seg_start as u64) * 1000 / TARGET_RATE as u64;
         self.trailing_quiet = 0;
         self.speech_peak = 0.0;
         if samples.len() < min_samples {
@@ -168,6 +191,7 @@ impl Segmenter {
         match self.tx.try_send(LiveSegment {
             source: self.source,
             samples,
+            start_ms,
         }) {
             Ok(()) => {}
             Err(mpsc::TrySendError::Full(_)) => {

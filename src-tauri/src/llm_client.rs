@@ -10,6 +10,12 @@ use std::time::Duration;
 // without becoming a UI freeze; 5s connect catches DNS / TLS failure fast.
 const LLM_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LLM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+// Kōrero (v1.17.0): meeting post-processing summarises a whole transcript, which
+// can run well past 30s on a local model — long enough that the old 30s cap
+// truncated the result mid-summary. Streaming makes the wait visible, and this
+// longer ceiling is an idle/total guard against a genuinely wedged provider,
+// not a per-token deadline.
+const LLM_STREAM_TIMEOUT: Duration = Duration::from_secs(300);
 
 // Kōrero (v1.5.0): cap generated tokens for post-processing prompts.
 // Transcription outputs are short; 1500 tokens is generous and prevents
@@ -69,6 +75,9 @@ struct ChatCompletionRequest {
     // Kōrero (v1.5.0): caps generation length to bound PP latency for short transcriptions.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    // Kōrero (v1.17.0): request SSE token streaming (meeting post-processing).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -246,14 +255,24 @@ pub async fn send_chat_completion_with_schema(
         reasoning,
         // Kōrero (v1.5.0): cap tokens to bound post-processing latency.
         max_tokens: Some(DEFAULT_PP_MAX_TOKENS),
+        stream: None,
     };
 
-    let response = client
-        .post(&url)
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|e| format!("HTTP request failed: {}", e))?;
+    let mut response = client.post(&url).json(&request_body).send().await;
+
+    // Kōrero (v1.17.0): self-healing for a stopped local Ollama. Only a
+    // CONNECTION-level failure to a local provider triggers this — an HTTP
+    // error from a running server must surface normally. One restart attempt,
+    // one retry.
+    if let Err(e) = &response {
+        if e.is_connect() && provider.is_local_provider {
+            log::info!("Local LLM provider unreachable — attempting to start Ollama and retry.");
+            if crate::commands::ollama::ensure_running(&provider.base_url).await {
+                response = client.post(&url).json(&request_body).send().await;
+            }
+        }
+    }
+    let response = response.map_err(|e| format!("HTTP request failed: {}", e))?;
 
     let status = response.status();
     if !status.is_success() {
@@ -276,6 +295,158 @@ pub async fn send_chat_completion_with_schema(
         .choices
         .first()
         .and_then(|choice| choice.message.content.clone()))
+}
+
+/// v1.17.0: streaming chat completion for meeting post-processing. Sends
+/// `stream: true`, parses the SSE `data:` events, and invokes `on_delta` with
+/// each incremental content chunk as it arrives — so the UI can render the
+/// summary as it's generated instead of waiting for the whole thing. Returns
+/// the fully-assembled text. `on_delta` is called on the async task; keep it
+/// cheap (e.g. emit a Tauri event).
+///
+/// Only `system` + `user` messages and `max_tokens` are sent — meeting
+/// post-processing doesn't use structured output or reasoning fields.
+pub async fn stream_chat_completion<F: FnMut(&str)>(
+    provider: &PostProcessProvider,
+    api_key: String,
+    model: &str,
+    user_content: String,
+    system_prompt: Option<String>,
+    mut on_delta: F,
+) -> Result<String, String> {
+    use futures_util::StreamExt;
+
+    // Same egress allowlist as the non-streaming path: never send a transcript
+    // to a tampered endpoint for a provider whose URL isn't user-editable.
+    if !provider.allow_base_url_edit {
+        let defaults = crate::settings::get_default_settings();
+        if let Some(def) = defaults
+            .post_process_providers
+            .iter()
+            .find(|p| p.id == provider.id)
+        {
+            if def.base_url.trim_end_matches('/') != provider.base_url.trim_end_matches('/') {
+                return Err(format!(
+                    "Blocked: the endpoint for provider '{}' was altered to an unexpected URL. \
+                     Transcripts are not sent to unverified hosts.",
+                    provider.id
+                ));
+            }
+        }
+    }
+
+    let base_url = provider.base_url.trim_end_matches('/');
+    let url = format!("{}/chat/completions", base_url);
+    debug!("Sending STREAMING chat completion request to: {}", url);
+
+    // Dedicated client with the longer streaming ceiling (see LLM_STREAM_TIMEOUT).
+    let headers = build_headers(provider, &api_key)?;
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .timeout(LLM_STREAM_TIMEOUT)
+        .connect_timeout(LLM_CONNECT_TIMEOUT)
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+
+    let mut messages = Vec::new();
+    if let Some(system) = system_prompt {
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: system,
+        });
+    }
+    messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: user_content,
+    });
+
+    let request_body = ChatCompletionRequest {
+        model: model.to_string(),
+        messages,
+        response_format: None,
+        reasoning_effort: None,
+        reasoning: None,
+        max_tokens: Some(DEFAULT_PP_MAX_TOKENS),
+        stream: Some(true),
+    };
+
+    let mut response = client.post(&url).json(&request_body).send().await;
+    // Self-healing for a stopped local Ollama, mirroring the non-stream path.
+    if let Err(e) = &response {
+        if e.is_connect() && provider.is_local_provider {
+            log::info!("Local LLM provider unreachable — attempting to start Ollama and retry.");
+            if crate::commands::ollama::ensure_running(&provider.base_url).await {
+                response = client.post(&url).json(&request_body).send().await;
+            }
+        }
+    }
+    let response = response.map_err(|e| format!("HTTP request failed: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Failed to read error response".to_string());
+        return Err(format!(
+            "API request failed with status {}: {}",
+            status, error_text
+        ));
+    }
+
+    // Parse the SSE stream incrementally. Frames are `data: {json}\n\n`,
+    // terminated by `data: [DONE]`. A frame can split across chunks, so buffer
+    // bytes and only consume complete `\n\n`-delimited records.
+    let mut stream = response.bytes_stream();
+    let mut buf = String::new();
+    let mut full = String::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Stream read failed: {}", e))?;
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(idx) = buf.find("\n\n") {
+            let frame = buf[..idx].to_string();
+            buf.drain(..idx + 2);
+            for line in frame.lines() {
+                let line = line.trim_start();
+                let payload = match line.strip_prefix("data:") {
+                    Some(p) => p.trim(),
+                    None => continue, // comments / event: lines — ignore
+                };
+                if payload == "[DONE]" {
+                    return Ok(full);
+                }
+                if let Ok(v) = serde_json::from_str::<Value>(payload) {
+                    if let Some(piece) = v["choices"][0]["delta"]["content"].as_str() {
+                        if !piece.is_empty() {
+                            on_delta(piece);
+                            full.push_str(piece);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Stream closed. Flush any trailing frame that arrived without a final
+    // blank-line terminator (some servers just close the socket after the last
+    // delta), so the closing tokens aren't lost.
+    for line in buf.lines() {
+        let payload = match line.trim_start().strip_prefix("data:") {
+            Some(p) => p.trim(),
+            None => continue,
+        };
+        if payload == "[DONE]" {
+            break;
+        }
+        if let Ok(v) = serde_json::from_str::<Value>(payload) {
+            if let Some(piece) = v["choices"][0]["delta"]["content"].as_str() {
+                if !piece.is_empty() {
+                    on_delta(piece);
+                    full.push_str(piece);
+                }
+            }
+        }
+    }
+    Ok(full)
 }
 
 /// Fetch available models from an OpenAI-compatible API

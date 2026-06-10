@@ -116,7 +116,7 @@ export const HelpSettings: React.FC = () => {
           <p>
             The speech model (Parakeet V3 by default) downloads once on first
             use — that single step needs internet. After it has downloaded,
-            transcription is fully offline. Manage or switch models in
+            transcription is 100% on-device. Manage or switch models in
             Settings → Models.
           </p>
         </Guide>

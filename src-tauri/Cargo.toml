@@ -1,6 +1,6 @@
 [package]
 name = "korero"
-version = "1.16.0"
+version = "1.17.1"
 description = "Kōrero — speech-to-text, NZ English"
 authors = ["Nic Keating <nkeating@gmail.com>", "cjpais (upstream)"]
 edition = "2021"
@@ -65,7 +65,12 @@ env_filter = "0.1.0"
 tokio = "1.43.0"
 vad-rs = { git = "https://github.com/cjpais/vad-rs", default-features = false }
 enigo = "0.6.1"
-rodio = { git = "https://github.com/cjpais/rodio.git" }
+# Kōrero (v1.16.1): + AAC/M4A decode for meeting audio import (symphonia
+# backends; additive to default features, which keep wav/mp3/flac/vorbis).
+rodio = { git = "https://github.com/cjpais/rodio.git", features = [
+  "symphonia-aac",
+  "symphonia-isomp4",
+] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 futures-util = "0.3"
 rustfft = "6.4.0"

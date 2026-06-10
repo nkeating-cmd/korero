@@ -13,7 +13,7 @@ Like Handy, Kōrero is **100% offline**: your audio and transcripts never leave 
 models download once on first use; nothing is sent to the cloud. (Post-processing is opt-in and only
 contacts an LLM provider you configure.)
 
-Current version: **v1.16.0**.
+Current version: **v1.17.0**.
 
 ---
 
@@ -25,7 +25,7 @@ Current version: **v1.16.0**.
 - **Dual capture**: your microphone ("You") **and system audio via WASAPI loopback ("Others")** — a free speaker split without diarization models.
 - **Failsafe by design**: audio streams straight to WAV on disk *while recording* (header flushed every ~5 s), so a crash never loses a meeting; bounded memory even on long calls; on-disk recordings can be recovered and re-transcribed any time.
 - Pick the **transcription model** per meeting; **re-transcribe**, **post-process with a custom per-meeting prompt** (rendered as markdown — tables and all), or both; rename, copy, and **export** the transcript + processed notes.
-- **Import a WAV** and have it transcribed + post-processed through the same pipeline.
+- **Import audio files** — WAV, **M4A**, MP3, FLAC, OGG (v1.16.1) — and have them transcribed + post-processed through the same bounded-memory pipeline.
 - Privacy guard: a warning whenever the configured LLM provider is a cloud endpoint, plus a Rust-side egress allowlist so a tampered config can't redirect transcripts to an unknown host.
 
 ### New surfaces & workflows
@@ -50,7 +50,7 @@ Current version: **v1.16.0**.
 
 ### Post-processing (LLM clean-up)
 - **9 providers** out of the box — DeepSeek (default), OpenAI, Anthropic Claude, OpenRouter, Groq, Cerebras, z.ai, Bedrock, and a custom/local endpoint.
-- **Local models via Ollama**, including in-app model pull.
+- **Local models via Ollama**, including in-app model pull — plus an **Ollama doctor** (v1.17): detects a missing or stopped Ollama, installs it via winget from inside the app, starts it with one click, **auto-restarts it when a clean-up request finds it down**, and checks it's running at startup.
 - **Curated default prompts** — clean transcript, client email, Slack/WhatsApp, meeting note, red-team, and **NZ English + te reo Māori** (restores macrons, never translates te reo, fixes common mis-hearings like "far no" → *whānau*).
 
 ### Localisation & defaults

@@ -24,6 +24,7 @@ export const SoundPicker: React.FC<SoundPickerProps> = ({
   const options: DropdownOption[] = [
     { value: "marimba", label: "Marimba" },
     { value: "pop", label: "Pop" },
+    { value: "aurora", label: "Aurora (asymmetric)" },
   ];
 
   // Only add Custom option if both custom sound files exist

@@ -485,10 +485,12 @@ pub fn run(cli_args: CliArgs) {
             meeting::meeting_start_capture,
             meeting::meeting_stop_capture,
             meeting::meeting_transcribe_file,
+            meeting::meeting_transcribe_merge,
             meeting::meeting_list_recordings,
             meeting::meeting_export_transcript,
             meeting::meeting_query,
             meeting::meeting_post_process,
+            meeting::meeting_prewarm_post_process,
             meeting::meeting_provider_is_local,
             // Kōrero fork (v1.13.4): meetings metadata store on disk.
             meeting::meetings_store_load,
@@ -503,6 +505,10 @@ pub fn run(cli_args: CliArgs) {
             // Kōrero fork (v1.14.3): whole-note post-processing (prompt + model
             // selectable per run).
             commands::notes::note_post_process,
+            // Kōrero fork (v1.17.0): Ollama doctor — detect / start / install.
+            commands::ollama::ollama_status,
+            commands::ollama::ollama_start,
+            commands::ollama::ollama_install,
             commands::history::get_history_entries,
             commands::history::toggle_history_entry_saved,
             commands::history::get_audio_file_path,
@@ -696,6 +702,28 @@ pub fn run(cli_args: CliArgs) {
             // Kōrero (v1.16.0): one-shot update notification (fork repo only;
             // delayed 8 s; silent on any failure).
             update_check::spawn_update_check(app.handle().clone());
+            // Kōrero (v1.17.0): if post-processing runs on local Ollama,
+            // quietly make sure it's actually up (PC optimisers and reboots
+            // routinely leave it stopped). Best-effort; never blocks startup.
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = tauri::async_runtime::spawn_blocking(|| {
+                        std::thread::sleep(std::time::Duration::from_secs(12))
+                    })
+                    .await;
+                    let settings = crate::settings::get_settings(&handle);
+                    if settings.post_process_enabled {
+                        if let Some(p) = settings.active_post_process_provider() {
+                            if p.is_local_provider {
+                                let up =
+                                    crate::commands::ollama::ensure_running(&p.base_url).await;
+                                log::info!("Startup Ollama check: running={up}");
+                            }
+                        }
+                    }
+                });
+            }
 
             // Kōrero (v1.7.0, S1): seed the settings cache from the already-loaded
             // settings (which include hydrated keychain keys and any CLI overrides).

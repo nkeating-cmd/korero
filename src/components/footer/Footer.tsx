@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 
 import ModelSelector from "../model-selector";
+import PrivacyPills from "./PrivacyPills";
 
 /**
  * Kōrero footer — UpdateChecker removed (the plugin was dropped in our fork
@@ -30,7 +31,8 @@ const Footer: React.FC = () => {
         <div className="flex items-center gap-4">
           <ModelSelector />
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-2">
+          <PrivacyPills />
           {/* eslint-disable-next-line i18next/no-literal-string */}
           <span>v{version}</span>
         </div>

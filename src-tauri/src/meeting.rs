@@ -27,7 +27,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::audio_toolkit::audio::FrameResampler;
 use crate::audio_toolkit::list_input_devices;
-use crate::meeting_capture::{LiveSegment, SegmentSender, StreamCapture};
+use crate::meeting_capture::{LiveSegment, Segmenter, SegmentSender, StreamCapture};
 #[cfg(windows)]
 use crate::meeting_capture_wasapi::WasapiLoopback;
 use crate::managers::audio::AudioRecordingManager;
@@ -49,8 +49,21 @@ pub fn is_meeting_active() -> bool {
 pub struct MeetingResult {
     pub you: String,
     pub others: String,
+    /// v1.17.0: the transcript as an ORDERED, interleaved list of segments
+    /// (each tagged "you"/"others"), so the UI can render both speakers in
+    /// chronological order. `you`/`others` are retained (the same text grouped
+    /// per speaker) for the per-stream edit / re-transcribe affordances.
+    pub segments: Vec<TranscriptSeg>,
     pub mic_path: Option<String>,
     pub system_path: Option<String>,
+}
+
+/// v1.17.0: one chronological transcript segment. `source` is "you" or
+/// "others"; the UI maps that to the meeting's editable speaker label.
+#[derive(Serialize, Deserialize, Clone, Type)]
+pub struct TranscriptSeg {
+    pub source: String,
+    pub text: String,
 }
 
 /// A meeting WAV on disk, for the recovery list.
@@ -78,28 +91,44 @@ struct ActiveCapture {
 /// Phase B (v1.14.0): live transcript, appended to by the consumer thread,
 /// read at stop. Poisoning is tolerated — a panicked appender loses one
 /// segment, not the meeting (the WAV fallback still exists).
+/// v1.17.0: one ORDERED log of segments across BOTH sources, replacing the
+/// previous two per-speaker strings. Each entry keeps its capture-relative
+/// `start_ms`, so the final transcript can interleave the speakers in the
+/// order they actually spoke instead of "all of you, then all of them".
 #[derive(Default)]
 struct LiveTranscript {
-    you: Mutex<String>,
-    others: Mutex<String>,
+    /// (start_ms, source, text), appended in segment-arrival order.
+    segs: Mutex<Vec<(u64, &'static str, String)>>,
 }
 
 impl LiveTranscript {
-    fn append(&self, source: &str, text: &str) {
-        let m = if source == "you" { &self.you } else { &self.others };
-        let mut g = m.lock().unwrap_or_else(|p| p.into_inner());
-        if !g.is_empty() {
-            g.push(' ');
-        }
-        g.push_str(text);
+    fn append(&self, start_ms: u64, source: &'static str, text: &str) {
+        let mut g = self.segs.lock().unwrap_or_else(|p| p.into_inner());
+        g.push((start_ms, source, text.to_string()));
     }
-    fn get(&self, source: &str) -> String {
-        let m = if source == "you" { &self.you } else { &self.others };
-        match m.lock() {
-            Ok(g) => g.clone(),
-            Err(p) => p.into_inner().clone(),
-        }
+
+    /// A chronologically-sorted snapshot of the live segments (stable sort by
+    /// `start_ms`, preserving arrival order for equal timestamps).
+    fn snapshot(&self) -> Vec<(u64, &'static str, String)> {
+        let g = self.segs.lock().unwrap_or_else(|p| p.into_inner());
+        let mut v: Vec<(u64, &'static str, String)> = g.clone();
+        v.sort_by_key(|(ms, _, _)| *ms);
+        v
     }
+}
+
+/// Join the segments belonging to one source into a single string — the
+/// per-speaker view (`you` / `others`) the editing/re-transcribe UI expects.
+/// `log` is assumed already chronologically ordered.
+fn join_log(log: &[(u64, &'static str, String)], source: &str) -> String {
+    let mut out = String::new();
+    for (_, _src, text) in log.iter().filter(|(_, s, _)| *s == source) {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(text);
+    }
+    out
 }
 
 /// v1.13.6: the "Others" stream can come from two backends — native WASAPI
@@ -265,7 +294,7 @@ pub async fn meeting_start_capture(
                         if text.is_empty() {
                             continue;
                         }
-                        live.append(seg.source, &text);
+                        live.append(seg.start_ms, seg.source, &text);
                         use tauri::Emitter;
                         let _ = app_ev.emit(
                             "meeting-live-segment",
@@ -422,30 +451,39 @@ pub async fn meeting_stop_capture(
         None => None,
     };
 
-    // --- Build the transcripts (Phase B, v1.14.0): prefer the LIVE transcript
-    // accumulated during the meeting (stop becomes near-instant); fall back to
-    // full-file transcription only for a stream whose live text came up empty
-    // but whose WAV demonstrably has audio. Non-fatal either way: the audio is
-    // safe on disk regardless.
+    // --- Build the transcript (Phase B, v1.14.0; chronological in v1.17.0):
+    // prefer the LIVE segment log accumulated during the meeting (stop becomes
+    // near-instant). For any source whose live text came up empty but whose WAV
+    // demonstrably has audio, segment that WAV OFFLINE (same energy gate, so the
+    // recovered segments carry comparable start times) and merge it in. The
+    // whole log is then sorted by start time, so both speakers interleave in the
+    // order they actually spoke instead of "all of you, then all of them".
+    // Non-fatal throughout: the audio is safe on disk regardless.
     let tm = app.state::<Arc<TranscriptionManager>>().inner().clone();
-    let live_you = live.get("you");
-    let live_others = live.get("others");
-    let you = if !live_you.trim().is_empty() {
-        live_you
-    } else {
-        match &mic_path {
-            Some(p) => transcribe_path_lossy(&tm, p).await,
-            None => String::new(),
+    let mut seg_log = live.snapshot();
+    let has_you = seg_log.iter().any(|(_, s, _)| *s == "you");
+    let has_others = seg_log.iter().any(|(_, s, _)| *s == "others");
+    if !has_you {
+        if let Some(p) = &mic_path {
+            seg_log.extend(segment_wav_offline(&tm, p, "you").await);
         }
-    };
-    let others = if !live_others.trim().is_empty() {
-        live_others
-    } else {
-        match &system_path {
-            Some(p) => transcribe_path_lossy(&tm, p).await,
-            None => String::new(),
+    }
+    if !has_others {
+        if let Some(p) = &system_path {
+            seg_log.extend(segment_wav_offline(&tm, p, "others").await);
         }
-    };
+    }
+    seg_log.sort_by_key(|(ms, _, _)| *ms);
+
+    let segments: Vec<TranscriptSeg> = seg_log
+        .iter()
+        .map(|(_, s, t)| TranscriptSeg {
+            source: s.to_string(),
+            text: t.clone(),
+        })
+        .collect();
+    let you = join_log(&seg_log, "you");
+    let others = join_log(&seg_log, "others");
 
     // v1.13.6: opportunistic retention sweep — keeps the meetings folder from
     // growing without bound (~230 MB per recorded meeting-hour).
@@ -454,6 +492,7 @@ pub async fn meeting_stop_capture(
     Ok(MeetingResult {
         you,
         others,
+        segments,
         mic_path,
         system_path,
     })
@@ -525,13 +564,68 @@ pub async fn meeting_delete_recording(app: AppHandle, path: String) -> Result<()
     std::fs::remove_file(&canon).map_err(|e| format!("Delete failed: {e}"))
 }
 
-/// Re-transcribe a saved meeting WAV from disk (recovery path).
+/// Transcribe a saved or imported audio file from disk.
 /// v1.13.4: chunked — memory stays bounded regardless of recording length.
+/// v1.16.1: non-WAV formats (m4a/aac/mp3/flac/ogg) decode via rodio into the
+/// same bounded-memory windowing pipeline.
 #[tauri::command]
 #[specta::specta]
 pub async fn meeting_transcribe_file(app: AppHandle, path: String) -> Result<String, String> {
     let tm = app.state::<Arc<TranscriptionManager>>().inner().clone();
-    transcribe_wav_chunked(&tm, &path).await
+    // v1.16.3: imports and re-transcribes can run with the model idle-unloaded.
+    // Recording and Notes pre-warm at start; this path never did, so
+    // transcribe() failed with "Model is not loaded for transcription".
+    // initiate_model_load() claims the loading flag synchronously, and the
+    // first transcribe() call blocks on the loading condvar until ready.
+    tm.initiate_model_load();
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "wav" => transcribe_wav_chunked(&tm, &path).await,
+        "m4a" | "aac" | "mp4" | "mp3" | "flac" | "ogg" => {
+            let (rate, channels, samples) = open_rodio_stream(&path)?;
+            transcribe_stream_chunked(&tm, rate, channels, samples).await
+        }
+        other => Err(format!(
+            "Unsupported audio format '.{other}' — use WAV, M4A, MP3, FLAC, or OGG."
+        )),
+    }
+}
+
+/// v1.17.0: re-transcribe a recorded meeting's two WAVs and return a single
+/// CHRONOLOGICAL, interleaved segment log (the same shape `meeting_stop_capture`
+/// returns). Either path may be absent (mic-only or system-only meeting). Used
+/// by the Re-transcribe button so a rebuilt transcript stays in speaking order
+/// instead of collapsing back to two per-speaker blocks. WAV only — recorded
+/// meetings are always WAV; single-file imports use `meeting_transcribe_file`.
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_transcribe_merge(
+    app: AppHandle,
+    mic_path: Option<String>,
+    system_path: Option<String>,
+) -> Result<Vec<TranscriptSeg>, String> {
+    let tm = app.state::<Arc<TranscriptionManager>>().inner().clone();
+    // Match meeting_transcribe_file: the model may be idle-unloaded on this path.
+    tm.initiate_model_load();
+    let mut seg_log: Vec<(u64, &'static str, String)> = Vec::new();
+    if let Some(p) = &mic_path {
+        seg_log.extend(segment_wav_offline(&tm, p, "you").await);
+    }
+    if let Some(p) = &system_path {
+        seg_log.extend(segment_wav_offline(&tm, p, "others").await);
+    }
+    seg_log.sort_by_key(|(ms, _, _)| *ms);
+    Ok(seg_log
+        .into_iter()
+        .map(|(_, s, t)| TranscriptSeg {
+            source: s.to_string(),
+            text: t,
+        })
+        .collect())
 }
 
 /// List meeting WAVs saved on disk, newest first (for recovery).
@@ -716,11 +810,80 @@ pub async fn meeting_post_process(
         system.push_str(&g);
     }
 
-    let answer = crate::llm_client::send_chat_completion_with_schema(
-        &provider, api_key, &model, text, Some(system), None, None, None,
+    // v1.17.0: stream the summary so tokens render as they generate instead of
+    // the user staring at a spinner until the whole thing is done. Each delta is
+    // emitted as a `meeting-postprocess-delta` event; the full text is also
+    // returned so callers that don't listen still get the result.
+    use tauri::Emitter;
+    let app_ev = app.clone();
+    // Keep copies for the non-streaming fallback below.
+    let text_fallback = text.clone();
+    let system_fallback = system.clone();
+    let api_key_fallback = api_key.clone();
+    let answer = crate::llm_client::stream_chat_completion(
+        &provider,
+        api_key,
+        &model,
+        text,
+        Some(system),
+        |delta| {
+            let _ = app_ev.emit("meeting-postprocess-delta", delta.to_string());
+        },
     )
     .await?;
-    answer.ok_or_else(|| "The model returned no output.".to_string())
+
+    // Safety net: a provider that ignores `stream: true` (i.e. doesn't emit
+    // OpenAI-style SSE deltas) yields no streamed text. Rather than regress to
+    // an empty result, fall back to one ordinary non-streaming request.
+    let answer = if answer.trim().is_empty() {
+        crate::llm_client::send_chat_completion_with_schema(
+            &provider,
+            api_key_fallback,
+            &model,
+            text_fallback,
+            Some(system_fallback),
+            None,
+            None,
+            None,
+        )
+        .await?
+        .unwrap_or_default()
+    } else {
+        answer
+    };
+
+    // Signal completion so the UI can stop its streaming indicator.
+    let _ = app.emit("meeting-postprocess-done", answer.clone());
+    if answer.trim().is_empty() {
+        return Err("The model returned no output.".to_string());
+    }
+    Ok(answer)
+}
+
+/// v1.17.0: pre-warm the post-processing model so the FIRST "Generate notes"
+/// click doesn't pay the cold model-load cost on top of generation. Best-effort
+/// and local-only: for a cloud provider there's nothing to warm. The frontend
+/// calls this fire-and-forget when a transcript becomes available.
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_prewarm_post_process(app: AppHandle) -> Result<(), String> {
+    let settings = crate::settings::get_settings(&app);
+    let provider = match settings.active_post_process_provider().cloned() {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+    if !provider.is_local_provider {
+        return Ok(());
+    }
+    let model = settings
+        .post_process_models
+        .get(&provider.id)
+        .cloned()
+        .unwrap_or_default();
+    // Keep it resident for 30 min — comfortably covers reviewing a transcript
+    // then clicking Generate, and a re-run or two after that.
+    crate::commands::ollama::warm_model(&provider.base_url, &model, 1_800).await;
+    Ok(())
 }
 
 /// Whether the active post-processing provider is a LOCAL endpoint (localhost),
@@ -762,6 +925,11 @@ fn keep_or_discard(path: PathBuf, samples_written: u64) -> Option<String> {
 /// Transcribe a streamed WAV from disk, swallowing errors to an empty string —
 /// the recording itself is already safe on disk and can be re-transcribed.
 /// v1.13.4: chunked — memory stays bounded regardless of recording length.
+/// v1.17.1: currently unreferenced (stop prefers the live transcript and the
+/// remaining callers route through transcribe_wav_chunked directly), but kept
+/// as the documented full-WAV fallback seam — allow(dead_code) keeps CI's
+/// clippy -D warnings green without deleting the seam.
+#[allow(dead_code)]
 async fn transcribe_path_lossy(tm: &Arc<TranscriptionManager>, path: &str) -> String {
     match transcribe_wav_chunked(tm, path).await {
         Ok(text) => text,
@@ -770,6 +938,99 @@ async fn transcribe_path_lossy(tm: &Arc<TranscriptionManager>, path: &str) -> St
             String::new()
         }
     }
+}
+
+/// v1.17.0: segment a WAV OFFLINE with the same energy gate the live path
+/// uses, then transcribe each segment, returning `(start_ms, source, text)`.
+/// Used by the recovery / re-transcribe paths so a meeting reconstructed from
+/// the on-disk WAVs interleaves the two speakers chronologically, exactly like
+/// the live path. Best-effort: a decode/transcribe failure yields no segments
+/// for that source (the caller still has the per-stream plain transcript).
+async fn segment_wav_offline(
+    tm: &Arc<TranscriptionManager>,
+    path: &str,
+    source: &'static str,
+) -> Vec<(u64, &'static str, String)> {
+    let tm = tm.clone();
+    let path = path.to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let segs = match decode_and_segment(&path, source) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("Offline segmenting failed for {path}: {e} (WAV preserved)");
+                return Vec::new();
+            }
+        };
+        let mut out: Vec<(u64, &'static str, String)> = Vec::with_capacity(segs.len());
+        for s in segs {
+            if let Ok(text) = tm.transcribe(s.samples) {
+                let text = text.trim().to_string();
+                if !text.is_empty() {
+                    out.push((s.start_ms, source, text));
+                }
+            }
+        }
+        out
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Decode a WAV to 16 kHz mono and run the live `Segmenter` over it, returning
+/// the cut speech segments (each carrying its capture-relative `start_ms`).
+/// Streaming: the resampler and segmenter hold at most one in-flight segment,
+/// so memory stays bounded regardless of recording length.
+fn decode_and_segment(path: &str, source: &'static str) -> Result<Vec<LiveSegment>, String> {
+    let reader = hound::WavReader::open(path).map_err(|e| format!("Could not open {path}: {e}"))?;
+    let spec = reader.spec();
+    let channels = spec.channels.max(1) as usize;
+    let in_rate = spec.sample_rate as usize;
+
+    // Capacity comfortably exceeds the segment count of a multi-hour meeting;
+    // we drain only after the producer is dropped, so nothing is lost in
+    // practice. A genuine overflow degrades to a dropped segment (logged by the
+    // segmenter), the same non-fatal failure class as the live path.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<LiveSegment>(8192);
+    let mut seg = Segmenter::new(source, tx);
+    let mut resampler = FrameResampler::new(in_rate, 16_000, Duration::from_millis(30));
+    let mut interleave: Vec<f32> = Vec::with_capacity(channels);
+    let mut mono: Vec<f32> = Vec::with_capacity(8_192);
+
+    // One iterator shape for both PCM encodings, normalised to f32 in [-1, 1].
+    let path_owned = path.to_string();
+    let samples: Box<dyn Iterator<Item = Result<f32, String>>> = match spec.sample_format {
+        hound::SampleFormat::Float => Box::new(
+            reader
+                .into_samples::<f32>()
+                .map(move |s| s.map_err(|e| format!("WAV read error in {path_owned}: {e}"))),
+        ),
+        hound::SampleFormat::Int => {
+            let denom = (1i64 << (spec.bits_per_sample.clamp(1, 32) - 1)) as f32;
+            Box::new(reader.into_samples::<i32>().map(move |s| {
+                s.map(|v| v as f32 / denom)
+                    .map_err(|e| format!("WAV read error in {path_owned}: {e}"))
+            }))
+        }
+    };
+
+    for s in samples {
+        interleave.push(s?);
+        if interleave.len() == channels {
+            mono.push(interleave.iter().sum::<f32>() / channels as f32);
+            interleave.clear();
+        }
+        if mono.len() >= 8_192 {
+            resampler.push(&mono, |frame| seg.push(frame));
+            mono.clear();
+        }
+    }
+    if !mono.is_empty() {
+        resampler.push(&mono, |frame| seg.push(frame));
+    }
+    resampler.finish(|frame| seg.push(frame));
+    seg.finish();
+    drop(seg); // drops the sender so the receiver can be fully drained
+    Ok(rx.try_iter().collect())
 }
 
 /// Transcribe a buffer; propagate errors (used by the recovery command).
@@ -835,23 +1096,70 @@ async fn transcribe_wav_chunked(
         hound::WavReader::open(path).map_err(|e| format!("Could not open {path}: {e}"))?;
     let spec = reader.spec();
     let channels = spec.channels.max(1) as usize;
-    let mut resampler =
-        FrameResampler::new(spec.sample_rate as usize, 16_000, Duration::from_millis(30));
+    let in_rate = spec.sample_rate as usize;
 
     // One iterator shape for both PCM encodings, normalised to f32 in [-1, 1].
-    let mut samples: Box<dyn Iterator<Item = Result<f32, hound::Error>> + Send> =
-        match spec.sample_format {
-            hound::SampleFormat::Float => Box::new(reader.into_samples::<f32>()),
-            hound::SampleFormat::Int => {
-                let denom = (1i64 << (spec.bits_per_sample.clamp(1, 32) - 1)) as f32;
-                Box::new(
-                    reader
-                        .into_samples::<i32>()
-                        .map(move |s| s.map(|v| v as f32 / denom)),
-                )
-            }
-        };
+    let path_owned = path.to_string();
+    let samples: Box<dyn Iterator<Item = Result<f32, String>> + Send> = match spec.sample_format {
+        hound::SampleFormat::Float => Box::new(
+            reader
+                .into_samples::<f32>()
+                .map(move |s| s.map_err(|e| format!("WAV read error in {path_owned}: {e}"))),
+        ),
+        hound::SampleFormat::Int => {
+            let denom = (1i64 << (spec.bits_per_sample.clamp(1, 32) - 1)) as f32;
+            Box::new(reader.into_samples::<i32>().map(move |s| {
+                s.map(|v| v as f32 / denom)
+                    .map_err(|e| format!("WAV read error in {path_owned}: {e}"))
+            }))
+        }
+    };
+    transcribe_stream_chunked(tm, in_rate, channels, samples).await
+}
 
+/// v1.16.1: decode a compressed audio file (m4a/aac/mp3/flac/ogg) via rodio
+/// into the same shape the WAV path produces — rate, channel count, and a
+/// streaming f32 sample iterator. Decoding is incremental, so memory stays
+/// bounded by the chunker's window like the WAV path.
+fn open_rodio_stream(
+    path: &str,
+) -> Result<
+    (
+        usize,
+        usize,
+        Box<dyn Iterator<Item = Result<f32, String>> + Send>,
+    ),
+    String,
+> {
+    use rodio::Source;
+    let file = std::fs::File::open(path).map_err(|e| format!("Could not open {path}: {e}"))?;
+    // v1.16.2: Decoder::try_from(File) — NOT Decoder::new(BufReader) — so the
+    // decoder gets a seekable stream with a known byte length. M4A/MP4 keeps
+    // its index (moov atom) at the END of the file, so symphonia's container
+    // probe needs seek+len; without them it reports "Unrecognized format".
+    // try_from(File) is the fork's own documented canonical constructor.
+    let decoder = rodio::Decoder::try_from(file)
+        .map_err(|e| format!("Could not decode {path}: {e}"))?;
+    let rate = decoder.sample_rate() as usize;
+    let channels = (decoder.channels() as usize).max(1);
+    // The rodio fork is the 0.21-era architecture: `Sample` is universally
+    // `f32` (verified in the fork's common.rs — amplitude -1.0..1.0), so the
+    // decoder iterates f32 natively and no conversion adapter exists or is
+    // needed. (`convert_samples` died with the multi-sample-type design.)
+    let iter = decoder.map(|s| Ok::<f32, String>(s));
+    Ok((rate, channels, Box::new(iter)))
+}
+
+/// The decoder-agnostic core: downmix → resample to 16 kHz → transcribe
+/// ~5-minute windows split at the quietest point. Shared by the WAV (hound)
+/// and compressed-audio (rodio) paths.
+async fn transcribe_stream_chunked(
+    tm: &Arc<TranscriptionManager>,
+    in_rate: usize,
+    channels: usize,
+    mut samples: Box<dyn Iterator<Item = Result<f32, String>> + Send>,
+) -> Result<String, String> {
+    let mut resampler = FrameResampler::new(in_rate, 16_000, Duration::from_millis(30));
     let mut buf: Vec<f32> = Vec::with_capacity(CHUNK_SAMPLES + SPLIT_WINDOW);
     let mut mono_block: Vec<f32> = Vec::with_capacity(8_192);
     let mut interleave: Vec<f32> = Vec::with_capacity(channels);
@@ -872,7 +1180,8 @@ async fn transcribe_wav_chunked(
                             interleave.clear();
                         }
                     }
-                    Some(Err(e)) => return Err(format!("WAV read error in {path}: {e}")),
+                    // Errors arrive pre-formatted from the decoder adapters.
+                    Some(Err(e)) => return Err(e),
                     None => {
                         eof = true;
                         break;

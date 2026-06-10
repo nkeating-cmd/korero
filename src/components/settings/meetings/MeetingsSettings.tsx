@@ -21,6 +21,7 @@ import {
   X,
   Activity,
   GraduationCap,
+  GitMerge,
 } from "lucide-react";
 import { toast } from "sonner";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -44,11 +45,23 @@ import { useSettings } from "../../../hooks/useSettings";
  * transcribed + post-processed. Recovery of on-disk recordings is at the bottom.
  */
 
+// v1.17.0: one chronological transcript segment (matches the Rust TranscriptSeg).
+interface TranscriptSeg {
+  source: string; // "you" | "others"
+  text: string;
+}
+
 interface Meeting {
   id: string;
   title: string;
   you: string;
   others: string;
+  // v1.17.0: ORDERED, interleaved transcript. When present, this is the source
+  // of truth for display / copy / export / post-processing, so both speakers
+  // appear in the order they spoke. `you`/`others` are kept as the per-speaker
+  // grouping the inline editor still uses. Empty for older meetings and
+  // single-file imports — callers fall back to the two-block `you`/`others`.
+  transcript?: TranscriptSeg[];
   processed: string;
   processPrompt: string;
   createdAt: number;
@@ -59,6 +72,9 @@ interface Meeting {
   // (e.g. "Nic" / "Gerard"). Used in display, copy, export, and processing.
   youLabel: string;
   othersLabel: string;
+  // v1.17.0: imported/recovered files have exactly ONE audio source, so the
+  // "system audio not captured" warning doesn't apply to them.
+  imported: boolean;
 }
 
 interface RecordingFile {
@@ -82,8 +98,15 @@ const normaliseMeetings = (parsed: unknown): Meeting[] => {
     ...m,
     processed: m.processed ?? "",
     processPrompt: m.processPrompt ?? "",
+    // v1.17.0: older meetings predate the ordered transcript — default to [].
+    transcript: Array.isArray(m.transcript) ? m.transcript : [],
     youLabel: m.youLabel?.trim() || "You",
     othersLabel: m.othersLabel?.trim() || "Others",
+    // Older imported meetings predate the flag — infer from the title so
+    // existing "Imported · x.m4a" entries stop warning too.
+    imported:
+      m.imported ??
+      (m.title?.startsWith("Imported ·") || m.title?.startsWith("Recovered ·") || false),
   }));
 };
 
@@ -101,18 +124,37 @@ const loadLegacyMeetings = (): Meeting[] => {
 const fmtClock = (s: number) =>
   `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
 
+// Map a segment's source tag to the meeting's editable speaker label.
+const labelFor = (source: string, youLabel: string, othersLabel: string) =>
+  source === "you" ? youLabel : othersLabel;
+
+// v1.17.0: build the transcript text. When an ORDERED segment list is present,
+// render it in speaking order (`Label: line` per turn) so both speakers
+// interleave. Otherwise fall back to the legacy two-block grouping. Used for
+// post-processing input, copy, and export — all now chronological.
 const combine = (
   you: string,
   others: string,
   youLabel = "You",
   othersLabel = "Others",
-) =>
-  [
+  transcript?: TranscriptSeg[],
+) => {
+  if (transcript && transcript.length > 0) {
+    return transcript
+      .filter((s) => s.text.trim())
+      .map(
+        (s) =>
+          `${labelFor(s.source, youLabel, othersLabel)}: ${s.text.trim()}`,
+      )
+      .join("\n");
+  }
+  return [
     you.trim() ? `${youLabel}:\n${you.trim()}` : "",
     others.trim() ? `${othersLabel}:\n${others.trim()}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
+};
 
 const baseName = (p: string) => p.replace(/\\/g, "/").split("/").pop() || p;
 
@@ -143,6 +185,9 @@ export const MeetingsSettings: React.FC = () => {
   const [liveQuestion, setLiveQuestion] = useState("");
   const [liveAsking, setLiveAsking] = useState(false);
   const [liveAnswer, setLiveAnswer] = useState("");
+  // v1.17.0: streaming post-process preview — accumulates `meeting-postprocess-delta`
+  // tokens so the notes render as they generate instead of after a long wait.
+  const [liveProcessed, setLiveProcessed] = useState("");
   const [elapsed, setElapsed] = useState(0);
   const [systemCaptured, setSystemCaptured] = useState<boolean | null>(null);
   const [busy, setBusy] = useState<null | "transcribe" | "post" | "both">(null);
@@ -159,6 +204,8 @@ export const MeetingsSettings: React.FC = () => {
   );
   // v1.15.0: teach-a-correction form (prefilled from the text selection).
   const [teachWrong, setTeachWrong] = useState<string | null>(null);
+  // v1.17.0: merge-with picker selection.
+  const [mergeWithId, setMergeWithId] = useState<string>("");
   // Import workflow
   const [importPath, setImportPath] = useState<string | null>(null);
   const [importPrompt, setImportPrompt] = useState(DEFAULT_PROMPT);
@@ -270,6 +317,16 @@ export const MeetingsSettings: React.FC = () => {
     };
   }, []);
 
+  // v1.17.0: stream post-processing tokens into the preview as they arrive.
+  useEffect(() => {
+    const unDelta = listen<string>("meeting-postprocess-delta", (e) => {
+      setLiveProcessed((prev) => prev + e.payload);
+    });
+    return () => {
+      unDelta.then((f) => f());
+    };
+  }, []);
+
   // v1.14.2: restore the recording UI if a meeting is still running on the
   // backend (the page was unmounted mid-meeting). Without this, navigating
   // away and back showed an idle page over a live recording — which also
@@ -359,6 +416,47 @@ export const MeetingsSettings: React.FC = () => {
   const titleOf = (m: Meeting) =>
     m.title.trim() || `Meeting · ${new Date(m.createdAt).toLocaleString()}`;
 
+  // v1.17.0: merge two meetings into a NEW combined entry — non-destructive,
+  // both originals are kept. Parts are joined in chronological order, so
+  // "Part 1" + "Part 2" imports line up correctly.
+  const mergeMeetings = (otherId: string) => {
+    const a = active;
+    const b = meetings.find((m) => m.id === otherId);
+    if (!a || !b || a.id === b.id) return;
+    const [first, second] = a.createdAt <= b.createdAt ? [a, b] : [b, a];
+    const joinPart = (x: string, y: string) =>
+      [x.trim(), y.trim()].filter(Boolean).join("\n\n— · —\n\n");
+    const m: Meeting = {
+      id: newId(),
+      title: `${titleOf(first)} + ${titleOf(second)}`,
+      you: joinPart(first.you, second.you),
+      others: joinPart(first.others, second.others),
+      // v1.17.0: concatenate the two ordered transcripts (first part then
+      // second) so the merged entry keeps the interleaved conversation view.
+      transcript: [
+        ...(first.transcript ?? []),
+        ...(second.transcript ?? []),
+      ],
+      youLabel: first.youLabel,
+      othersLabel: first.othersLabel,
+      imported: first.imported && second.imported,
+      processed: joinPart(first.processed, second.processed),
+      processPrompt: first.processPrompt || second.processPrompt,
+      createdAt: Date.now(),
+      systemCaptured: first.systemCaptured || second.systemCaptured,
+      // Audio stays with the originals; the merged entry references the
+      // first part's files so re-transcribe still does something sensible.
+      micPath: first.micPath ?? second.micPath,
+      systemPath: first.systemPath ?? second.systemPath,
+    };
+    setMeetings((prev) => [m, ...prev]);
+    setActiveId(m.id);
+    setMergeWithId("");
+    toast.success(
+      "Merged into a new meeting — both originals kept. Re-process to get one combined summary.",
+    );
+  };
+
   // ---- live query (Phase C, v1.14.0) ---------------------------------------
   // Ask the configured post-processing model about the meeting SO FAR, using
   // the live segments already in hand. Reuses meeting_query (48k-char cap +
@@ -432,7 +530,7 @@ export const MeetingsSettings: React.FC = () => {
       try {
         const res = await commands.meetingStopCapture();
         if (res.status === "ok") {
-          const { you, others, mic_path, system_path } = res.data;
+          const { you, others, segments, mic_path, system_path } = res.data;
           if (!you.trim() && !others.trim() && !mic_path && !system_path) {
             toast.message("No audio captured.");
           } else {
@@ -441,6 +539,8 @@ export const MeetingsSettings: React.FC = () => {
               title: "",
               you,
               others,
+              // v1.17.0: chronological, interleaved transcript from the backend.
+              transcript: segments ?? [],
               processed: "",
               processPrompt: "",
               createdAt: Date.now(),
@@ -449,9 +549,15 @@ export const MeetingsSettings: React.FC = () => {
               systemPath: system_path,
               youLabel: "You",
               othersLabel: "Others",
+              imported: false,
             };
             setMeetings((prev) => [m, ...prev]);
             setActiveId(m.id);
+            // v1.17.0: warm the local post-processing model now, so the first
+            // "Generate notes" doesn't pay the cold model-load cost.
+            if (you.trim() || others.trim()) {
+              commands.meetingPrewarmPostProcess().catch(() => {});
+            }
             if (!you.trim() && !others.trim()) {
               toast.message(
                 "Audio saved, but transcription was empty — you can re-transcribe it.",
@@ -504,7 +610,30 @@ export const MeetingsSettings: React.FC = () => {
   };
 
   // ---- transcription / post-processing helpers ---------------------------
-  const doTranscribe = async (m: Meeting): Promise<{ you: string; others: string }> => {
+  // v1.17.0: re-transcribe. For recorded WAV pairs, use the merge command so
+  // the rebuilt transcript stays chronological (interleaved). Non-WAV imports
+  // (m4a/mp3/…) fall back to per-file transcription with no ordered segments.
+  const doTranscribe = async (
+    m: Meeting,
+  ): Promise<{ you: string; others: string; transcript: TranscriptSeg[] }> => {
+    const isWav = (p: string | null) => !!p && /\.wav$/i.test(p);
+    if (isWav(m.micPath) || isWav(m.systemPath)) {
+      const r = await commands.meetingTranscribeMerge(
+        isWav(m.micPath) ? m.micPath : null,
+        isWav(m.systemPath) ? m.systemPath : null,
+      );
+      if (r.status !== "ok") throw new Error(r.error);
+      const transcript = r.data as TranscriptSeg[];
+      const join = (src: string) =>
+        transcript
+          .filter((s) => s.source === src)
+          .map((s) => s.text)
+          .join(" ");
+      const you = join("you");
+      const others = join("others");
+      patchMeeting(m.id, { you, others, transcript });
+      return { you, others, transcript };
+    }
     const tx = async (path: string | null) => {
       if (!path) return "";
       const r = await commands.meetingTranscribeFile(path);
@@ -513,14 +642,20 @@ export const MeetingsSettings: React.FC = () => {
     };
     const you = await tx(m.micPath);
     const others = await tx(m.systemPath);
-    patchMeeting(m.id, { you, others });
-    return { you, others };
+    patchMeeting(m.id, { you, others, transcript: [] });
+    return { you, others, transcript: [] };
   };
 
   const doPostProcess = async (m: Meeting, text: string): Promise<void> => {
-    const r = await commands.meetingPostProcess(text, customPrompt.trim());
-    if (r.status !== "ok") throw new Error(r.error);
-    patchMeeting(m.id, { processed: r.data, processPrompt: customPrompt.trim() });
+    setLiveProcessed(""); // reset the streaming preview for this run
+    try {
+      const r = await commands.meetingPostProcess(text, customPrompt.trim());
+      if (r.status !== "ok") throw new Error(r.error);
+      patchMeeting(m.id, { processed: r.data, processPrompt: customPrompt.trim() });
+    } finally {
+      // The persisted `processed` now renders; drop the transient preview.
+      setLiveProcessed("");
+    }
   };
 
   const onReTranscribe = async () => {
@@ -543,6 +678,7 @@ export const MeetingsSettings: React.FC = () => {
       active.others,
       active.youLabel,
       active.othersLabel,
+      active.transcript,
     );
     if (!text.trim()) {
       toast.message("Nothing to post-process — transcribe first.");
@@ -562,8 +698,14 @@ export const MeetingsSettings: React.FC = () => {
     if (!active || busy) return;
     setBusy("both");
     try {
-      const { you, others } = await doTranscribe(active);
-      const text = combine(you, others, active.youLabel, active.othersLabel);
+      const { you, others, transcript } = await doTranscribe(active);
+      const text = combine(
+        you,
+        others,
+        active.youLabel,
+        active.othersLabel,
+        transcript,
+      );
       if (!text.trim()) {
         toast.message("No speech found to post-process.");
         return;
@@ -581,7 +723,14 @@ export const MeetingsSettings: React.FC = () => {
     try {
       const sel = await openFileDialog({
         multiple: false,
-        filters: [{ name: "WAV audio", extensions: ["wav"] }],
+        // v1.16.1: compressed formats decode via rodio (symphonia) — m4a is
+      // what phone/Teams recordings usually arrive as.
+      filters: [
+        {
+          name: "Audio files",
+          extensions: ["wav", "m4a", "mp3", "aac", "flac", "ogg"],
+        },
+      ],
       });
       if (typeof sel === "string") {
         setImportPath(sel);
@@ -620,6 +769,7 @@ export const MeetingsSettings: React.FC = () => {
         others: "",
         youLabel: "You",
         othersLabel: "Others",
+        imported: true,
         processed,
         processPrompt,
         createdAt: Date.now(),
@@ -642,8 +792,8 @@ export const MeetingsSettings: React.FC = () => {
   const copyActive = async () => {
     if (!active) return;
     const text = active.processed.trim()
-      ? `${combine(active.you, active.others, active.youLabel, active.othersLabel)}\n\n--- Processed ---\n${active.processed.trim()}`
-      : combine(active.you, active.others, active.youLabel, active.othersLabel);
+      ? `${combine(active.you, active.others, active.youLabel, active.othersLabel, active.transcript)}\n\n--- Processed ---\n${active.processed.trim()}`
+      : combine(active.you, active.others, active.youLabel, active.othersLabel, active.transcript);
     try {
       await writeText(text);
       setCopied(true);
@@ -668,8 +818,13 @@ export const MeetingsSettings: React.FC = () => {
     const parts = [
       `# ${titleOf(active)}`,
       "",
-      combine(active.you, active.others, active.youLabel, active.othersLabel) ||
-        "(no transcript)",
+      combine(
+        active.you,
+        active.others,
+        active.youLabel,
+        active.othersLabel,
+        active.transcript,
+      ) || "(no transcript)",
     ];
     if (active.processed.trim()) {
       parts.push("", "## Processed", "", active.processed.trim());
@@ -712,6 +867,7 @@ export const MeetingsSettings: React.FC = () => {
           others: isOthers ? res.data : "",
           youLabel: "You",
           othersLabel: "Others",
+          imported: true,
           processed: "",
           processPrompt: "",
           createdAt: file.modified ? file.modified * 1000 : Date.now(),
@@ -816,7 +972,7 @@ export const MeetingsSettings: React.FC = () => {
           onClick={pickImportFile}
           disabled={recording || recProcessing}
           className="flex items-center gap-1.5"
-          title="Import a WAV audio file to transcribe and process"
+          title="Import an audio file (WAV, M4A, MP3, FLAC, OGG) to transcribe and process"
         >
           <Upload size={15} /> Import audio
         </Button>
@@ -1093,10 +1249,13 @@ export const MeetingsSettings: React.FC = () => {
                 </div>
               </div>
 
-              {!active.systemCaptured && (
+              {/* v1.17.0: only meaningful for RECORDED meetings — an import
+                  always has exactly one audio source, so warning about a
+                  missing second one was noise. */}
+              {!active.systemCaptured && !active.imported && (
                 <p className="flex items-center gap-1.5 text-xs text-pill-warning">
                   <TriangleAlert size={13} /> System audio was not captured for this
-                  meeting — only your mic / imported audio.
+                  meeting — only your mic was recorded.
                 </p>
               )}
 
@@ -1189,11 +1348,46 @@ export const MeetingsSettings: React.FC = () => {
                       </>
                     )}
                   </div>
-                  <p className="text-sm text-text-muted whitespace-pre-wrap leading-relaxed">
-                    {row.text.trim() || "—"}
-                  </p>
+                  {/* v1.17.0: when an ordered transcript exists it's rendered
+                      interleaved below, so the per-speaker block body is
+                      suppressed (the header + rename pencil stay). The two-block
+                      body only shows for older meetings / single-file imports. */}
+                  {!(active.transcript && active.transcript.length > 0) && (
+                    <p className="text-sm text-text-muted whitespace-pre-wrap leading-relaxed">
+                      {row.text.trim() || "—"}
+                    </p>
+                  )}
                 </div>
               ))}
+
+              {/* v1.17.0: chronological, interleaved transcript — both speakers
+                  in the order they actually spoke. */}
+              {active.transcript && active.transcript.length > 0 && (
+                <div className="space-y-1.5">
+                  {active.transcript
+                    .filter((s) => s.text.trim())
+                    .map((s, i) => (
+                      <p
+                        key={i}
+                        className="text-sm text-text-muted leading-relaxed"
+                      >
+                        <span
+                          className={`font-semibold ${
+                            s.source === "you"
+                              ? "text-aurora-cyan"
+                              : "text-aurora-purple"
+                          }`}
+                        >
+                          {s.source === "you"
+                            ? active.youLabel
+                            : active.othersLabel}
+                          :
+                        </span>{" "}
+                        {s.text.trim()}
+                      </p>
+                    ))}
+                </div>
+              )}
 
               {/* Actions */}
               <div className="space-y-2 pt-3 border-t border-glass-border">
@@ -1245,6 +1439,30 @@ export const MeetingsSettings: React.FC = () => {
                   </Button>
                 </div>
 
+                {/* v1.17.0: merge with another meeting (non-destructive). */}
+                {meetings.length > 1 && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-text-subtle">Merge with</span>
+                    <Dropdown
+                      options={meetings
+                        .filter((m) => m.id !== active.id)
+                        .map((m) => ({ value: m.id, label: titleOf(m) }))}
+                      selectedValue={mergeWithId}
+                      onSelect={setMergeWithId}
+                    />
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => mergeMeetings(mergeWithId)}
+                      disabled={!mergeWithId}
+                      className="flex items-center gap-1.5"
+                      title="Combine both meetings' transcripts into a new entry, in chronological order — both originals are kept"
+                    >
+                      <GitMerge size={14} /> Merge
+                    </Button>
+                  </div>
+                )}
+
                 <label className="block text-xs text-text-subtle">
                   Post-processing prompt (this meeting)
                 </label>
@@ -1267,6 +1485,19 @@ export const MeetingsSettings: React.FC = () => {
                     Post-processing uses your Post Process provider/model (Ollama +
                     Gemma = fully-local).
                   </p>
+                )}
+
+                {/* v1.17.0: live streaming preview while the model generates. */}
+                {(busy === "post" || busy === "both") && liveProcessed.trim() && (
+                  <div className="space-y-1 pt-1">
+                    <h3 className="flex items-center gap-1.5 text-xs font-semibold text-pill-positive uppercase tracking-wider">
+                      <Loader2 size={12} className="animate-spin" /> Generating
+                      notes…
+                    </h3>
+                    <div className="glass-card-thin md-body">
+                      <Markdown>{liveProcessed}</Markdown>
+                    </div>
+                  </div>
                 )}
 
                 {active.processed.trim() && (
