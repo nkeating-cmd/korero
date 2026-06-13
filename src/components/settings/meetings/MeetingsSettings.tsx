@@ -3,6 +3,8 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   Circle,
   Square,
+  Pause,
+  Play,
   Loader2,
   Copy,
   Plus,
@@ -159,7 +161,7 @@ const combine = (
 const baseName = (p: string) => p.replace(/\\/g, "/").split("/").pop() || p;
 
 export const MeetingsSettings: React.FC = () => {
-  const { settings } = useSettings();
+  const { settings, updateSetting } = useSettings();
 
   // v1.13.4: meetings live on disk (appdata/meetings/meetings.json); loaded
   // async on mount, with one-time migration from the legacy localStorage store.
@@ -167,7 +169,14 @@ export const MeetingsSettings: React.FC = () => {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [storeReady, setStoreReady] = useState(false);
   const [recording, setRecording] = useState(false);
+  // v1.19.0: pause state for a live meeting.
+  const [paused, setPaused] = useState(false);
   const [recProcessing, setRecProcessing] = useState(false);
+  // v1.19.0: chunked-transcription progress for imports / re-transcribes.
+  const [transcribeProgress, setTranscribeProgress] = useState<{
+    window: number;
+    total: number | null;
+  } | null>(null);
   // v1.13.3: set when the Rust capture worker reports a disk-write failure
   // mid-meeting (meeting-capture-error event) — e.g. disk full.
   const [captureError, setCaptureError] = useState<string | null>(null);
@@ -193,6 +202,10 @@ export const MeetingsSettings: React.FC = () => {
   const [busy, setBusy] = useState<null | "transcribe" | "post" | "both">(null);
   const [models, setModels] = useState<ModelInfo[] | null>(null);
   const [customPrompt, setCustomPrompt] = useState(DEFAULT_PROMPT);
+  // v1.19.0: meeting/import post-processing prompt picker selections
+  // ("custom" = use the editable textarea text; otherwise a saved prompt id).
+  const [meetingPromptId, setMeetingPromptId] = useState<string>("custom");
+  const [importPromptId, setImportPromptId] = useState<string>("custom");
   const [providerLocal, setProviderLocal] = useState<boolean | null>(null);
   const [recordings, setRecordings] = useState<RecordingFile[] | null>(null);
   const [busyFile, setBusyFile] = useState<string | null>(null);
@@ -218,6 +231,43 @@ export const MeetingsSettings: React.FC = () => {
   const restoredElapsedRef = useRef(0);
   const active = meetings.find((m) => m.id === activeId) ?? null;
   const currentModel = settings?.selected_model ?? "";
+
+  // v1.19.0: post-processing prompt picker — shares the saved-prompts store with
+  // dictation/Notes. Selecting a saved prompt loads its text into the editable
+  // textarea (still editable); "Custom" leaves whatever is there.
+  const promptOptions: DropdownOption[] = [
+    ...(settings?.post_process_prompts ?? []).map((p) => ({
+      value: p.id,
+      label: p.name,
+    })),
+    { value: "custom", label: "Custom prompt…" },
+  ];
+  const savedPromptText = (id: string): string =>
+    settings?.post_process_prompts?.find((p) => p.id === id)?.prompt ?? "";
+  // Persist the current textarea text as a brand-new saved prompt (memory note:
+  // post_process_prompts is written via updateSetting, not an upstream command).
+  const savePromptAsNew = async (text: string): Promise<string | null> => {
+    const body = text.trim();
+    if (!body) {
+      toast.error("Nothing to save — the prompt is empty.");
+      return null;
+    }
+    const name = window.prompt("Name this prompt:")?.trim();
+    if (!name) return null;
+    const id = `user_${Date.now()}`;
+    const next = [
+      ...(settings?.post_process_prompts ?? []),
+      { id, name, prompt: body, alias: null },
+    ];
+    try {
+      await updateSetting("post_process_prompts", next);
+      toast.success(`Saved prompt "${name}".`);
+      return id;
+    } catch (e) {
+      toast.error(`Could not save prompt: ${String(e)}`);
+      return null;
+    }
+  };
 
   // v1.13.4: load from disk; migrate the legacy localStorage store once, and
   // only clear the legacy copy after a verified round-trip to disk.
@@ -282,7 +332,6 @@ export const MeetingsSettings: React.FC = () => {
       // restoredElapsedRef is 0 for a freshly started recording.
       setElapsed(restoredElapsedRef.current);
       restoredElapsedRef.current = 0;
-      timerRef.current = window.setInterval(() => setElapsed((e) => e + 1), 1000);
     } else if (timerRef.current !== null) {
       window.clearInterval(timerRef.current);
       timerRef.current = null;
@@ -291,6 +340,23 @@ export const MeetingsSettings: React.FC = () => {
       if (timerRef.current !== null) window.clearInterval(timerRef.current);
     };
   }, [recording]);
+
+  // v1.19.0: the elapsed clock runs only while recording AND not paused, so
+  // the displayed time matches the backend's paused-excluded elapsed.
+  useEffect(() => {
+    if (recording && !paused) {
+      timerRef.current = window.setInterval(() => setElapsed((e) => e + 1), 1000);
+    } else if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    return () => {
+      if (timerRef.current !== null) {
+        window.clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [recording, paused]);
 
   // v1.13.3: surface mid-meeting capture failures (disk full / unwritable).
   // The recording up to the failure point is preserved on disk.
@@ -327,6 +393,19 @@ export const MeetingsSettings: React.FC = () => {
     };
   }, []);
 
+  // v1.19.0: chunked-transcription progress (imports + re-transcribes).
+  useEffect(() => {
+    const un = listen<{ id: string; window: number; total: number | null }>(
+      "meeting-transcribe-progress",
+      (e) => {
+        setTranscribeProgress({ window: e.payload.window, total: e.payload.total });
+      },
+    );
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
   // v1.14.2: restore the recording UI if a meeting is still running on the
   // backend (the page was unmounted mid-meeting). Without this, navigating
   // away and back showed an idle page over a live recording — which also
@@ -339,6 +418,7 @@ export const MeetingsSettings: React.FC = () => {
         if (res.status === "ok" && res.data) {
           restoredElapsedRef.current = res.data.elapsed_secs;
           setSystemCaptured(res.data.system_captured);
+          setPaused(res.data.paused); // v1.19.0: restore paused state too
           setRecording(true);
           refreshDevices();
           toast.message(
@@ -526,6 +606,7 @@ export const MeetingsSettings: React.FC = () => {
     if (recProcessing) return;
     if (recording) {
       setRecording(false);
+      setPaused(false); // v1.19.0: clear pause state on stop
       setRecProcessing(true);
       try {
         const res = await commands.meetingStopCapture();
@@ -583,6 +664,7 @@ export const MeetingsSettings: React.FC = () => {
         const res = await commands.meetingStartCapture();
         if (res.status === "ok") {
           setSystemCaptured(res.data);
+          setPaused(false); // v1.19.0: fresh meeting starts un-paused
           setRecording(true);
           if (!res.data) {
             toast.message(
@@ -595,6 +677,27 @@ export const MeetingsSettings: React.FC = () => {
       } catch (e) {
         toast.error(`Could not start the meeting: ${String(e)}`);
       }
+    }
+  };
+
+  // v1.19.0: pause / resume the live meeting. Optimistic UI: flip immediately,
+  // roll back on error. The mic indicator stays on while paused (the stream is
+  // kept open) — surfaced in the tip below the button.
+  const togglePause = async () => {
+    if (!recording || recProcessing) return;
+    const next = !paused;
+    setPaused(next);
+    try {
+      const res = next
+        ? await commands.meetingPause()
+        : await commands.meetingResume();
+      if (res.status !== "ok") {
+        setPaused(!next);
+        toast.error(res.error);
+      }
+    } catch (e) {
+      setPaused(!next);
+      toast.error(`Could not ${next ? "pause" : "resume"} the meeting: ${String(e)}`);
     }
   };
 
@@ -744,6 +847,7 @@ export const MeetingsSettings: React.FC = () => {
   const runImport = async (alsoProcess: boolean) => {
     if (!importPath || importBusy) return;
     setImportBusy(true);
+    setTranscribeProgress(null); // v1.19.0: reset the progress bar for this run
     try {
       const r = await commands.meetingTranscribeFile(importPath);
       if (r.status !== "ok") {
@@ -785,6 +889,7 @@ export const MeetingsSettings: React.FC = () => {
       toast.error(`Import failed: ${String(e)}`);
     } finally {
       setImportBusy(false);
+      setTranscribeProgress(null); // v1.19.0: clear the bar when done
     }
   };
 
@@ -947,6 +1052,31 @@ export const MeetingsSettings: React.FC = () => {
           )}
         </Button>
 
+        {/* v1.19.0: pause / resume — only while a meeting is live. */}
+        {recording && !recProcessing && (
+          <Button
+            variant="secondary"
+            size="md"
+            onClick={togglePause}
+            className="flex items-center gap-2"
+            title={
+              paused
+                ? "Resume capturing — audio while paused is not recorded"
+                : "Pause capturing — your mic stays acquired (indicator stays on) but no audio is recorded"
+            }
+          >
+            {paused ? (
+              <>
+                <Play size={15} /> Resume
+              </>
+            ) : (
+              <>
+                <Pause size={15} /> Pause
+              </>
+            )}
+          </Button>
+        )}
+
         <Button
           variant="secondary"
           size="md"
@@ -987,10 +1117,16 @@ export const MeetingsSettings: React.FC = () => {
           />
         </div>
 
-        {recording && (
+        {recording && !paused && (
           <span className="flex items-center gap-2 text-sm text-text-muted">
             <span className="inline-block w-2 h-2 rounded-full bg-pill-urgent animate-pulse" />
             {systemCaptured === false ? "Recording (mic only)" : "Recording you + others"}
+          </span>
+        )}
+        {recording && paused && (
+          <span className="flex items-center gap-2 text-sm font-medium text-amber-400">
+            <span className="inline-block w-2 h-2 rounded-full bg-amber-400" />
+            Paused — not recording (mic still on)
           </span>
         )}
         {!recording && !recProcessing && !importPath && (
@@ -1084,9 +1220,37 @@ export const MeetingsSettings: React.FC = () => {
             Transcribed with the <strong className="text-text">Model</strong> selected
             above. Edit the post-processing prompt, then choose an action.
           </p>
+          {/* v1.19.0: saved-prompt picker + Save-as-new for imports. */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-text-subtle shrink-0">Prompt</span>
+            <Dropdown
+              options={promptOptions}
+              selectedValue={importPromptId}
+              onSelect={(id) => {
+                setImportPromptId(id);
+                if (id !== "custom") setImportPrompt(savedPromptText(id));
+              }}
+              disabled={importBusy}
+            />
+            <button
+              type="button"
+              onClick={async () => {
+                const id = await savePromptAsNew(importPrompt);
+                if (id) setImportPromptId(id);
+              }}
+              disabled={importBusy}
+              className="flex items-center gap-1 text-xs text-text-subtle hover:text-text disabled:opacity-50"
+              title="Save the current prompt as a new reusable prompt"
+            >
+              <Plus size={13} /> Save as new
+            </button>
+          </div>
           <textarea
             value={importPrompt}
-            onChange={(e) => setImportPrompt(e.target.value)}
+            onChange={(e) => {
+              setImportPrompt(e.target.value);
+              setImportPromptId("custom");
+            }}
             rows={2}
             placeholder="Post-processing prompt"
             className="w-full resize-y bg-glass-surface-thin rounded-lg px-3 py-2 text-sm text-text placeholder:text-text-subtle focus:outline-none border border-glass-border"
@@ -1121,6 +1285,37 @@ export const MeetingsSettings: React.FC = () => {
               Transcribe only
             </Button>
           </div>
+          {/* v1.19.0: chunked-transcription progress. Determinate bar when the
+              window total is known (WAV); indeterminate otherwise (compressed). */}
+          {importBusy && transcribeProgress && (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between text-xs text-text-subtle">
+                <span>Transcribing audio…</span>
+                <span>
+                  {transcribeProgress.total
+                    ? `part ${transcribeProgress.window} of ${transcribeProgress.total}`
+                    : `part ${transcribeProgress.window}`}
+                </span>
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-glass-surface-thin">
+                {transcribeProgress.total ? (
+                  <div
+                    className="h-full rounded-full bg-aurora-cyan transition-all duration-300"
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        Math.round(
+                          (transcribeProgress.window / transcribeProgress.total) * 100,
+                        ),
+                      )}%`,
+                    }}
+                  />
+                ) : (
+                  <div className="h-full w-1/3 animate-pulse rounded-full bg-aurora-cyan" />
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1466,9 +1661,34 @@ export const MeetingsSettings: React.FC = () => {
                 <label className="block text-xs text-text-subtle">
                   Post-processing prompt (this meeting)
                 </label>
+                {/* v1.19.0: saved-prompt picker + Save-as-new. */}
+                <div className="flex items-center gap-2">
+                  <Dropdown
+                    options={promptOptions}
+                    selectedValue={meetingPromptId}
+                    onSelect={(id) => {
+                      setMeetingPromptId(id);
+                      if (id !== "custom") setCustomPrompt(savedPromptText(id));
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const id = await savePromptAsNew(customPrompt);
+                      if (id) setMeetingPromptId(id);
+                    }}
+                    className="flex items-center gap-1 text-xs text-text-subtle hover:text-text"
+                    title="Save the current prompt as a new reusable prompt"
+                  >
+                    <Plus size={13} /> Save as new
+                  </button>
+                </div>
                 <textarea
                   value={customPrompt}
-                  onChange={(e) => setCustomPrompt(e.target.value)}
+                  onChange={(e) => {
+                    setCustomPrompt(e.target.value);
+                    setMeetingPromptId("custom");
+                  }}
                   rows={2}
                   className="w-full resize-y bg-glass-surface-thin rounded-lg px-3 py-2 text-sm text-text placeholder:text-text-subtle focus:outline-none border border-glass-border"
                 />

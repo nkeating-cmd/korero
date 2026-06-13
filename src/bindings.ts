@@ -738,9 +738,25 @@ async meetingDeleteRecording(path: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async meetingRecordingStatus() : Promise<Result<{ elapsed_secs: number; system_captured: boolean } | null, string>> {
+async meetingRecordingStatus() : Promise<Result<{ elapsed_secs: number; system_captured: boolean; paused: boolean } | null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("meeting_recording_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async meetingPause() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_pause") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async meetingResume() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_resume") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

@@ -506,6 +506,9 @@ pub fn run(cli_args: CliArgs) {
             meeting::meeting_delete_recording,
             // Kōrero fork (v1.14.2): restore recording UI after page remount.
             meeting::meeting_recording_status,
+            // Kōrero fork (v1.19.0): pause / resume a live meeting.
+            meeting::meeting_pause,
+            meeting::meeting_resume,
             // Kōrero fork (v1.14.3): whole-note post-processing (prompt + model
             // selectable per run).
             commands::notes::note_post_process,

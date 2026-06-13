@@ -982,6 +982,14 @@ fn default_post_process_prompts() -> Vec<LLMPrompt> {
             alias: Some("meeting".to_string()),
             prompt: "Restructure this dictation as a meeting note with three sections:\n\n**Decisions:** (what was decided)\n**Actions:** (who does what, by when)\n**Open questions:** (what's still unresolved)\n\nUse NZ English. Drop chronological filler. Each bullet should be one sentence. Return only the structured note.\n\nDictation:\n${output}".to_string(),
         },
+        // Kōrero (v1.19.0): a longer-form meeting write-up for the Meetings tab,
+        // seeded into existing installs by the prompt-defaults sync above.
+        LLMPrompt {
+            id: "korero_meeting_detailed".to_string(),
+            name: "Detailed meeting notes".to_string(),
+            alias: Some("detailed".to_string()),
+            prompt: "Turn this meeting transcript into detailed, well-structured minutes. Use NZ English. Produce these sections, omitting any that have no content:\n\n**Summary:** 2–4 sentences on what the meeting was about and what it achieved.\n**Key discussion points:** the substantive topics, each a short paragraph capturing the reasoning — not just the conclusion.\n**Decisions:** what was decided.\n**Actions:** who does what, by when (use the speakers' names where given).\n**Open questions / follow-ups:** what is still unresolved.\n\nStay faithful to the transcript — do not invent details, names, dates, or numbers. Preserve te reo Māori exactly as spoken. Return only the notes.\n\nTranscript:\n${output}".to_string(),
+        },
         // Kōrero (v1.16.0): out-of-the-box prompt for dictation that blends
         // NZ English and te reo Māori — restores macrons, never translates
         // te reo, fixes common mis-hearings. Merged into existing installs by

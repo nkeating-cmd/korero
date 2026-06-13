@@ -27,7 +27,9 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::audio_toolkit::audio::FrameResampler;
 use crate::audio_toolkit::list_input_devices;
-use crate::meeting_capture::{LiveSegment, Segmenter, SegmentSender, StreamCapture};
+use crate::meeting_capture::{
+    LiveSegment, SegmentSender, Segmenter, StreamCapture, SEG_QUIET_RMS,
+};
 #[cfg(windows)]
 use crate::meeting_capture_wasapi::WasapiLoopback;
 use crate::managers::audio::AudioRecordingManager;
@@ -86,6 +88,28 @@ struct ActiveCapture {
     /// v1.14.2: when the capture started — lets the UI restore its recording
     /// state (elapsed clock included) after the page unmounts mid-meeting.
     started_at: std::time::Instant,
+    /// v1.19.0: shared pause flag — both capture workers read it and drop
+    /// frames while set. The streams stay open (no device re-acquisition).
+    paused: Arc<AtomicBool>,
+    /// v1.19.0: total time spent paused so far, plus the start of the current
+    /// pause (if any). The elapsed clock the UI shows excludes both.
+    paused_total: Duration,
+    paused_since: Option<std::time::Instant>,
+}
+
+impl ActiveCapture {
+    /// Wall-clock since start, minus all paused time (including any pause in
+    /// progress). This is the "recording time" the UI shows and the WAV length
+    /// roughly tracks.
+    fn elapsed(&self) -> Duration {
+        let ongoing = self.paused_since.map(|t| t.elapsed()).unwrap_or_default();
+        self.started_at
+            .elapsed()
+            .saturating_sub(self.paused_total + ongoing)
+    }
+    fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
+    }
 }
 
 /// Phase B (v1.14.0): live transcript, appended to by the consumer thread,
@@ -102,9 +126,21 @@ struct LiveTranscript {
 }
 
 impl LiveTranscript {
-    fn append(&self, start_ms: u64, source: &'static str, text: &str) {
+    /// Append a transcribed segment. v1.19.0: collapses a consecutive duplicate
+    /// from the SAME source — a near-silence hallucination repeats the same
+    /// phrase across back-to-back segments ("You: Thank you." ×9), so a segment
+    /// whose normalised text matches this source's most recent entry is
+    /// dropped. Returns `true` if the segment was actually appended (the caller
+    /// only emits a UI event then), `false` if it was collapsed away.
+    fn append(&self, start_ms: u64, source: &'static str, text: &str) -> bool {
         let mut g = self.segs.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((_, _, last)) = g.iter().rev().find(|(_, s, _)| *s == source) {
+            if normalise_phrase(last) == normalise_phrase(text) {
+                return false;
+            }
+        }
         g.push((start_ms, source, text.to_string()));
+        true
     }
 
     /// A chronologically-sorted snapshot of the live segments (stable sort by
@@ -129,6 +165,136 @@ fn join_log(log: &[(u64, &'static str, String)], source: &str) -> String {
         out.push_str(text);
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// v1.19.0: anti-hallucination text guards (belt-and-braces behind the VAD).
+//
+// Whisper emits a small set of content-free "outro" phrases when handed
+// near-silence or non-speech audio, and loops them ("Thank you." ×9). The VAD
+// now stops most non-speech reaching the model at all; these text-level guards
+// catch anything that slips through, on BOTH the live and the offline/import
+// paths (the latter has no VAD).
+// ---------------------------------------------------------------------------
+
+/// Lowercase, collapse internal whitespace, strip surrounding punctuation — the
+/// canonical form for duplicate/blocklist comparison.
+fn normalise_phrase(s: &str) -> String {
+    let lowered = s.trim().to_lowercase();
+    let stripped = lowered.trim_matches(|c: char| {
+        c.is_whitespace() || matches!(c, '.' | '!' | '?' | ',' | ';' | ':' | '-' | '–' | '—' | '"' | '\'' | '…')
+    });
+    stripped.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whisper's canonical near-silence hallucinations (already in normalised form).
+const HALLUCINATION_PHRASES: &[&str] = &[
+    "thank you",
+    "thank you so much",
+    "thank you very much",
+    "thanks for watching",
+    "thanks for watching everyone",
+    "please subscribe",
+    "see you next time",
+    "see you in the next video",
+    "bye",
+    "bye bye",
+    "you",
+    "okay",
+    "ok",
+];
+
+/// True if `text` is (only) a known content-free hallucination phrase.
+fn is_hallucination_phrase(text: &str) -> bool {
+    let n = normalise_phrase(text);
+    !n.is_empty() && HALLUCINATION_PHRASES.contains(&n.as_str())
+}
+
+/// Collapse consecutive repeated sentences inside one transcribed segment — the
+/// other half of the hallucination signature, where the loop happens WITHIN a
+/// single line ("It's great. It's great. It's great." → "It's great.").
+///
+/// Two safety properties (v1.19.0 red-team fixes):
+///  * A `.` only ends a sentence when neither neighbour is a digit, so decimals
+///    and versions ("$3.50", "v1.19") are NEVER split — which previously turned
+///    "$3.50" into "$3. 50" on every import window.
+///  * If no duplicate is actually removed, the ORIGINAL text is returned
+///    verbatim — we never reflow ordinary text, so spacing/punctuation of a
+///    clean transcript is left exactly as the model produced it.
+fn collapse_repeats(text: &str) -> String {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut sentences: Vec<&str> = Vec::new();
+    let mut start = 0usize;
+    for idx in 0..chars.len() {
+        let (i, c) = chars[idx];
+        let is_boundary = match c {
+            '!' | '?' => true,
+            '.' => {
+                let prev_digit = idx > 0 && chars[idx - 1].1.is_ascii_digit();
+                let next_digit =
+                    idx + 1 < chars.len() && chars[idx + 1].1.is_ascii_digit();
+                !prev_digit && !next_digit
+            }
+            _ => false,
+        };
+        if is_boundary {
+            let end = i + c.len_utf8();
+            let s = text[start..end].trim();
+            if !s.is_empty() {
+                sentences.push(s);
+            }
+            start = end;
+        }
+    }
+    if start < text.len() {
+        let tail = text[start..].trim();
+        if !tail.is_empty() {
+            sentences.push(tail);
+        }
+    }
+    if sentences.len() < 2 {
+        return text.trim().to_string();
+    }
+    let mut out: Vec<&str> = Vec::with_capacity(sentences.len());
+    let mut last_norm = String::new();
+    let mut dropped_any = false;
+    for s in sentences {
+        let n = normalise_phrase(s);
+        if n.is_empty() {
+            continue;
+        }
+        if n == last_norm {
+            dropped_any = true;
+            continue; // consecutive duplicate — drop
+        }
+        last_norm = n;
+        out.push(s);
+    }
+    // Only reflow when we genuinely removed a duplicate; an ordinary transcript
+    // is returned untouched.
+    if !dropped_any {
+        return text.trim().to_string();
+    }
+    out.join(" ")
+}
+
+/// Apply the segment-level guards to one freshly transcribed segment:
+/// intra-segment repeat collapse, plus a near-energy-floor drop of canonical
+/// hallucination phrases. `peak_rms` is the segment's peak frame RMS; `None`
+/// (offline path) skips the energy test but still collapses repeats. Returns
+/// `None` when the whole segment should be discarded.
+fn clean_segment_text(text: &str, peak_rms: Option<f32>) -> Option<String> {
+    let collapsed = collapse_repeats(text);
+    let trimmed = collapsed.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let near_gate = peak_rms.map(|r| r < SEG_QUIET_RMS * 3.0).unwrap_or(false);
+    let word_count = trimmed.split_whitespace().count();
+    if near_gate && word_count <= 3 && is_hallucination_phrase(trimmed) {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 /// v1.13.6: the "Others" stream can come from two backends — native WASAPI
@@ -165,10 +331,17 @@ fn start_system_capture(
     app: &AppHandle,
     path: PathBuf,
     segments: Option<SegmentSender>,
+    paused: Arc<AtomicBool>,
 ) -> (Option<SystemCapture>, &'static str) {
     #[cfg(windows)]
     {
-        match WasapiLoopback::start(path.clone(), Some(app.clone()), "others", segments.clone()) {
+        match WasapiLoopback::start(
+            path.clone(),
+            Some(app.clone()),
+            "others",
+            segments.clone(),
+            paused.clone(),
+        ) {
             Ok(c) => return (Some(SystemCapture::Wasapi(c)), "WASAPI"),
             Err(e) => {
                 log::warn!("Native WASAPI loopback failed ({e}); trying cpal loopback.");
@@ -182,7 +355,7 @@ fn start_system_capture(
         let config = device
             .default_output_config()
             .map_err(|e| format!("Output config: {e}"))?;
-        StreamCapture::start(device, config, path, Some(app.clone()), "others", segments)
+        StreamCapture::start(device, config, path, Some(app.clone()), "others", segments, paused)
     })();
     match cpal_try {
         Ok(c) => (Some(SystemCapture::Cpal(c)), "cpal"),
@@ -277,6 +450,8 @@ pub async fn meeting_start_capture(
     // throughout: the WAV on disk remains the source of truth.
     let (seg_tx, seg_rx) = std::sync::mpsc::sync_channel::<LiveSegment>(8);
     let live = Arc::new(LiveTranscript::default());
+    // v1.19.0: one pause flag shared by both capture workers.
+    let paused = Arc::new(AtomicBool::new(false));
     let consumer = {
         let live = live.clone();
         let tm = transcription_manager.inner().clone();
@@ -290,11 +465,17 @@ pub async fn meeting_start_capture(
             while let Ok(seg) = seg_rx.recv() {
                 match tm.transcribe(seg.samples) {
                     Ok(text) => {
-                        let text = text.trim().to_string();
-                        if text.is_empty() {
+                        // v1.19.0 guards (d)+(b): collapse intra-segment repeats
+                        // and drop near-floor hallucination phrases.
+                        let text = match clean_segment_text(&text, Some(seg.peak_rms)) {
+                            Some(t) => t,
+                            None => continue,
+                        };
+                        // guard (a): append collapses a cross-segment duplicate
+                        // and tells us whether to surface the event.
+                        if !live.append(seg.start_ms, seg.source, &text) {
                             continue;
                         }
-                        live.append(seg.start_ms, seg.source, &text);
                         use tauri::Emitter;
                         let _ = app_ev.emit(
                             "meeting-live-segment",
@@ -330,6 +511,7 @@ pub async fn meeting_start_capture(
             Some(app.clone()),
             "you",
             Some(seg_tx.clone()),
+            paused.clone(),
         )
     })();
     let mic = match mic {
@@ -346,7 +528,7 @@ pub async fn meeting_start_capture(
     // fallback. Best-effort: mic-only if both fail. `seg_tx` is MOVED here so
     // no sender survives outside the capture workers — that's what lets the
     // consumer exit when the workers finish.
-    let (system, backend) = start_system_capture(&app, others_path, Some(seg_tx));
+    let (system, backend) = start_system_capture(&app, others_path, Some(seg_tx), paused.clone());
     let system_captured = system.is_some();
     if system_captured {
         log::info!("Meeting system capture started (backend: {backend}).");
@@ -360,6 +542,9 @@ pub async fn meeting_start_capture(
         live,
         consumer: Some(consumer),
         started_at: std::time::Instant::now(),
+        paused,
+        paused_total: Duration::ZERO,
+        paused_since: None,
     });
     Ok(system_captured)
 }
@@ -372,6 +557,8 @@ pub async fn meeting_start_capture(
 pub struct MeetingStatus {
     pub elapsed_secs: u32,
     pub system_captured: bool,
+    /// v1.19.0: whether the meeting is currently paused.
+    pub paused: bool,
 }
 
 #[tauri::command]
@@ -381,9 +568,48 @@ pub async fn meeting_recording_status(
 ) -> Result<Option<MeetingStatus>, String> {
     let guard = meeting.active.lock().map_err(|_| "lock poisoned")?;
     Ok(guard.as_ref().map(|c| MeetingStatus {
-        elapsed_secs: c.started_at.elapsed().as_secs().min(u32::MAX as u64) as u32,
+        // v1.19.0: elapsed excludes paused time.
+        elapsed_secs: c.elapsed().as_secs().min(u32::MAX as u64) as u32,
         system_captured: c.system.is_some(),
+        paused: c.is_paused(),
     }))
+}
+
+/// v1.19.0: pause the meeting — both capture workers start dropping frames, the
+/// elapsed clock stops, and the live transcript receives no new segments. The
+/// device streams stay OPEN (no re-acquisition risk), so the mic indicator
+/// stays on. Idempotent: pausing an already-paused meeting is a no-op.
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_pause(
+    meeting: State<'_, Arc<MeetingRecorder>>,
+) -> Result<bool, String> {
+    let mut guard = meeting.active.lock().map_err(|_| "lock poisoned")?;
+    let cap = guard.as_mut().ok_or("No meeting is being recorded.")?;
+    if !cap.is_paused() {
+        cap.paused.store(true, Ordering::Relaxed);
+        cap.paused_since = Some(std::time::Instant::now());
+    }
+    Ok(true)
+}
+
+/// v1.19.0: resume a paused meeting — capture workers start writing again and
+/// the elapsed clock advances. The time spent paused is folded into
+/// `paused_total` so it is permanently excluded from elapsed. Idempotent.
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_resume(
+    meeting: State<'_, Arc<MeetingRecorder>>,
+) -> Result<bool, String> {
+    let mut guard = meeting.active.lock().map_err(|_| "lock poisoned")?;
+    let cap = guard.as_mut().ok_or("No meeting is being recorded.")?;
+    if cap.is_paused() {
+        cap.paused.store(false, Ordering::Relaxed);
+        if let Some(since) = cap.paused_since.take() {
+            cap.paused_total += since.elapsed();
+        }
+    }
+    Ok(false)
 }
 
 /// Stop the meeting: save both streams to disk, then transcribe (non-fatal).
@@ -410,6 +636,9 @@ pub async fn meeting_stop_capture(
         live,
         consumer,
         started_at: _,
+        paused: _,
+        paused_total: _,
+        paused_since: _,
     } = capture;
     let mic_pathbuf = mic.path.clone();
     let sys_pathbuf = system.as_ref().map(|s| s.path().clone());
@@ -583,11 +812,17 @@ pub async fn meeting_transcribe_file(app: AppHandle, path: String) -> Result<Str
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_default();
+    // v1.19.0: surface per-window progress to the import / re-transcribe UI.
+    let progress = Some(TranscribeProgress {
+        app: app.clone(),
+        id: path.clone(),
+    });
     match ext.as_str() {
-        "wav" => transcribe_wav_chunked(&tm, &path).await,
+        "wav" => transcribe_wav_chunked(&tm, &path, progress).await,
         "m4a" | "aac" | "mp4" | "mp3" | "flac" | "ogg" => {
             let (rate, channels, samples) = open_rodio_stream(&path)?;
-            transcribe_stream_chunked(&tm, rate, channels, samples).await
+            // Compressed length isn't cheaply known → indeterminate bar.
+            transcribe_stream_chunked(&tm, rate, channels, samples, progress, None).await
         }
         other => Err(format!(
             "Unsupported audio format '.{other}' — use WAV, M4A, MP3, FLAC, or OGG."
@@ -804,6 +1039,19 @@ pub async fn meeting_post_process(
     } else {
         prompt
     };
+    // v1.19.0: saved prompts (shared with dictation/Notes) are authored with a
+    // trailing "Transcript:\n${output}" / "Dictation:\n${output}" block. Here the
+    // transcript is the SEPARATE user message, so strip the placeholder tail (and
+    // a now-dangling label line) to avoid a literal ${output} in the system text.
+    if system.contains("${output}") {
+        system = system.replace("${output}", "");
+        let trimmed = system.trim_end();
+        let cut = match trimmed.rfind('\n') {
+            Some(nl) if trimmed[nl + 1..].trim_end().ends_with(':') => nl,
+            _ => trimmed.len(),
+        };
+        system = trimmed[..cut].trim_end().to_string();
+    }
     // v1.15.0: known mis-transcription glossary so the model corrects
     // near-miss variants while it works.
     if let Some(g) = crate::corrections::glossary_block(&settings.transcript_corrections) {
@@ -931,7 +1179,7 @@ fn keep_or_discard(path: PathBuf, samples_written: u64) -> Option<String> {
 /// clippy -D warnings green without deleting the seam.
 #[allow(dead_code)]
 async fn transcribe_path_lossy(tm: &Arc<TranscriptionManager>, path: &str) -> String {
-    match transcribe_wav_chunked(tm, path).await {
+    match transcribe_wav_chunked(tm, path, None).await {
         Ok(text) => text,
         Err(e) => {
             log::error!("Meeting transcription failed for {path}: {e} (file is preserved on disk)");
@@ -964,10 +1212,20 @@ async fn segment_wav_offline(
         let mut out: Vec<(u64, &'static str, String)> = Vec::with_capacity(segs.len());
         for s in segs {
             if let Ok(text) = tm.transcribe(s.samples) {
-                let text = text.trim().to_string();
-                if !text.is_empty() {
-                    out.push((s.start_ms, source, text));
+                // Same v1.19.0 guards as the live path (offline has energy-only
+                // segments, so peak_rms still drives the near-floor drop).
+                let text = match clean_segment_text(&text, Some(s.peak_rms)) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                if out
+                    .last()
+                    .map(|(_, _, last)| normalise_phrase(last) == normalise_phrase(&text))
+                    .unwrap_or(false)
+                {
+                    continue; // cross-segment duplicate collapse (guard a)
                 }
+                out.push((s.start_ms, source, text));
             }
         }
         out
@@ -991,7 +1249,10 @@ fn decode_and_segment(path: &str, source: &'static str) -> Result<Vec<LiveSegmen
     // practice. A genuine overflow degrades to a dropped segment (logged by the
     // segmenter), the same non-fatal failure class as the live path.
     let (tx, rx) = std::sync::mpsc::sync_channel::<LiveSegment>(8192);
-    let mut seg = Segmenter::new(source, tx);
+    // Offline path: no AppHandle here, so the segmenter runs energy-only (the
+    // VAD is a live-capture refinement; the offline collapse/blocklist guards
+    // below still clean up any hallucinated repeats).
+    let mut seg = Segmenter::new(source, tx, None);
     let mut resampler = FrameResampler::new(in_rate, 16_000, Duration::from_millis(30));
     let mut interleave: Vec<f32> = Vec::with_capacity(channels);
     let mut mono: Vec<f32> = Vec::with_capacity(8_192);
@@ -1088,15 +1349,60 @@ fn quietest_split(buf: &[f32]) -> usize {
 /// This replaces the previous full-file `read_wav_samples` load and also fixes
 /// a latent import bug: WAVs that weren't already 16 kHz mono were fed to the
 /// model at the wrong rate (no resample) and with interleaved channels.
+/// v1.19.0: optional progress reporter for chunked transcription. `id` is the
+/// path being transcribed so the UI can match progress events to the row.
+#[derive(Clone)]
+struct TranscribeProgress {
+    app: AppHandle,
+    id: String,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct TranscribeProgressEvent {
+    id: String,
+    window: u32,
+    /// Approximate total window count — `None` for compressed imports whose
+    /// length isn't cheaply known (the UI shows an indeterminate bar then).
+    total: Option<u32>,
+}
+
+impl TranscribeProgress {
+    fn emit(&self, window: u32, total: Option<u32>) {
+        use tauri::Emitter;
+        let _ = self.app.emit(
+            "meeting-transcribe-progress",
+            TranscribeProgressEvent {
+                id: self.id.clone(),
+                window,
+                total,
+            },
+        );
+    }
+}
+
 async fn transcribe_wav_chunked(
     tm: &Arc<TranscriptionManager>,
     path: &str,
+    progress: Option<TranscribeProgress>,
 ) -> Result<String, String> {
     let reader =
         hound::WavReader::open(path).map_err(|e| format!("Could not open {path}: {e}"))?;
     let spec = reader.spec();
     let channels = spec.channels.max(1) as usize;
     let in_rate = spec.sample_rate as usize;
+
+    // v1.19.0: the WAV header gives us the per-channel sample count cheaply, so
+    // we can estimate the window total for a determinate progress bar. (The
+    // chunker splits at the quietest point, so this is approximate.)
+    let per_channel = reader.duration() as u64;
+    let samples_16k = if in_rate > 0 {
+        per_channel * 16_000 / in_rate as u64
+    } else {
+        0
+    };
+    let total_windows = Some(
+        ((samples_16k + CHUNK_SAMPLES as u64 - 1) / CHUNK_SAMPLES as u64).max(1) as usize,
+    );
 
     // One iterator shape for both PCM encodings, normalised to f32 in [-1, 1].
     let path_owned = path.to_string();
@@ -1114,7 +1420,7 @@ async fn transcribe_wav_chunked(
             }))
         }
     };
-    transcribe_stream_chunked(tm, in_rate, channels, samples).await
+    transcribe_stream_chunked(tm, in_rate, channels, samples, progress, total_windows).await
 }
 
 /// v1.16.1: decode a compressed audio file (m4a/aac/mp3/flac/ogg) via rodio
@@ -1158,6 +1464,8 @@ async fn transcribe_stream_chunked(
     in_rate: usize,
     channels: usize,
     mut samples: Box<dyn Iterator<Item = Result<f32, String>> + Send>,
+    progress: Option<TranscribeProgress>,
+    total_windows: Option<usize>,
 ) -> Result<String, String> {
     let mut resampler = FrameResampler::new(in_rate, 16_000, Duration::from_millis(30));
     let mut buf: Vec<f32> = Vec::with_capacity(CHUNK_SAMPLES + SPLIT_WINDOW);
@@ -1165,6 +1473,9 @@ async fn transcribe_stream_chunked(
     let mut interleave: Vec<f32> = Vec::with_capacity(channels);
     let mut out = String::new();
     let mut eof = false;
+    // v1.19.0: per-window progress for the import / re-transcribe UI.
+    let total_u32 = total_windows.map(|t| t as u32);
+    let mut window_idx: u32 = 0;
 
     loop {
         // Fill the window (decode → downmix → resample), bounded by CHUNK_SAMPLES.
@@ -1201,6 +1512,17 @@ async fn transcribe_stream_chunked(
         let head: Vec<f32> = buf[..take].to_vec();
         buf.drain(..take);
         let text = transcribe_buffer(tm, head).await?;
+        // v1.19.0: report progress as each window finishes. `total` may exceed
+        // the eventual count (quietest-split shifts boundaries); clamp window to
+        // total so the bar never overshoots.
+        if let Some(p) = &progress {
+            window_idx += 1;
+            let shown = total_u32.map(|t| window_idx.min(t)).unwrap_or(window_idx);
+            p.emit(shown, total_u32);
+        }
+        // v1.19.0 guard (d): collapse hallucinated repeats within the window
+        // before appending (imports have no VAD, so this is their main guard).
+        let text = collapse_repeats(&text);
         let text = text.trim();
         if !text.is_empty() {
             if !out.is_empty() {
@@ -1339,6 +1661,7 @@ async fn run_test_capture(app: &AppHandle, secs: u32) -> Result<MeetingTestResul
             Some(app.clone()),
             "you",
             None, // no live transcription during a device test
+            Arc::new(AtomicBool::new(false)), // device test is never paused
         )?;
         (name, cap)
     };
@@ -1349,7 +1672,8 @@ async fn run_test_capture(app: &AppHandle, secs: u32) -> Result<MeetingTestResul
         .default_output_device()
         .and_then(|d| d.name().ok())
         .unwrap_or_else(|| "System audio".to_string());
-    let (sys_cap, backend) = start_system_capture(app, sys_path.clone(), None);
+    let (sys_cap, backend) =
+        start_system_capture(app, sys_path.clone(), None, Arc::new(AtomicBool::new(false)));
     let system_device = if sys_cap.is_some() {
         format!("{sys_name} [{backend}]")
     } else {

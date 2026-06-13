@@ -30,8 +30,8 @@ use wasapi::{initialize_mta, DeviceEnumerator, Direction, SampleType, StreamMode
 
 use crate::audio_toolkit::audio::FrameResampler;
 use crate::meeting_capture::{
-    LevelEvent, SegmentSender, Segmenter, FLUSH_ERROR_WEIGHT, FLUSH_EVERY_SAMPLES, LEVEL_EVERY,
-    MAX_WRITE_ERRORS,
+    build_meeting_vad, LevelEvent, SegmentSender, Segmenter, FLUSH_ERROR_WEIGHT,
+    FLUSH_EVERY_SAMPLES, LEVEL_EVERY, MAX_WRITE_ERRORS,
 };
 
 const TARGET_RATE: usize = 16_000;
@@ -52,6 +52,7 @@ impl WasapiLoopback {
         app: Option<AppHandle>,
         source: &'static str,
         segments: Option<SegmentSender>,
+        paused: Arc<AtomicBool>,
     ) -> Result<Self, String> {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_for_worker = stop_flag.clone();
@@ -59,7 +60,7 @@ impl WasapiLoopback {
         let (init_tx, init_rx) = mpsc::channel::<Result<(), String>>();
 
         let worker = std::thread::spawn(move || {
-            capture_worker(worker_path, app, source, segments, stop_for_worker, init_tx)
+            capture_worker(worker_path, app, source, segments, stop_for_worker, paused, init_tx)
         });
 
         match init_rx.recv_timeout(Duration::from_secs(5)) {
@@ -108,6 +109,7 @@ fn capture_worker(
     source: &'static str,
     segments: Option<SegmentSender>,
     stop_flag: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
     init_tx: mpsc::Sender<Result<(), String>>,
 ) -> Result<u64, String> {
     macro_rules! fail_init {
@@ -207,8 +209,10 @@ fn capture_worker(
     let mut abort_err: Option<String> = None;
     let mut window_peak: f32 = 0.0;
     let mut last_emit = Instant::now();
-    // Phase B (v1.14.0): optional live segmenter.
-    let mut segmenter = segments.map(|tx| Segmenter::new(source, tx));
+    // Phase B (v1.14.0): optional live segmenter. v1.19.0: Silero-gated, same
+    // bundled model as the dictation path (built on this worker thread).
+    let mut segmenter =
+        segments.map(|tx| Segmenter::new(source, tx, build_meeting_vad(app.as_ref(), source)));
 
     // Drains `deque` into the WAV via the resampler; shared by the main loop
     // and the stop path.
@@ -261,7 +265,14 @@ fn capture_worker(
             abort_err = Some(format!("System loopback read failed: {e}"));
             break;
         }
-        drain_deque!();
+        // v1.19.0: while paused, still READ from the device (so the OS buffer
+        // never overflows) but discard the bytes — no WAV write, no segment, no
+        // meter movement. The stream stays open; the WAV is gap-continuous.
+        if paused.load(Ordering::Relaxed) {
+            deque.clear();
+        } else {
+            drain_deque!();
+        }
 
         if let Some(app) = &app {
             if last_emit.elapsed() >= LEVEL_EVERY {
@@ -296,9 +307,14 @@ fn capture_worker(
         }
 
         if stop_flag.load(Ordering::Relaxed) {
-            // Final read + resampler tail, then finalise.
+            // Final read + resampler tail, then finalise. Discard the final read
+            // if we were stopped mid-pause; the resampler tail still flushes.
             let _ = capture_client.read_from_device_to_deque(&mut deque);
-            drain_deque!();
+            if paused.load(Ordering::Relaxed) {
+                deque.clear();
+            } else {
+                drain_deque!();
+            }
             resampler.finish(|frame: &[f32]| {
                 if let Some(seg) = segmenter.as_mut() {
                     seg.push(frame);

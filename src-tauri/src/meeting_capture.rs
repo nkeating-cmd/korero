@@ -30,9 +30,10 @@ use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{Device, Sample, SizedSample};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio_toolkit::audio::FrameResampler;
+use crate::audio_toolkit::vad::{SileroVad, SmoothedVad, VoiceActivityDetector};
 
 const TARGET_RATE: usize = 16_000;
 /// Resampler frame size; small for low latency. Phase B's VAD consumes the
@@ -82,6 +83,11 @@ pub(crate) struct LiveSegment {
     /// ACROSS sources — that is what lets the final transcript interleave both
     /// speakers in chronological order instead of two per-speaker blocks.
     pub(crate) start_ms: u64,
+    /// v1.19.0: the peak frame RMS observed while this segment was buffered.
+    /// The live consumer uses it as a cheap "was this near the energy floor?"
+    /// signal so a known-hallucination phrase emitted from a barely-audible
+    /// segment can be dropped (belt-and-braces behind the VAD).
+    pub(crate) peak_rms: f32,
 }
 
 /// Bounded sender for live segments (drop-on-full: a lost live segment is
@@ -95,13 +101,56 @@ const SEG_MAX_SAMPLES: usize = TARGET_RATE * 20;
 /// Fragments shorter than this aren't worth a model invocation.
 const SEG_MIN_SAMPLES: usize = TARGET_RATE / 2;
 /// Frame RMS below this counts as quiet; a segment must have peaked above
-/// 2× this to be treated as speech at all.
-const SEG_QUIET_RMS: f32 = 0.010;
+/// 2× this to be treated as speech at all. (pub(crate): the meeting consumer
+/// uses it as the "near the energy floor" threshold for its hallucination
+/// guard.)
+pub(crate) const SEG_QUIET_RMS: f32 = 0.010;
+/// Silero consumes exactly 30 ms frames at 16 kHz (= 480 samples) — the same
+/// frame the capture resampler emits. Off-size frames (e.g. the resampler's
+/// closing tail) bypass the VAD and fall back to the energy gate.
+const VAD_FRAME_SAMPLES: usize = TARGET_RATE * 30 / 1000;
 
-/// Energy-gated live segmenter (Phase B). Deliberately dependency-free and
-/// allocation-light: no VAD model to load per stream, deterministic
-/// behaviour, and Silero can replace the gate later behind this same
-/// push/finish interface.
+/// Build the optional speech-gating VAD for a meeting segmenter. Resolves the
+/// SAME bundled Silero model the dictation recorder uses and wraps it in the
+/// SAME smoothing (prefill/hangover/onset) so behaviour is consistent across
+/// the app. Returns `None` — falling back to the energy gate alone — if the
+/// model can't be resolved or loaded, so a VAD problem can never stop a
+/// meeting from recording.
+pub(crate) fn build_meeting_vad(
+    app: Option<&AppHandle>,
+    source: &str,
+) -> Option<Box<dyn VoiceActivityDetector>> {
+    let app = app?;
+    let path = app
+        .path()
+        .resolve(
+            "resources/models/silero_vad_v4.onnx",
+            tauri::path::BaseDirectory::Resource,
+        )
+        .ok()?;
+    match SileroVad::new(&path, 0.3) {
+        Ok(silero) => {
+            // 15-frame prefill + 15-frame hangover + 2-frame onset mirrors the
+            // dictation recorder (managers/audio.rs).
+            let smoothed = SmoothedVad::new(Box::new(silero), 15, 15, 2);
+            Some(Box::new(smoothed) as Box<dyn VoiceActivityDetector>)
+        }
+        Err(e) => {
+            log::warn!(
+                "Meeting VAD unavailable for '{source}' ({e}); using the energy gate alone."
+            );
+            None
+        }
+    }
+}
+
+/// Speech segmenter (Phase B; Silero-gated since v1.19.0). The cheap energy
+/// gate is the first-pass filter — frames below `SEG_QUIET_RMS` never reach the
+/// model — and Silero then decides whether above-floor energy is actually
+/// SPEECH. That distinction is the root-cause fix for non-speech transients
+/// (keyboard typing, mouse clicks) that clear the energy gate but used to be
+/// transcribed into "Thank you."-style hallucinations. With no VAD available
+/// the original energy-only behaviour is preserved exactly.
 pub(crate) struct Segmenter {
     source: &'static str,
     tx: SegmentSender,
@@ -116,10 +165,20 @@ pub(crate) struct Segmenter {
     /// buffered segment began. Captured when the first frame lands in an empty
     /// buffer, so it survives the quiet-skip and 20 s-cap cut paths alike.
     seg_start: usize,
+    /// v1.19.0: optional Silero VAD. When present it — not the raw energy peak
+    /// — decides whether the buffered audio is worth transcribing.
+    vad: Option<Box<dyn VoiceActivityDetector>>,
+    /// v1.19.0: did any frame in the current buffer register as speech? With a
+    /// VAD this is the cut gate; without one the `speech_peak` test is used.
+    had_voice: bool,
 }
 
 impl Segmenter {
-    pub(crate) fn new(source: &'static str, tx: SegmentSender) -> Self {
+    pub(crate) fn new(
+        source: &'static str,
+        tx: SegmentSender,
+        vad: Option<Box<dyn VoiceActivityDetector>>,
+    ) -> Self {
         Self {
             source,
             tx,
@@ -129,6 +188,8 @@ impl Segmenter {
             dropped: 0,
             samples_seen: 0,
             seg_start: 0,
+            vad,
+            had_voice: false,
         }
     }
 
@@ -145,26 +206,60 @@ impl Segmenter {
         let rms = (frame.iter().map(|s| s * s).sum::<f32>() / frame.len() as f32).sqrt();
         self.buf.extend_from_slice(frame);
         self.samples_seen += frame.len();
-        if rms < SEG_QUIET_RMS {
-            self.trailing_quiet += frame.len();
+
+        // Two-stage gate. Stage 1 (cheap): frames below the energy floor are
+        // definitely silence — never pay for a VAD inference on them. Stage 2:
+        // above the floor, ask Silero whether the energy is actually SPEECH.
+        // Typing/click transients clear stage 1 but Silero rejects them, which
+        // is exactly the non-speech audio that used to be hallucinated into
+        // "Thank you." With no VAD this reduces to the original energy test.
+        let voiced = if rms < SEG_QUIET_RMS {
+            false
+        } else if let Some(vad) = self.vad.as_mut() {
+            if frame.len() == VAD_FRAME_SAMPLES {
+                // Fail OPEN: if the VAD errors, trust the energy gate's "loud
+                // enough" verdict rather than dropping possible speech.
+                vad.is_voice(frame).unwrap_or(true)
+            } else {
+                true
+            }
         } else {
+            true
+        };
+
+        if voiced {
             self.trailing_quiet = 0;
+            self.had_voice = true;
             if rms > self.speech_peak {
                 self.speech_peak = rms;
             }
+        } else {
+            self.trailing_quiet += frame.len();
         }
 
         if self.buf.len() >= SEG_MAX_SAMPLES {
             self.cut(SEG_MIN_SAMPLES);
         } else if self.trailing_quiet >= SEG_QUIET_SAMPLES {
-            if self.speech_peak >= SEG_QUIET_RMS * 2.0 && self.buf.len() > self.trailing_quiet {
+            if self.speech_enough() && self.buf.len() > self.trailing_quiet {
                 self.cut(SEG_MIN_SAMPLES);
             } else {
-                // Quiet all the way through — nothing worth transcribing.
+                // Quiet/non-speech all the way through — nothing to transcribe.
                 self.buf.clear();
                 self.trailing_quiet = 0;
                 self.speech_peak = 0.0;
+                self.had_voice = false;
             }
+        }
+    }
+
+    /// Did the current buffer contain real speech? With a VAD this is the
+    /// Silero verdict (`had_voice`); without one it is the original
+    /// peaked-above-2×-floor energy test, preserving legacy behaviour exactly.
+    fn speech_enough(&self) -> bool {
+        if self.vad.is_some() {
+            self.had_voice
+        } else {
+            self.speech_peak >= SEG_QUIET_RMS * 2.0
         }
     }
 
@@ -173,7 +268,7 @@ impl Segmenter {
     /// still makes the live transcript — which the meeting's final transcript
     /// now prefers.
     pub(crate) fn finish(&mut self) {
-        if self.speech_peak >= SEG_QUIET_RMS * 2.0 {
+        if self.speech_enough() {
             self.cut(TARGET_RATE / 4); // ≥ 250 ms
         } else {
             self.buf.clear();
@@ -183,8 +278,10 @@ impl Segmenter {
     fn cut(&mut self, min_samples: usize) {
         let samples = std::mem::take(&mut self.buf);
         let start_ms = (self.seg_start as u64) * 1000 / TARGET_RATE as u64;
+        let peak_rms = self.speech_peak;
         self.trailing_quiet = 0;
         self.speech_peak = 0.0;
+        self.had_voice = false;
         if samples.len() < min_samples {
             return;
         }
@@ -192,6 +289,7 @@ impl Segmenter {
             source: self.source,
             samples,
             start_ms,
+            peak_rms,
         }) {
             Ok(()) => {}
             Err(mpsc::TrySendError::Full(_)) => {
@@ -234,9 +332,11 @@ impl StreamCapture {
         app: Option<AppHandle>,
         source: &'static str,
         segments: Option<SegmentSender>,
+        paused: Arc<AtomicBool>,
     ) -> Result<Self, String> {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_for_worker = stop_flag.clone();
+        let paused_for_worker = paused.clone();
         let worker_path = path.clone();
         let (init_tx, init_rx) = mpsc::channel::<Result<(), String>>();
 
@@ -294,34 +394,44 @@ impl StreamCapture {
             // v1.13.5: live meter state.
             let mut window_peak: f32 = 0.0;
             let mut last_emit = Instant::now();
-            // Phase B (v1.14.0): optional live segmenter.
-            let mut segmenter = segments.map(|tx| Segmenter::new(source, tx));
+            // Phase B (v1.14.0): optional live segmenter. v1.19.0: gated by the
+            // same bundled Silero model the dictation path uses (built on this
+            // worker thread — the VAD is not Send).
+            let mut segmenter =
+                segments.map(|tx| Segmenter::new(source, tx, build_meeting_vad(app.as_ref(), source)));
 
             loop {
                 match rx.recv_timeout(Duration::from_millis(200)) {
                     Ok(mut raw) => {
-                        // Track the window peak for the UI level meter.
-                        for &s in raw.iter() {
-                            let a = s.abs();
-                            if a > window_peak {
-                                window_peak = a;
-                            }
-                        }
-                        resampler.push(&raw, |frame: &[f32]| {
-                            // Phase B (v1.14.0): live segmentation taps the
-                            // same frames the WAV sink writes.
-                            if let Some(seg) = segmenter.as_mut() {
-                                seg.push(frame);
-                            }
-                            for &s in frame {
-                                let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-                                if writer.write_sample(v).is_err() {
-                                    write_errors += 1;
-                                } else {
-                                    written += 1;
+                        // v1.19.0: while paused, drop the frame entirely — don't
+                        // write it, don't segment it, don't move the meter. The
+                        // device stream stays OPEN (no re-acquisition), so the
+                        // WAV is simply continuous-with-gaps and paused speech
+                        // never reaches the transcript.
+                        if !paused_for_worker.load(Ordering::Relaxed) {
+                            // Track the window peak for the UI level meter.
+                            for &s in raw.iter() {
+                                let a = s.abs();
+                                if a > window_peak {
+                                    window_peak = a;
                                 }
                             }
-                        });
+                            resampler.push(&raw, |frame: &[f32]| {
+                                // Phase B (v1.14.0): live segmentation taps the
+                                // same frames the WAV sink writes.
+                                if let Some(seg) = segmenter.as_mut() {
+                                    seg.push(frame);
+                                }
+                                for &s in frame {
+                                    let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+                                    if writer.write_sample(v).is_err() {
+                                        write_errors += 1;
+                                    } else {
+                                        written += 1;
+                                    }
+                                }
+                            });
+                        }
                         // v1.13.4: return the drained buffer to the callback's
                         // pool for reuse (allocation-free steady state).
                         raw.clear();
@@ -373,8 +483,14 @@ impl StreamCapture {
 
                 if stop_for_worker.load(Ordering::Relaxed) {
                     // Drain anything already in the channel, then emit the
-                    // resampler tail.
+                    // resampler tail. If we were stopped while paused, the
+                    // pending frames are post-pause audio to discard — but the
+                    // resampler tail (pre-pause residual) is still flushed.
+                    let paused_now = paused_for_worker.load(Ordering::Relaxed);
                     while let Ok(raw) = rx.try_recv() {
+                        if paused_now {
+                            continue;
+                        }
                         resampler.push(&raw, |frame: &[f32]| {
                             if let Some(seg) = segmenter.as_mut() {
                                 seg.push(frame);
