@@ -786,6 +786,14 @@ async updatePostProcessPrompts(prompts: ({ id: string; name: string; prompt: str
     else return { status: "error", error: e  as any };
 }
 },
+async finishActiveRecording() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("finish_active_recording") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async ollamaStatus(baseUrl: string) : Promise<{ installed: boolean; running: boolean; exe_path: string | null }> {
     return await TAURI_INVOKE("ollama_status", { baseUrl });
 },

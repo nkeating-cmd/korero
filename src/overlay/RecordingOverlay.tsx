@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import React, { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Mic, Cpu, Loader2, X } from "lucide-react";
+import { Mic, Cpu, Loader2, X, Square } from "lucide-react";
 import "./RecordingOverlay.css";
 import { commands } from "@/bindings";
 import i18n, { syncLanguageFromSettings } from "@/i18n";
@@ -156,13 +156,26 @@ const RecordingOverlay: React.FC = () => {
       className={`korero-overlay ${isVisible ? "fade-in" : ""}`}
       data-state={state}
     >
-      {/* Left cell: mic icon during recording and recording-latched; empty otherwise. */}
+      {/* Left cell: mic icon while recording; in latch mode it becomes a STOP
+          (finish + transcribe) button so the user can reliably end a latched
+          dictation by clicking — no need to land the stop key-press (v1.19.3). */}
       <div className="overlay-left">
-        {(state === "recording" || state === "recording-latched") && (
+        {state === "recording" && (
           <div className="mic-wrap">
             <span className="mic-pulse" aria-hidden="true" />
             <Mic className="state-icon mic-icon" size={15} strokeWidth={2.2} />
           </div>
+        )}
+        {state === "recording-latched" && (
+          <button
+            type="button"
+            className="stop-button"
+            onClick={() => commands.finishActiveRecording()}
+            aria-label="Stop and transcribe"
+            title="Stop and transcribe"
+          >
+            <Square size={11} strokeWidth={2.6} fill="currentColor" />
+          </button>
         )}
       </div>
 

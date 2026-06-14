@@ -36,6 +36,9 @@ enum Command {
     Cancel {
         recording_was_active: bool,
     },
+    /// v1.19.3: finish (stop + transcribe) the active recording or latch from
+    /// the overlay's stop button. Distinct from Cancel, which DISCARDS.
+    FinishActive,
     ProcessingFinished,
 }
 
@@ -178,6 +181,23 @@ impl TranscriptionCoordinator {
                             }
                         }
 
+                        Some(Command::FinishActive) => {
+                            // v1.19.3: overlay "stop" button — finish the active
+                            // recording or latch (stop + transcribe), exactly as a
+                            // single key press would. Cancels any pending latch
+                            // window. No-op if nothing is recording.
+                            pending_stop = None;
+                            let active = match &stage {
+                                Stage::Recording(id) | Stage::RecordingLatched(id) => {
+                                    Some(id.clone())
+                                }
+                                _ => None,
+                            };
+                            if let Some(id) = active {
+                                stop(&app, &mut stage, &id, "");
+                            }
+                        }
+
                         Some(Command::ProcessingFinished) => {
                             // Kōrero (v1.18.0): only reset when actually in
                             // Processing. A new recording may already be live
@@ -241,6 +261,26 @@ impl TranscriptionCoordinator {
             warn!("Transcription coordinator channel closed");
         }
     }
+
+    /// v1.19.3: finish the active recording/latch (stop + transcribe).
+    pub fn notify_finish_active(&self) {
+        if self.tx.send(Command::FinishActive).is_err() {
+            warn!("Transcription coordinator channel closed");
+        }
+    }
+}
+
+/// v1.19.3: finish the active recording / latch from the overlay's stop button
+/// (stop + transcribe). Distinct from `cancel_operation`, which DISCARDS. Lets
+/// the user reliably end a latched dictation by clicking the overlay rather
+/// than having to land the stop key-press.
+#[tauri::command]
+#[specta::specta]
+pub fn finish_active_recording(app: AppHandle) -> Result<(), String> {
+    if let Some(c) = app.try_state::<TranscriptionCoordinator>() {
+        c.notify_finish_active();
+    }
+    Ok(())
 }
 
 // ── PTT handler (latch logic lives here) ─────────────────────────────────────

@@ -442,6 +442,9 @@ pub fn run(cli_args: CliArgs) {
             settings::update_post_process_prompts,
             show_main_window_command,
             commands::cancel_operation,
+            // Kōrero fork (v1.19.3): overlay "stop" button finishes a latched
+            // recording (stop + transcribe), distinct from cancel/discard.
+            transcription_coordinator::finish_active_recording,
             commands::is_portable,
             commands::get_app_dir_path,
             commands::get_app_settings,

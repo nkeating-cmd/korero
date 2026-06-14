@@ -128,7 +128,18 @@ pub(crate) fn build_meeting_vad(
             tauri::path::BaseDirectory::Resource,
         )
         .ok()?;
-    match SileroVad::new(&path, 0.3) {
+    // v1.20.0 reliability: the two meeting captures ("you" + "others") build
+    // their VADs at almost the same instant. Serialise the ONNX session
+    // creation behind a process-wide lock so two concurrent SileroVad::new
+    // calls can never race the ort runtime's first-use initialisation. The
+    // lock is held only for the model load, never for inference, so it adds no
+    // steady-state cost.
+    static VAD_INIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let silero = {
+        let _guard = VAD_INIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        SileroVad::new(&path, 0.3)
+    };
+    match silero {
         Ok(silero) => {
             // 15-frame prefill + 15-frame hangover + 2-frame onset mirrors the
             // dictation recorder (managers/audio.rs).

@@ -381,6 +381,41 @@ body {
   transform: scale(0.92);
 }
 
+/* Kōrero (v1.19.3): "stop and transcribe" button — finishes a latched recording
+   straight from the overlay (so the user never has to land the stop key-press).
+   Positive teal hover to distinguish it from the pink cancel/discard button. */
+.stop-button {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  transition:
+    background-color 160ms ease-out,
+    color 160ms ease-out,
+    transform 100ms ease-out,
+    border-color 160ms ease-out,
+    box-shadow 200ms ease-out;
+}
+
+.stop-button:hover {
+  background: rgba(54, 211, 153, 0.22);
+  border-color: rgba(54, 211, 153, 0.55);
+  color: #ffffff;
+  transform: scale(1.1);
+  box-shadow: 0 0 12px rgba(54, 211, 153, 0.55);
+}
+
+.stop-button:active {
+  transform: scale(0.92);
+}
+
 /* ============================================================
    RECORDING-LATCHED (v1.8.0) — amber/orange latch-mode theme.
    Same layout as "recording" (bars + mic icon), distinct amber palette

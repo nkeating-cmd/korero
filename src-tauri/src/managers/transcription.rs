@@ -302,6 +302,22 @@ impl TranscriptionManager {
             );
         };
 
+        // Korero (v1.19.3): Canary's NeMo conformer-aed ONNX graph has a Reshape
+        // node the DirectML execution provider cannot run (inference fails with
+        // "Non-zero status ... Reshape node 'node_view'", 0x8007023E). It runs
+        // correctly on CPU, so force the CPU EP for Canary regardless of the
+        // user's ort_accelerator setting -- and re-apply their preference for
+        // every other engine. Must happen BEFORE load: the EP is chosen when the
+        // ONNX session is created.
+        if matches!(model_info.engine_type, EngineType::Canary) {
+            transcribe_rs::accel::set_ort_accelerator(transcribe_rs::accel::OrtAccelerator::CpuOnly);
+            log::warn!(
+                "Canary model: forcing CPU execution provider (DirectML is incompatible with its ONNX graph)."
+            );
+        } else {
+            apply_accelerator_settings(&self.app_handle);
+        }
+
         let loaded_engine = match model_info.engine_type {
             EngineType::Whisper => {
                 let engine = WhisperEngine::load(&model_path).map_err(|e| {
