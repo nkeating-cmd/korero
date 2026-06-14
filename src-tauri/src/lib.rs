@@ -435,6 +435,11 @@ pub fn run(cli_args: CliArgs) {
             update_check::install_update,
             window_info::get_active_window_title,
             settings::update_post_process_prompt_full,
+            // Kōrero fork (v1.19.2): full-array persistence for the settings the
+            // store had no updater for — taught corrections (the headline bug:
+            // they never reached the backend) and the prompts array (add/delete).
+            corrections::update_transcript_corrections,
+            settings::update_post_process_prompts,
             show_main_window_command,
             commands::cancel_operation,
             commands::is_portable,

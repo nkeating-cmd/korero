@@ -115,6 +115,14 @@ const settingUpdaters: {
     commands.changeOverlayPositionSetting(value as string),
   debug_mode: (value) => commands.changeDebugModeSetting(value as boolean),
   custom_words: (value) => commands.updateCustomWords(value as string[]),
+  transcript_corrections: (value) =>
+    commands.updateTranscriptCorrections(
+      value as ({ wrong: string; right: string })[],
+    ),
+  post_process_prompts: (value) =>
+    commands.updatePostProcessPrompts(
+      value as ({ id: string; name: string; prompt: string; alias: string | null })[],
+    ),
   word_correction_threshold: (value) =>
     commands.changeWordCorrectionThresholdSetting(value as number),
   paste_delay_ms: (value) =>

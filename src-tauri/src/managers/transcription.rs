@@ -559,11 +559,13 @@ impl TranscriptionManager {
                             let params = WhisperInferenceParams {
                                 language: whisper_language,
                                 translate: settings.translate_to_english,
-                                initial_prompt: if settings.custom_words.is_empty() {
-                                    None
-                                } else {
-                                    Some(settings.custom_words.join(", "))
-                                },
+                                // Korero (v1.19.1): closed-loop context biasing -- seed the
+                                // decoder with custom words AND taught corrections (deduped +
+                                // bounded). See corrections::build_bias_prompt.
+                                initial_prompt: crate::corrections::build_bias_prompt(
+                                    &settings.custom_words,
+                                    &settings.transcript_corrections,
+                                ),
                                 ..Default::default()
                             };
 

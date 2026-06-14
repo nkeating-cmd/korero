@@ -951,6 +951,23 @@ pub fn update_post_process_prompt_full(
     Ok(())
 }
 
+/// v1.19.2: persist the FULL post-processing prompts array. Companion to
+/// `update_post_process_prompt_full` (which edits a single prompt). settingsStore
+/// now routes `updateSetting("post_process_prompts", …)` here, so ADD and DELETE
+/// persist too — fixing the Meetings "Save as new prompt" action, which used
+/// `updateSetting` and previously hit the silent "No handler" no-op.
+#[tauri::command]
+#[specta::specta]
+pub fn update_post_process_prompts(
+    app: tauri::AppHandle,
+    prompts: Vec<LLMPrompt>,
+) -> Result<(), String> {
+    let mut settings = get_settings(&app);
+    settings.post_process_prompts = prompts;
+    write_settings(&app, settings);
+    Ok(())
+}
+
 fn default_post_process_prompts() -> Vec<LLMPrompt> {
     vec![
         LLMPrompt {

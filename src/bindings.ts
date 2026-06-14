@@ -770,6 +770,22 @@ async notePostProcess(text: string, prompt: string, model: string | null) : Prom
     else return { status: "error", error: e  as any };
 }
 },
+async updateTranscriptCorrections(corrections: ({ wrong: string; right: string })[]) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_transcript_corrections", { corrections }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async updatePostProcessPrompts(prompts: ({ id: string; name: string; prompt: string; alias: string | null })[]) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_post_process_prompts", { prompts }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async ollamaStatus(baseUrl: string) : Promise<{ installed: boolean; running: boolean; exe_path: string | null }> {
     return await TAURI_INVOKE("ollama_status", { baseUrl });
 },

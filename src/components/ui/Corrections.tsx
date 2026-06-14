@@ -1,6 +1,6 @@
 /* eslint-disable i18next/no-literal-string */
 import React, { useState } from "react";
-import { GraduationCap, Plus, Trash2, X } from "lucide-react";
+import { Check, GraduationCap, Pencil, Plus, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "./Button";
 import { useSettings } from "../../hooks/useSettings";
@@ -51,7 +51,26 @@ export const useCorrections = () => {
     );
   };
 
-  return { list, add, remove };
+  const update = (index: number, wrong: string, right: string): boolean => {
+    const w = wrong.trim();
+    const r = right.trim();
+    if (!w || !r) {
+      toast.error("Both the wrong and the right text are needed.");
+      return false;
+    }
+    if (list.some((c, i) => i !== index && c.wrong.toLowerCase() === w.toLowerCase())) {
+      toast.message(`"${w}" already has a correction.`);
+      return false;
+    }
+    updateSetting(
+      "transcript_corrections",
+      list.map((c, i) => (i === index ? { wrong: w, right: r } : c)),
+    );
+    toast.success("Correction updated.");
+    return true;
+  };
+
+  return { list, add, update, remove };
 };
 
 /** Compact two-field teach form. Used inline by Meetings, Notes, and the manager. */
@@ -117,7 +136,20 @@ export const AddCorrectionInline: React.FC<{
 
 /** Full list manager for the Post-processing page. */
 export const CorrectionsManager: React.FC = () => {
-  const { list, remove } = useCorrections();
+  const { list, update, remove } = useCorrections();
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editWrong, setEditWrong] = useState("");
+  const [editRight, setEditRight] = useState("");
+
+  const startEdit = (i: number) => {
+    setEditingIndex(i);
+    setEditWrong(list[i].wrong);
+    setEditRight(list[i].right);
+  };
+  const cancelEdit = () => setEditingIndex(null);
+  const saveEdit = (i: number) => {
+    if (update(i, editWrong, editRight)) setEditingIndex(null);
+  };
 
   return (
     <div className="glass-card p-4 space-y-3">
@@ -134,24 +166,74 @@ export const CorrectionsManager: React.FC = () => {
       <AddCorrectionInline autoFocus={false} />
       {list.length > 0 && (
         <div className="space-y-1">
-          {list.map((c, i) => (
-            <div
-              key={`${c.wrong}-${i}`}
-              className="flex items-center gap-2 text-sm rounded-md px-2 py-1 hover:bg-white/5"
-            >
-              <span className="text-text-muted line-through">{c.wrong}</span>
-              <span className="text-text-subtle">→</span>
-              <span className="text-text flex-1">{c.right}</span>
-              <button
-                type="button"
-                title="Remove this correction"
-                onClick={() => remove(i)}
-                className="text-text-subtle hover:text-pill-urgent transition-colors"
+          {list.map((c, i) =>
+            editingIndex === i ? (
+              <div
+                key={`edit-${i}`}
+                className="flex flex-wrap items-center gap-2 text-sm rounded-md px-2 py-1 bg-white/5"
               >
-                <Trash2 size={13} />
-              </button>
-            </div>
-          ))}
+                <input
+                  value={editWrong}
+                  onChange={(e) => setEditWrong(e.target.value)}
+                  className="flex-1 min-w-[120px] bg-white/5 border border-white/10 rounded-md px-2 py-1 text-text focus:outline-none"
+                  placeholder="What it heard…"
+                />
+                <span className="text-text-subtle">→</span>
+                <input
+                  value={editRight}
+                  onChange={(e) => setEditRight(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") saveEdit(i);
+                    if (e.key === "Escape") cancelEdit();
+                  }}
+                  className="flex-1 min-w-[120px] bg-white/5 border border-white/10 rounded-md px-2 py-1 text-text focus:outline-none"
+                  placeholder="What it should be…"
+                />
+                <button
+                  type="button"
+                  title="Save"
+                  onClick={() => saveEdit(i)}
+                  disabled={!editWrong.trim() || !editRight.trim()}
+                  className="text-text-subtle hover:text-pill-positive transition-colors disabled:opacity-40"
+                >
+                  <Check size={14} />
+                </button>
+                <button
+                  type="button"
+                  title="Cancel"
+                  onClick={cancelEdit}
+                  className="text-text-subtle hover:text-text transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ) : (
+              <div
+                key={`${c.wrong}-${i}`}
+                className="flex items-center gap-2 text-sm rounded-md px-2 py-1 hover:bg-white/5 group"
+              >
+                <span className="text-text-muted line-through">{c.wrong}</span>
+                <span className="text-text-subtle">→</span>
+                <span className="text-text flex-1">{c.right}</span>
+                <button
+                  type="button"
+                  title="Edit this correction"
+                  onClick={() => startEdit(i)}
+                  className="text-text-subtle hover:text-aurora-cyan transition-colors opacity-0 group-hover:opacity-100"
+                >
+                  <Pencil size={13} />
+                </button>
+                <button
+                  type="button"
+                  title="Remove this correction"
+                  onClick={() => remove(i)}
+                  className="text-text-subtle hover:text-pill-urgent transition-colors"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ),
+          )}
         </div>
       )}
     </div>
