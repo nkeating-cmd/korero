@@ -1,4 +1,4 @@
-﻿Korero narrow patches applied 2026-06-11 08:56:53
+﻿Korero narrow patches applied 2026-06-20 21:37:17
 
 SKIP  overlay.rs: overlay window dims (fresh + v1 source forms) -- already patched
 SKIP  AccessibilityOnboarding.tsx: drop HandyTextLogo render -- already patched
@@ -42,6 +42,8 @@ OK    lib.rs: register update_post_processed_text in collect_commands!
       Why: Korero (v1.4.0): adds update_post_processed_text to the specta collect_commands! list so Tauri routes frontend IPC invocations to it. Single-line Find -- check_ollama_connection is the last Korero-added command and is unique.
 OK    bindings.ts: add updatePostProcessedText stub
       Why: Korero (v1.4.0): pre-seeds updatePostProcessedText so tsc succeeds in the production build before specta regenerates bindings. Uses full try/catch format matching specta output (note double-space before 'as any'). Single-line Find -- deleteHistoryEntry is unique.
+OK    bindings.ts: add meetingGenerateAudioBrief stub
+      Why: Korero (v1.21.0): pre-seed meetingGenerateAudioBrief so tsc succeeds in the production build before specta regenerates bindings. Returns Result<string,string> (the MP3 path, or an error message). Format matches specta output (note double-space before 'as any'). Anchored on pullOllamaModel, a stable Korero binding present in bindings.ts.
 OK    recorder.rs: init optional denoiser (48 kHz only)
       Why: Korero (v1.11.0): construct an RNNoise denoiser at the top of run_consumer when the capture device runs at 48 kHz (RNNoise is 48 kHz-only); None otherwise.
 OK    recorder.rs: denoise raw stream (main loop)
@@ -84,11 +86,20 @@ OK    bindings.ts: meetingDeleteRecording stub (pre-seed)
 SKIP  actions.rs: register transcribe_alt in ACTION_MAP -- SkipIfPresent token already in file
 OK    bindings.ts: meetingRecordingStatus stub (pre-seed)
       Why: Korero (v1.14.2): pre-seed meetingRecordingStatus so the Meetings page can restore its recording UI (elapsed clock + mic-only flag) after being unmounted mid-meeting. Fixes the orphaned-meeting bug: navigating away and back showed idle while the backend kept recording, with no way to stop it. Prepends before the setActiveModel anchor.
+OK    bindings.ts: meetingPause / meetingResume stubs (pre-seed)
+      Why: Korero (v1.19.0): pre-seed meetingPause / meetingResume so the Meetings UI can pause a live meeting (both capture sinks drop frames, elapsed clock stops) without re-acquiring the audio devices. Production builds do not run the debug-only specta export, so these stubs must be seeded for tsc. Prepends before the setActiveModel anchor.
 OK    bindings.ts: notePostProcess stub (pre-seed)
       Why: Korero (v1.14.3): pre-seed notePostProcess so the Notes page can clean up the WHOLE note (not just the dictated snippet) and re-run processing with a per-run prompt and optional model override. Prepends before the setActiveModel anchor.
 OK    bindings.ts: AppSettings.transcript_corrections field (pre-seed)
       Why: Korero (v1.15.0): pre-seed the AppSettings field so the corrections manager UI type-checks before specta regenerates. Anchored on the v1.12.0 save_crash_reports field (added by an earlier patch in this array, so order holds). Inline object type avoids needing the exported TranscriptCorrection type.
 SKIP  transcription.rs: apply user-taught corrections after filtering -- SkipIfPresent token already in file
+SKIP  transcription.rs: force CPU execution provider for Canary models -- SkipIfPresent token already in file
+SKIP  transcription.rs: seed Whisper initial_prompt from custom words + taught corrections -- SkipIfPresent token already in file
+OK    bindings.ts: updateTranscriptCorrections / updatePostProcessPrompts stubs (pre-seed)
+      Why: Korero (v1.19.2): pre-seed the full-array persistence commands the settings store now routes to. Production = release build skips the debug specta export, so these stubs must be seeded for tsc. This is the persistence path for taught corrections (which previously never reached the backend) and the prompts array (add/delete, incl. the Meetings save-as-new no-op).
+SKIP  settingsStore.ts: persist transcript_corrections + post_process_prompts via updateSetting -- SkipIfPresent token already in file
+OK    bindings.ts: finishActiveRecording stub (pre-seed)
+      Why: Korero (v1.19.3): pre-seed finishActiveRecording so the recording overlay's 'stop' button can finish a latched dictation (stop + transcribe) by command. Production = release build skips the debug specta export, so the stub must be seeded for tsc.
 SKIP  text.rs: prefix-extension guard in find_best_match -- SkipIfPresent token already in file
 OK    bindings.ts: Ollama doctor command stubs (pre-seed)
       Why: Korero (v1.17.0): pre-seed ollamaStatus/ollamaStart/ollamaInstall so the Post-processing page can detect, start, and install Ollama (winget console launch; website fallback). Status returns a plain object (command is infallible); start/install return Results. Prepends before the setActiveModel anchor.

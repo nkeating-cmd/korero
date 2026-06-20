@@ -121,6 +121,10 @@ export const NotesSettings: React.FC = () => {
   const [suggestions, setSuggestions] = useState<Correction[]>([]);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // v1.20.0: remember the caret so dictated / processed text lands where the
+  // cursor was — clicking the Stop button moves focus off the textarea, which
+  // previously forced every dictation to append at the very end of the note.
+  const lastCaretRef = useRef<{ start: number; end: number } | null>(null);
   const timerRef = useRef<number | null>(null);
   // Snapshot for Undo after a whole-note rewrite — keyed by note id so a
   // note switch between process and undo can't clobber the wrong note.
@@ -214,24 +218,42 @@ export const NotesSettings: React.FC = () => {
     const content = activeNote.content;
     if (!t) return content;
     const ta = textareaRef.current;
+    // Prefer the live selection when the textarea is focused; otherwise fall
+    // back to the last known caret (the Stop button steals focus, so the live
+    // selection would otherwise collapse to the end of the note).
+    let caret: { start: number; end: number } | null = null;
     if (ta && document.activeElement === ta) {
-      const s = ta.selectionStart ?? content.length;
-      const e = ta.selectionEnd ?? content.length;
-      const before = content.slice(0, s);
-      const after = content.slice(e);
+      caret = {
+        start: ta.selectionStart ?? content.length,
+        end: ta.selectionEnd ?? content.length,
+      };
+    } else if (lastCaretRef.current) {
+      const clamp = (n: number) => Math.max(0, Math.min(n, content.length));
+      caret = {
+        start: clamp(lastCaretRef.current.start),
+        end: clamp(lastCaretRef.current.end),
+      };
+    }
+    if (caret) {
+      const before = content.slice(0, caret.start);
+      const after = content.slice(caret.end);
       const sep = before && !/\s$/.test(before) ? " " : "";
       const inserted = sep + t;
       const next = before + inserted + after;
-      const caret = before.length + inserted.length;
+      const pos = before.length + inserted.length;
+      lastCaretRef.current = { start: pos, end: pos };
       patchActive({ content: next });
-      requestAnimationFrame(() => {
-        ta.focus();
-        ta.setSelectionRange(caret, caret);
-      });
+      if (ta) {
+        requestAnimationFrame(() => {
+          ta.focus();
+          ta.setSelectionRange(pos, pos);
+        });
+      }
       return next;
     }
     const sep = content && !/\s$/.test(content) ? " " : "";
     const next = content + sep + t;
+    lastCaretRef.current = { start: next.length, end: next.length };
     patchActive({ content: next });
     return next;
   };
@@ -707,6 +729,24 @@ export const NotesSettings: React.FC = () => {
             ref={textareaRef}
             value={activeNote.content}
             onChange={(e) => patchActive({ content: e.target.value })}
+            // v1.20.0: keep the last caret fresh so dictation inserts there
+            // even after Stop (or any control) takes focus. onSelect covers
+            // caret moves + selections; onBlur captures the position as focus
+            // leaves the textarea.
+            onSelect={(e) => {
+              const ta = e.currentTarget;
+              lastCaretRef.current = {
+                start: ta.selectionStart,
+                end: ta.selectionEnd,
+              };
+            }}
+            onBlur={(e) => {
+              const ta = e.currentTarget;
+              lastCaretRef.current = {
+                start: ta.selectionStart,
+                end: ta.selectionEnd,
+              };
+            }}
             readOnly={processingNote}
             placeholder="Start dictating, or type here. Your words land at the cursor."
             spellCheck

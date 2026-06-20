@@ -901,6 +901,102 @@ pub async fn meeting_list_recordings(app: AppHandle) -> Result<Vec<RecordingFile
     Ok(out)
 }
 
+/// Kōrero (v1.21.0): render a spoken "audio brief" MP3 from text (meeting notes
+/// or key insights) using the LOCAL Qwen3-TTS batch engine installed at
+/// `C:\Users\nkeat\Tools\qwen-tts` (the same engine the audio-brief Cowork skill
+/// uses). Fully on-device — nothing leaves the machine. The engine is GPU-bound
+/// and deliberately SLOW (~1 minute per ~60 spoken words), so this runs on a
+/// blocking worker with NO kill-timeout (killing it orphans the GPU worker); the
+/// UI owns the long "rendering" state. The MP3 is written into the meetings
+/// folder (already asset-scoped, so the frontend can play it via
+/// `convertFileSrc`) and its path is returned.
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_generate_audio_brief(
+    app: AppHandle,
+    text: String,
+    speaker: Option<String>,
+    tempo: Option<f64>,
+) -> Result<String, String> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("Nothing to narrate — generate notes first.".to_string());
+    }
+    // Audio is linear and can't be skimmed; keep briefs short. Capping the input
+    // also stops a huge transcript from queueing a 30-minute render.
+    const MAX_CHARS: usize = 6_000;
+    let text = if text.chars().count() > MAX_CHARS {
+        text.chars().take(MAX_CHARS).collect::<String>()
+    } else {
+        text
+    };
+
+    let dir = meetings_dir(&app)?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        // The local engine, as installed for the audio-brief skill.
+        let engine = PathBuf::from(r"C:\Users\nkeat\Tools\qwen-tts");
+        let py = engine.join(r".venv\Scripts\python.exe");
+        let script = engine.join("audio_brief.py");
+        if !py.exists() || !script.exists() {
+            return Err(format!(
+                "Local Qwen3-TTS engine not found at {}. See docs/KORERO_TTS_PLAN.md to install it.",
+                engine.display()
+            ));
+        }
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let txt = dir.join(format!("audio-brief-{stamp}.txt"));
+        let mp3 = dir.join(format!("audio-brief-{stamp}.mp3"));
+        std::fs::write(&txt, text.as_bytes())
+            .map_err(|e| format!("Failed to write narration script: {e}"))?;
+
+        let mut cmd = std::process::Command::new(&py);
+        cmd.arg(&script).arg("--script").arg(&txt).arg("--out").arg(&mp3);
+        // Optional preset speaker (--mode speak --speaker <name>); when absent
+        // the engine's default designed voice is used.
+        if let Some(spk) = speaker
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            cmd.arg("--mode").arg("speak").arg("--speaker").arg(spk);
+        }
+        // Tempo: caller value if positive, else the default 1.12.
+        let tempo_val = tempo.filter(|t| *t > 0.0).unwrap_or(1.12);
+        cmd.arg("--tempo").arg(format!("{tempo_val}"));
+        cmd.current_dir(&engine);
+        // Windows: suppress the console window that flashes when launching
+        // python.exe (CREATE_NO_WINDOW). Without this a black cmd window pops
+        // up for the whole multi-minute render.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to launch the TTS engine: {e}"))?;
+
+        let _ = std::fs::remove_file(&txt);
+
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("TTS engine failed ({}). {}", output.status, err.trim()));
+        }
+        if !mp3.exists() {
+            return Err("TTS engine reported success but produced no MP3.".to_string());
+        }
+        Ok(mp3.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| format!("Audio-brief task failed: {e}"))?
+}
+
 /// Export a transcript to a Markdown/text file in the meetings folder.
 #[tauri::command]
 #[specta::specta]
@@ -990,6 +1086,106 @@ pub async fn meeting_query(
     answer.ok_or_else(|| "The model returned no answer.".to_string())
 }
 
+/// v1.20.0: strip a leaked instruction preamble from a post-processed result.
+///
+/// Small local models (e.g. Gemma via Ollama) sometimes echo the system prompt
+/// and/or a lead-in like "Here's the cleaned transcript:" before the real
+/// output — which previously buried meeting notes under a wall of repeated
+/// instructions. This removes, from the START of the text only:
+///   * a single wrapping Markdown code fence,
+///   * everything up to and including a "here is the <transcript|notes|…>:" lead-in,
+///   * a leading run of lines that are verbatim echoes of the prompt.
+/// Genuine output (speaker turns, minutes) is never touched, and an all-or-
+/// nothing guard returns the original text if stripping would empty the result.
+fn strip_llm_preamble(answer: &str, system_prompt: &str) -> String {
+    use std::collections::HashSet;
+
+    let mut text = answer.trim().to_string();
+
+    // 1. Unwrap a single surrounding ``` / ```lang fence.
+    if text.starts_with("```") {
+        if let Some(nl) = text.find('\n') {
+            let body = &text[nl + 1..];
+            let body = match body.rfind("```") {
+                Some(end) => &body[..end],
+                None => body,
+            };
+            text = body.trim().to_string();
+        }
+    }
+
+    let lines: Vec<&str> = text.lines().collect();
+
+    // 2. Strip an echoed-instruction preamble terminated by a "here's the …:"
+    //    lead-in line. To avoid ever deleting genuine output, the cut only fires
+    //    when the lines ABOVE the lead-in contain no real speaker turn (so they
+    //    are plausibly echoed prompt text) and there is content AFTER it. This
+    //    means a legitimate "Here's a summary:" heading sitting below real
+    //    minutes is never used to delete that content.
+    let is_lead_in = |l: &str| -> bool {
+        let low = l.trim().to_lowercase();
+        (low.starts_with("here")
+            || low.starts_with("sure")
+            || low.starts_with("okay, here")
+            || low.starts_with("ok, here")
+            || low.starts_with("below is"))
+            && (low.contains("transcript")
+                || low.contains("notes")
+                || low.contains("summary")
+                || low.contains("minutes")
+                || low.contains("clean"))
+            && low.ends_with(':')
+    };
+    // A "Label: text" turn — a short prefix, a colon, then content on the same
+    // line. A line that merely ENDS in a colon (e.g. the lead-in itself, or a
+    // bare heading) is not a turn.
+    let is_speaker_turn = |l: &str| -> bool {
+        let t = l.trim();
+        match t.find(':') {
+            Some(c) if c > 0 && c <= 40 => !t[c + 1..].trim().is_empty(),
+            _ => false,
+        }
+    };
+    let head = lines.len().min(60);
+    let lead_in_idx = (0..head)
+        .rev()
+        .find(|&i| is_lead_in(lines[i]) && !lines[..i].iter().any(|&l| is_speaker_turn(l)));
+    if let Some(idx) = lead_in_idx {
+        let kept = lines[idx + 1..].join("\n").trim().to_string();
+        if !kept.is_empty() {
+            return kept;
+        }
+    }
+
+    // 3. No lead-in marker: drop a leading run of blank lines and lines that are
+    //    verbatim echoes of the prompt. Short lines are ignored so a genuine
+    //    one-word speaker turn is never clipped.
+    let prompt_lines: HashSet<String> = system_prompt
+        .lines()
+        .map(|l| l.trim().to_lowercase())
+        .filter(|l| l.len() > 12)
+        .collect();
+    let mut start = 0;
+    while start < lines.len() {
+        let l = lines[start].trim();
+        if l.is_empty() {
+            start += 1;
+            continue;
+        }
+        if prompt_lines.contains(&l.to_lowercase()) {
+            start += 1;
+            continue;
+        }
+        break;
+    }
+    let kept = lines[start..].join("\n").trim().to_string();
+    if kept.is_empty() {
+        answer.trim().to_string()
+    } else {
+        kept
+    }
+}
+
 /// Post-process a meeting transcript with a custom, per-meeting prompt, using the
 /// configured post-processing provider/model. `prompt` becomes the system
 /// instruction; `text` (the transcript) is the content. Returns the result.
@@ -1067,6 +1263,9 @@ pub async fn meeting_post_process(
     // Keep copies for the non-streaming fallback below.
     let text_fallback = text.clone();
     let system_fallback = system.clone();
+    // v1.20.0: kept for the post-generation preamble strip (both copies above
+    // are moved into the LLM calls).
+    let system_for_strip = system.clone();
     let api_key_fallback = api_key.clone();
     let answer = crate::llm_client::stream_chat_completion(
         &provider,
@@ -1099,6 +1298,12 @@ pub async fn meeting_post_process(
     } else {
         answer
     };
+
+    // v1.20.0: remove any leaked instruction preamble / "Here's the …:" lead-in
+    // the model may have prepended (common with small local models) so the saved
+    // notes begin at the real content. Applied once to the final text; the live
+    // streaming preview is transient and intentionally left untouched.
+    let answer = strip_llm_preamble(&answer, &system_for_strip);
 
     // Signal completion so the UI can stop its streaming indicator.
     let _ = app.emit("meeting-postprocess-done", answer.clone());

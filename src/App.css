@@ -313,6 +313,23 @@ body::before {
   stroke-width: 1;
 }
 
+/* =============================================================================
+   Kōrero (v1.20.0): modern icon treatment
+   ============================================================================= */
+/* Lucide bakes stroke-width="2" onto every glyph. A refined 1.75 hairline reads
+   as more contemporary at UI sizes while keeping Lucide's round caps/joins. CSS
+   overrides the presentation attribute, so this restyles the WHOLE set (sidebar,
+   buttons, overlay) from one place — no per-icon props. The .logo-* brand marks
+   above are untouched (they aren't .lucide). */
+svg.lucide {
+  stroke-width: 1.75;
+}
+/* Smooth the colour/scale transitions on the sidebar tab icons (paired with the
+   group-hover + active utilities on the nav buttons in Sidebar.tsx). */
+.korero-nav-icon {
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+
 
 /* =============================================================================
    Bleeding-edge polish (2026-05-15)

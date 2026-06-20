@@ -23,6 +23,14 @@ const LLM_STREAM_TIMEOUT: Duration = Duration::from_secs(300);
 // Providers that ignore max_tokens (e.g. some local Ollama configs) are unaffected.
 const DEFAULT_PP_MAX_TOKENS: u32 = 1500;
 
+// Kōrero (v1.20.0): meeting post-processing often CLEANS a whole transcript,
+// where the output length is roughly the input length — far longer than a
+// summary. The shared 1500-token cap silently truncated cleaned meeting
+// transcripts part-way through. The streaming path (used ONLY by meeting
+// post-processing) gets a much higher ceiling; the 300s stream timeout remains
+// the real guard against a wedged provider.
+const MEETING_PP_MAX_TOKENS: u32 = 8192;
+
 // Kōrero (2026-05-17 PM, T2.2): User-Agent / X-Title pinned to the package
 // version at compile time so the headers track Cargo.toml automatically. Was
 // previously hardcoded "Korero/0.8.3" — a doc-and-code drift waiting to
@@ -366,7 +374,7 @@ pub async fn stream_chat_completion<F: FnMut(&str)>(
         response_format: None,
         reasoning_effort: None,
         reasoning: None,
-        max_tokens: Some(DEFAULT_PP_MAX_TOKENS),
+        max_tokens: Some(MEETING_PP_MAX_TOKENS),
         stream: Some(true),
     };
 

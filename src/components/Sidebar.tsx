@@ -1,17 +1,21 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
+// Kōrero (v1.21.0): curated, less-generic glyphs — swapped the default
+// gear/cpu/people/sparkles/waveform for more distinctive 2026 Lucide icons
+// (AudioLines, BrainCircuit, SlidersHorizontal, UsersRound, Wand2, Headphones).
 import {
-  AudioWaveform,
-  Cog,
+  AudioLines,
+  SlidersHorizontal,
   FlaskConical,
   History,
   Info,
-  Sparkles,
-  Cpu,
+  Wand2,
+  BrainCircuit,
   LifeBuoy,
   NotebookPen,
   Home,
-  Users,
+  UsersRound,
+  Headphones,
 } from "lucide-react";
 // Korero fork: removed upstream HandyHand glyph + wordmark from the sidebar
 // header. The app icon + window title bar carry brand recognition; the
@@ -32,6 +36,7 @@ import { HelpSettings } from "./settings/help/HelpSettings";
 import { NotesSettings } from "./settings/notes/NotesSettings";
 import { HomeDashboard } from "./settings/home/HomeDashboard";
 import { MeetingsSettings } from "./settings/meetings/MeetingsSettings";
+import { AudioBriefSettings } from "./settings/audiobrief/AudioBriefSettings";
 
 export type SidebarSection = keyof typeof SECTIONS_CONFIG;
 
@@ -55,16 +60,19 @@ interface SectionConfig {
 
 export const SECTIONS_CONFIG = {
   home: { labelKey: "sidebar.home", label: "Home", icon: Home, component: HomeDashboard, enabled: () => true },
-  general: { labelKey: "sidebar.general", icon: AudioWaveform, component: GeneralSettings, enabled: () => true },
-  models: { labelKey: "sidebar.models", icon: Cpu, component: ModelsSettings, enabled: () => true },
-  advanced: { labelKey: "sidebar.advanced", icon: Cog, component: AdvancedSettings, enabled: () => true },
-  history: { labelKey: "sidebar.history", icon: History, component: HistorySettings, enabled: () => true },
+  // Kōrero (v1.21.0): ordered by task, not alphabetically — capture/use first
+  // (dictate, notes, meetings, audio brief, history), then configuration, then
+  // utility. Reduces the "flat wall of 12 items" feel (UX pass).
+  general: { labelKey: "sidebar.general", icon: AudioLines, component: GeneralSettings, enabled: () => true },
   notes: { labelKey: "sidebar.notes", label: "Notes", icon: NotebookPen, component: NotesSettings, enabled: () => true },
-  meetings: { labelKey: "sidebar.meetings", label: "Meetings", icon: Users, component: MeetingsSettings, enabled: () => true },
-  // Kōrero (v1.14.6): always visible — hiding this tab while post-processing
-  // was off made the feature undiscoverable (its enable toggle lives INSIDE
-  // this page).
-  postprocessing: { labelKey: "sidebar.postProcessing", icon: Sparkles, component: PostProcessingSettings, enabled: () => true },
+  meetings: { labelKey: "sidebar.meetings", label: "Meetings", icon: UsersRound, component: MeetingsSettings, enabled: () => true },
+  audiobrief: { labelKey: "sidebar.audioBrief", label: "Audio brief", icon: Headphones, component: AudioBriefSettings, enabled: () => true },
+  history: { labelKey: "sidebar.history", icon: History, component: HistorySettings, enabled: () => true },
+  models: { labelKey: "sidebar.models", icon: BrainCircuit, component: ModelsSettings, enabled: () => true },
+  // always visible — hiding it made the feature undiscoverable (its enable
+  // toggle lives inside the page). Label matches the Home "Post-processing" card.
+  postprocessing: { labelKey: "sidebar.postProcessing", label: "Post-processing", icon: Wand2, component: PostProcessingSettings, enabled: () => true },
+  advanced: { labelKey: "sidebar.advanced", icon: SlidersHorizontal, component: AdvancedSettings, enabled: () => true },
   debug: { labelKey: "sidebar.debug", icon: FlaskConical, component: DebugSettings, enabled: (s) => s?.debug_mode ?? false },
   help: { labelKey: "sidebar.help", label: "Help", icon: LifeBuoy, component: HelpSettings, enabled: () => true },
   about: { labelKey: "sidebar.about", icon: Info, component: AboutSettings, enabled: () => true },
@@ -112,7 +120,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeSection, onSectionChange
               key={section.id}
               type="button"
               onClick={() => onSectionChange(section.id)}
-              className={`flex gap-2.5 items-center px-3 py-2 w-full rounded-lg text-left transition-all duration-200 ${
+              className={`group flex gap-2.5 items-center px-3 py-2 w-full rounded-lg text-left transition-all duration-200 ${
                 isActive
                   ? "text-text font-semibold"
                   : "text-text-muted hover:bg-white/8 hover:text-text"
@@ -137,7 +145,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeSection, onSectionChange
                 });
                 return (
                   <>
-                    <Icon width={18} height={18} className="shrink-0" />
+                    {/* Kōrero (v1.20.0): active tab icon picks up the brand
+                        aurora-cyan accent; all tab icons get a subtle springy
+                        lift on hover for a more modern, tactile feel. */}
+                    <Icon
+                      width={18}
+                      height={18}
+                      className={`korero-nav-icon shrink-0 group-hover:scale-110 ${
+                        isActive ? "text-aurora-cyan" : ""
+                      }`}
+                    />
                     <span className="text-sm truncate" title={label}>
                       {label}
                     </span>

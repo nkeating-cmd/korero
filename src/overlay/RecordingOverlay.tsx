@@ -52,34 +52,48 @@ const RecordingOverlay: React.FC = () => {
 
   // ── Event listeners ────────────────────────────────────────────────────────
   useEffect(() => {
-    const setup = async () => {
-      const unlistenShow = await listen("show-overlay", async (event) => {
-        await syncLanguageFromSettings();
-        setState(event.payload as OverlayState);
-        setIsVisible(true);
-      });
-      const unlistenHide = await listen("hide-overlay", () => {
-        setIsVisible(false);
-      });
-      const unlistenLevel = await listen<number[]>("mic-level", (event) => {
-        const newLevels = event.payload as number[];
-        // Kōrero (v1.2.0): mic-level handler no longer calls setLevels.
-        // The RAF loop owns all setLevels calls so the idle wave and audio
-        // levels are merged in one place, avoiding racing setLevels calls
-        // from two sources. We only update the smoothed ref here.
-        const smoothed = smoothedLevelsRef.current.map((prev, i) => {
-          const target = newLevels[i] || 0;
-          return prev * 0.65 + target * 0.35;
-        });
-        smoothedLevelsRef.current = smoothed;
-      });
-      return () => {
-        unlistenShow();
-        unlistenHide();
-        unlistenLevel();
-      };
+    // Kōrero (v1.20.0): register listeners robustly. The previous version
+    // returned the cleanup FROM the async setup(), so useEffect received a
+    // Promise (never a function) and the unlisten handlers were never called.
+    // Harmless at runtime (the overlay window lives for the app's lifetime),
+    // but it stacked DUPLICATE listeners on every HMR reload during
+    // `tauri dev`, double-driving state. Now: collect the unlisten fns and
+    // tear them down synchronously, with a `cancelled` guard for the case
+    // where the effect is torn down before registration completes.
+    let cancelled = false;
+    const unlisteners: Array<() => void> = [];
+    void (async () => {
+      const off = await Promise.all([
+        listen("show-overlay", async (event) => {
+          await syncLanguageFromSettings();
+          setState(event.payload as OverlayState);
+          setIsVisible(true);
+        }),
+        listen("hide-overlay", () => {
+          setIsVisible(false);
+        }),
+        // mic-level handler no longer calls setLevels (v1.2.0): the RAF loop
+        // owns all setLevels calls so the idle wave and audio levels merge in
+        // one place. Here we only update the smoothed ref.
+        listen<number[]>("mic-level", (event) => {
+          const newLevels = event.payload as number[];
+          const smoothed = smoothedLevelsRef.current.map((prev, i) => {
+            const target = newLevels[i] || 0;
+            return prev * 0.65 + target * 0.35;
+          });
+          smoothedLevelsRef.current = smoothed;
+        }),
+      ]);
+      if (cancelled) {
+        off.forEach((u) => u());
+        return;
+      }
+      unlisteners.push(...off);
+    })();
+    return () => {
+      cancelled = true;
+      unlisteners.forEach((u) => u());
     };
-    setup();
   }, []);
 
   // ── RAF idle animation loop ─────────────────────────────────────────────────

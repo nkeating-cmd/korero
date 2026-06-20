@@ -78,8 +78,16 @@ license-files = [
 # Deny multiple-version of the same crate (catches the case where a transitive
 # bump pulls in two copies of, say, openssl-sys). "warn" not "deny" because
 # the Tauri ecosystem currently has unavoidable duplicates.
+#
+# Korero (v1.20.0): set to "allow" (was "warn"). The Tauri/wry tree carries
+# dozens of unavoidable duplicate transitive crates we do not control; at
+# "warn" cargo-deny printed the full inclusion graph for EVERY one on every
+# build -- hundreds of lines of dependency-tree noise that buried the real
+# advisory/licence results. Duplicate-version detection has negligible value
+# for a personal desktop app, so silence it; advisories, licenses, and sources
+# checks (the ones that matter) still run and still fail loudly.
 [bans]
-multiple-versions = "warn"
+multiple-versions = "allow"
 # Korero (v1.18.0): "warn" not "deny" -- the 4 wildcard hits are korero's own
 # [patch.crates-io] git entries (cjpais forks), which carry no version field
 # by design; the git source + SHA pin (pin-deps.ps1) is the real control.

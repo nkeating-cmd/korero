@@ -979,7 +979,7 @@ fn default_post_process_prompts() -> Vec<LLMPrompt> {
             // boundaries without conflicting with the earlier "do not reorder" guard.
             // Migration in ensure_post_process_defaults() upgrades existing installs
             // that still carry the v1.6.0 default text.
-            prompt: "Clean this transcript using NZ English spelling (colour, organise, whānau, etc.):\n1. Fix spelling, capitalisation, and punctuation errors\n2. Convert number words to digits (twenty-five → 25, ten percent → 10%, five dollars → $5)\n3. Replace spoken punctuation with symbols (period → ., comma → ,, question mark → ?)\n4. Remove filler words (um, uh, like as filler)\n5. Preserve te reo Māori words exactly as spoken\n6. Ensure sentences and paragraphs read as coherent prose — join fragments that clearly belong together and smooth any sentence boundaries broken by dictation\n\nPreserve exact meaning. Do not add content or invent details. Use NZ English throughout.\n\nReturn only the cleaned transcript.\n\nTranscript:\n${output}".to_string(),
+            prompt: "Clean this transcript using NZ English spelling (colour, organise, whānau, etc.):\n1. Fix spelling, capitalisation, and punctuation errors\n2. Convert number words to digits (twenty-five → 25, ten percent → 10%, five dollars → $5)\n3. Replace spoken punctuation with symbols (period → ., comma → ,, question mark → ?)\n4. Remove filler words (um, uh, like as filler)\n5. Preserve te reo Māori words exactly as spoken\n6. Do NOT add, invent, or insert any speaker labels. ONLY if the transcript already begins lines with speaker labels (e.g. \"You:\" or a name): keep every existing label exactly as written, never merge, move, drop, or reassign text across speakers, and tidy wording only WITHIN each speaker's turn (join broken fragments inside a turn, never across a label). If the text has NO speaker labels — e.g. single-speaker dictation — return clean prose with no \"You:\" or name prefixes added.\n\nPreserve exact meaning. Do not add content or invent details. Use NZ English throughout.\n\nReturn ONLY the cleaned transcript — no preamble, notes, headings, or repetition of these instructions. Never write a lead-in such as \"Here is the cleaned transcript\".\n\nTranscript:\n${output}".to_string(),
         },
         LLMPrompt {
             id: "korero_client_email".to_string(),
@@ -1112,9 +1112,12 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
     // previous default text (sentinel check), upgrade it to the current version.
     // Users who edited their prompt away from the default are unaffected.
     //
-    // Current migration: korero_clean_transcript — adds rule 6 (coherent prose).
-    // Detection: the v1.6.0 default contained "Preserve exact meaning and word order."
-    // as its constraint sentence; the v1.7.0 text uses "Preserve exact meaning." only.
+    // Current migration: korero_clean_transcript — replaces the old "reflow into
+    // coherent prose" rule 6 (which made the model merge text across speakers and
+    // destroy meeting attribution) with speaker-label preservation + a no-preamble
+    // instruction. Detection sentinels: the v1.6.0 text ("Preserve exact meaning
+    // and word order.") OR the v1.7.0 text ("Ensure sentences and paragraphs read
+    // as coherent prose"). Either is upgraded to the current default.
     for default_prompt in &default_post_process_prompts() {
         match settings
             .post_process_prompts
@@ -1123,9 +1126,18 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
         {
             Some(existing) => {
                 if existing.id == "korero_clean_transcript"
-                    && existing.prompt.contains("Preserve exact meaning and word order.")
+                    && (existing.prompt.contains("Preserve exact meaning and word order.")
+                        || existing
+                            .prompt
+                            .contains("Ensure sentences and paragraphs read as coherent prose")
+                        // v1.20.1: the v1.20.0 speaker-preservation wording made
+                        // the model INVENT "You:" labels on single-speaker
+                        // dictation. Upgrade those installs to the reworded rule 6.
+                        || existing
+                            .prompt
+                            .contains("Keep EVERY speaker label exactly as written"))
                 {
-                    debug!("Migrating korero_clean_transcript prompt to v1.7.0 (rule 6 + relaxed word-order constraint)");
+                    debug!("Migrating korero_clean_transcript prompt to current default (no-invent speaker labels)");
                     existing.prompt = default_prompt.prompt.clone();
                     changed = true;
                 }

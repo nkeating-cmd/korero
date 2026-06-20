@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "K\u014drero",
-  "version": "1.19.3",
+  "version": "1.21.0",
   "identifier": "com.nkeating.korero",
   "build": {
     "beforeDevCommand": "bun run dev",
@@ -13,7 +13,7 @@
     "macOSPrivateApi": true,
     "windows": [],
     "security": {
-      "csp": "default-src 'self' tauri:; img-src 'self' data: tauri: asset: https://asset.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data: tauri:; script-src 'self' tauri:; connect-src 'self' ipc: http://ipc.localhost tauri: https://api.deepseek.com https://api.openai.com https://openrouter.ai https://api.anthropic.com https://api.groq.com https://api.z.ai https://api.cerebras.ai https://bedrock-mantle.us-east-1.api.aws https://generativelanguage.googleapis.com",
+      "csp": "default-src 'self' tauri:; img-src 'self' data: tauri: asset: https://asset.localhost; media-src 'self' data: blob: tauri: asset: https://asset.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data: tauri:; script-src 'self' tauri:; connect-src 'self' ipc: http://ipc.localhost tauri: https://api.deepseek.com https://api.openai.com https://openrouter.ai https://api.anthropic.com https://api.groq.com https://api.z.ai https://api.cerebras.ai https://bedrock-mantle.us-east-1.api.aws https://generativelanguage.googleapis.com",
       "assetProtocol": {
         "enable": true,
         "scope": {

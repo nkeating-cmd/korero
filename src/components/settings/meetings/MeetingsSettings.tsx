@@ -24,9 +24,12 @@ import {
   Activity,
   GraduationCap,
   GitMerge,
+  Cpu,
+  Volume2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { Markdown } from "../../ui/Markdown";
@@ -142,12 +145,25 @@ const combine = (
   transcript?: TranscriptSeg[],
 ) => {
   if (transcript && transcript.length > 0) {
-    return transcript
-      .filter((s) => s.text.trim())
-      .map(
-        (s) =>
-          `${labelFor(s.source, youLabel, othersLabel)}: ${s.text.trim()}`,
-      )
+    // v1.20.0: merge consecutive segments from the SAME speaker into one turn.
+    // Live VAD emits short segments, so a single person's sentence was split
+    // across many "You:" lines — which fragmented the transcript, hurt
+    // readability, and gave the post-processing model dozens of tiny labelled
+    // turns to mangle. One label per contiguous turn fixes copy, export, AND
+    // the post-processing input in one place.
+    const merged: { source: string; text: string }[] = [];
+    for (const s of transcript) {
+      const text = s.text.trim();
+      if (!text) continue;
+      const last = merged[merged.length - 1];
+      if (last && last.source === s.source) {
+        last.text += ` ${text}`;
+      } else {
+        merged.push({ source: s.source, text });
+      }
+    }
+    return merged
+      .map((m) => `${labelFor(m.source, youLabel, othersLabel)}: ${m.text}`)
       .join("\n");
   }
   return [
@@ -197,6 +213,10 @@ export const MeetingsSettings: React.FC = () => {
   // v1.17.0: streaming post-process preview — accumulates `meeting-postprocess-delta`
   // tokens so the notes render as they generate instead of after a long wait.
   const [liveProcessed, setLiveProcessed] = useState("");
+  // v1.21.0: local audio-brief (Qwen3-TTS) state. briefBusy spans a multi-minute
+  // GPU render; briefUrl is an asset:// URL for the produced MP3.
+  const [briefBusy, setBriefBusy] = useState(false);
+  const [briefUrl, setBriefUrl] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [systemCaptured, setSystemCaptured] = useState<boolean | null>(null);
   const [busy, setBusy] = useState<null | "transcribe" | "post" | "both">(null);
@@ -231,6 +251,22 @@ export const MeetingsSettings: React.FC = () => {
   const restoredElapsedRef = useRef(0);
   const active = meetings.find((m) => m.id === activeId) ?? null;
   const currentModel = settings?.selected_model ?? "";
+
+  // v1.20.0: the active POST-PROCESSING provider/model (distinct from the
+  // transcription model above). Surfaced in the Meetings tab so it's clear which
+  // model is generating the notes. Mirrors the NotesSettings lookup.
+  const ppProvider = settings?.post_process_providers?.find(
+    (p) => p.id === settings?.post_process_provider_id,
+  );
+  const ppModel =
+    (settings?.post_process_models ?? {})[
+      settings?.post_process_provider_id ?? ""
+    ] ?? "";
+  const ppLabel = ppModel
+    ? `${ppProvider?.label ?? "Model"} · ${ppModel}`
+    : ppProvider?.label
+      ? `${ppProvider.label} · no model set`
+      : "not configured";
 
   // v1.19.0: post-processing prompt picker — shares the saved-prompts store with
   // dictation/Notes. Selecting a saved prompt loads its text into the editable
@@ -905,6 +941,30 @@ export const MeetingsSettings: React.FC = () => {
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
       toast.error("Could not copy to clipboard.");
+    }
+  };
+
+  // v1.21.0: render a spoken audio brief of the processed notes via the local
+  // Qwen3-TTS engine (Rust shells out to audio_brief.py). GPU-bound and slow;
+  // no client timeout — the engine must not be interrupted.
+  const genAudioBrief = async () => {
+    if (!active || briefBusy) return;
+    const text = active.processed.trim();
+    if (!text) {
+      toast.message("Generate notes first.");
+      return;
+    }
+    setBriefBusy(true);
+    setBriefUrl(null);
+    try {
+      const r = await commands.meetingGenerateAudioBrief(text, null, null);
+      if (r.status !== "ok") throw new Error(r.error);
+      setBriefUrl(convertFileSrc(r.data, "asset"));
+      toast.success("Audio brief ready.");
+    } catch (e) {
+      toast.error(`Audio brief failed: ${String(e)}`);
+    } finally {
+      setBriefBusy(false);
     }
   };
 
@@ -1695,15 +1755,16 @@ export const MeetingsSettings: React.FC = () => {
 
                 {providerLocal === false ? (
                   <p className="flex items-start gap-1.5 text-xs text-pill-warning">
-                    <TriangleAlert size={13} className="mt-0.5 shrink-0" /> Your Post
-                    Process provider is a cloud service — post-processing sends this
-                    transcript to it. Use a local model (Ollama) for fully-local
-                    processing.
+                    <TriangleAlert size={13} className="mt-0.5 shrink-0" /> Cloud
+                    model <span className="font-medium">{ppLabel}</span> —
+                    post-processing sends this transcript off your machine. Use a
+                    local model (Ollama) for fully-local processing.
                   </p>
                 ) : (
-                  <p className="text-xs text-text-subtle">
-                    Post-processing uses your Post Process provider/model (Ollama +
-                    Gemma = fully-local).
+                  <p className="flex items-center gap-1.5 text-xs text-text-subtle">
+                    <Cpu size={13} className="shrink-0" /> Post-processing model:{" "}
+                    <span className="font-medium text-text">{ppLabel}</span>
+                    {providerLocal ? " (local)" : ""}
                   </p>
                 )}
 
@@ -1723,21 +1784,55 @@ export const MeetingsSettings: React.FC = () => {
                 {active.processed.trim() && (
                   <div className="space-y-1 pt-1">
                     <div className="flex items-center justify-between gap-2">
-                      <h3 className="text-xs font-semibold text-pill-positive uppercase tracking-wider">
+                      <h3 className="flex items-baseline gap-2 text-xs font-semibold text-pill-positive uppercase tracking-wider">
                         Processed notes
+                        <span className="font-normal normal-case tracking-normal text-text-subtle">
+                          via {ppLabel}
+                        </span>
                       </h3>
-                      <button
-                        type="button"
-                        onClick={copyProcessed}
-                        title="Copy processed notes (markdown)"
-                        className="text-text-subtle hover:text-aurora-cyan transition-colors"
-                      >
-                        <Copy size={13} />
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {/* v1.21.0: render a spoken audio brief of the notes via
+                            the local Qwen3-TTS engine. GPU-bound + slow (minutes);
+                            the button shows a long rendering state. */}
+                        <button
+                          type="button"
+                          onClick={genAudioBrief}
+                          disabled={briefBusy}
+                          title="Generate a spoken audio brief (local Qwen3-TTS, on-device)"
+                          className="flex items-center gap-1 text-text-subtle hover:text-aurora-cyan transition-colors disabled:opacity-50"
+                        >
+                          {briefBusy ? (
+                            <Loader2 size={13} className="animate-spin" />
+                          ) : (
+                            <Volume2 size={13} />
+                          )}
+                          <span className="text-xs">
+                            {briefBusy ? "Rendering…" : "Audio brief"}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={copyProcessed}
+                          title="Copy processed notes (markdown)"
+                          className="text-text-subtle hover:text-aurora-cyan transition-colors"
+                        >
+                          <Copy size={13} />
+                        </button>
+                      </div>
                     </div>
                     <div className="glass-card-thin md-body">
                       <Markdown>{active.processed.trim()}</Markdown>
                     </div>
+                    {briefBusy && (
+                      <p className="flex items-center gap-1.5 text-xs text-text-subtle">
+                        <Loader2 size={12} className="animate-spin" /> Rendering
+                        audio on-device — GPU-bound, can take a few minutes for a
+                        long note. Leave it running.
+                      </p>
+                    )}
+                    {briefUrl && !briefBusy && (
+                      <audio controls src={briefUrl} className="w-full mt-1" />
+                    )}
                   </div>
                 )}
               </div>
