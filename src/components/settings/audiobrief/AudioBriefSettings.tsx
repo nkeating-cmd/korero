@@ -213,6 +213,7 @@ export const AudioBriefSettings: React.FC = () => {
         </div>
         <textarea
           value={source}
+          aria-label="Source text"
           onChange={(e) => setSource(e.target.value)}
           rows={6}
           placeholder="Paste any text, or import a .txt / .md document…"
@@ -231,7 +232,7 @@ export const AudioBriefSettings: React.FC = () => {
             type="button"
             onClick={draftTranscript}
             disabled={drafting || !source.trim()}
-            className="korero-btn-primary"
+            className={transcript ? "korero-btn" : "korero-btn-primary"}
           >
             {drafting ? (
               <Loader2 size={14} className="animate-spin" />
@@ -249,12 +250,13 @@ export const AudioBriefSettings: React.FC = () => {
           <span className={stepLabel}>2 · Spoken script</span>
           <textarea
             value={transcript}
+            aria-label="Spoken script"
             onChange={(e) => setTranscript(e.target.value)}
             rows={8}
             placeholder="The drafted script will appear here — edit freely before rendering…"
             className={inputClass}
           />
-          <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-3">
+          <div className="flex flex-wrap items-end gap-4">
             <div className="flex flex-wrap items-end gap-4">
               <div className="flex flex-col gap-1.5">
                 <label className={fieldLabel}>Voice</label>
