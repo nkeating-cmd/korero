@@ -901,10 +901,11 @@ pub async fn meeting_list_recordings(app: AppHandle) -> Result<Vec<RecordingFile
     Ok(out)
 }
 
-/// Kōrero (v1.21.0): render a spoken "audio brief" MP3 from text (meeting notes
-/// or key insights) using the LOCAL Qwen3-TTS batch engine installed at
-/// `C:\Users\nkeat\Tools\qwen-tts` (the same engine the audio-brief Cowork skill
-/// uses). Fully on-device — nothing leaves the machine. The engine is GPU-bound
+/// Kōrero (v1.22.0): render a spoken "audio brief" MP3 from text (meeting notes
+/// or key insights) using a LOCAL TTS batch engine. The engine directory is
+/// resolved at run time (KORERO_TTS_DIR env var, then a per-user app-data /
+/// bundled-next-to-exe location, then the legacy dev path) so it is no longer
+/// pinned to one machine. Fully on-device — nothing leaves the machine. GPU-bound
 /// and deliberately SLOW (~1 minute per ~60 spoken words), so this runs on a
 /// blocking worker with NO kill-timeout (killing it orphans the GPU worker); the
 /// UI owns the long "rendering" state. The MP3 is written into the meetings
@@ -934,16 +935,50 @@ pub async fn meeting_generate_audio_brief(
     let dir = meetings_dir(&app)?;
 
     tauri::async_runtime::spawn_blocking(move || {
-        // The local engine, as installed for the audio-brief skill.
-        let engine = PathBuf::from(r"C:\Users\nkeat\Tools\qwen-tts");
+        // Resolve the local TTS engine directory at run time so it is not pinned
+        // to one machine. Order (first that actually contains the engine wins):
+        //   1. KORERO_TTS_DIR env var — power users, or a future bundled engine,
+        //      can point Kōrero anywhere.
+        //   2. a per-user install under the app-data dir
+        //      (%APPDATA%\com.nkeating.korero\tts).
+        //   3. next to the executable (a bundled engine would ship at <exe>\tts
+        //      or <exe>\resources\tts).
+        //   4. the legacy developer location.
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Ok(p) = std::env::var("KORERO_TTS_DIR") {
+            let p = p.trim();
+            if !p.is_empty() {
+                candidates.push(PathBuf::from(p));
+            }
+        }
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            candidates.push(PathBuf::from(appdata).join("com.nkeating.korero").join("tts"));
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                candidates.push(exe_dir.join("tts"));
+                candidates.push(exe_dir.join("resources").join("tts"));
+            }
+        }
+        candidates.push(PathBuf::from(r"C:\Users\nkeat\Tools\qwen-tts"));
+
+        let engine = match candidates.iter().find(|dir| {
+            dir.join(r".venv\Scripts\python.exe").exists() && dir.join("audio_brief.py").exists()
+        }) {
+            Some(e) => e.clone(),
+            None => {
+                let looked = candidates
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(format!(
+                    "On-device voice engine not found. Set KORERO_TTS_DIR, or install it under %APPDATA%\\com.nkeating.korero\\tts. (Looked in: {looked})"
+                ));
+            }
+        };
         let py = engine.join(r".venv\Scripts\python.exe");
         let script = engine.join("audio_brief.py");
-        if !py.exists() || !script.exists() {
-            return Err(format!(
-                "Local Qwen3-TTS engine not found at {}. See docs/KORERO_TTS_PLAN.md to install it.",
-                engine.display()
-            ));
-        }
 
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

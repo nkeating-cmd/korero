@@ -128,13 +128,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeSection, onSectionChange
               style={
                 isActive
                   ? {
-                      // Kōrero (v1.12.0): brand cyan sourced from the --color-aurora-cyan
-                      // token via color-mix, so the active nav state tracks the design
-                      // system instead of a hardcoded literal.
-                      backgroundColor:
-                        "color-mix(in srgb, var(--color-aurora-cyan) 18%, transparent)",
+                      // Kōrero (v1.22.0): the active SIGNAL now lives in the icon
+                      // tile (aurora-gradient fill), so the row itself only needs a
+                      // quiet neutral lift — avoids a double-cyan, over-saturated row.
+                      backgroundColor: "rgba(255, 255, 255, 0.06)",
                       boxShadow:
-                        "inset 0 1px 0 0 rgba(255, 255, 255, 0.30), 0 4px 14px 0 color-mix(in srgb, var(--color-aurora-cyan) 28%, transparent), 0 0 0 1px color-mix(in srgb, var(--color-aurora-cyan) 35%, transparent)",
+                        "inset 0 1px 0 0 rgba(255, 255, 255, 0.12), 0 1px 3px 0 rgba(0, 0, 0, 0.2)",
                     }
                   : undefined
               }
@@ -148,13 +147,17 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeSection, onSectionChange
                     {/* Kōrero (v1.20.0): active tab icon picks up the brand
                         aurora-cyan accent; all tab icons get a subtle springy
                         lift on hover for a more modern, tactile feel. */}
-                    <Icon
-                      width={18}
-                      height={18}
-                      className={`korero-nav-icon shrink-0 group-hover:scale-110 ${
-                        isActive ? "text-aurora-cyan" : ""
+                    <span
+                      className={`korero-nav-tile ${
+                        isActive ? "korero-nav-tile-active" : ""
                       }`}
-                    />
+                    >
+                      <Icon
+                        width={17}
+                        height={17}
+                        className="korero-nav-icon shrink-0"
+                      />
+                    </span>
                     <span className="text-sm truncate" title={label}>
                       {label}
                     </span>

@@ -1,26 +1,31 @@
 /* eslint-disable i18next/no-literal-string */
 import React, { useRef, useState } from "react";
-import { Loader2, FileUp, Volume2, Wand2 } from "lucide-react";
+import { Loader2, FileUp, Volume2, Wand2, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { commands } from "@/bindings";
 import { Dropdown } from "@/components/ui/Dropdown";
 
 /**
- * Kōrero (v1.21.0): Audio Brief.
+ * Kōrero (v1.22.0): Audio Brief.
  *
  * Pipeline (all on-device): paste or import text → the local post-processing
- * model (Gemma via Ollama) drafts a SPOKEN script → the local Qwen3-TTS engine
- * renders it to an MP3. Two explicit steps so the script can be edited before
- * it's spoken. Reuses the existing meetingPostProcess (Gemma) and
- * meetingGenerateAudioBrief (Qwen) commands — no transcript leaves the machine.
+ * model drafts a SPOKEN script → the local TTS engine renders it to an MP3. Two
+ * explicit steps so the script can be edited before it's spoken. Reuses the
+ * existing meetingPostProcess + meetingGenerateAudioBrief commands — no
+ * transcript leaves the machine.
+ *
+ * v1.22.0 polish: logical two-step layout (Format sits with Draft; Voice + Pace
+ * sit with Render), aligned label/control stacks on an 8pt rhythm, the unified
+ * primary buttons, a wrapped audio preview, and a graceful "engine not set up"
+ * state when the on-device voice engine is absent.
  */
 
 // Shared rules every format obeys (audio is linear; write for the ear).
 const BASE_RULES =
   " Write numbers as words (e.g. three hundred and eighty-three dollars); expand abbreviations on first use; remove URLs, reference codes, IDs and emoji; short one-idea sentences; NZ English; no titles, headings, or speaker labels. Return ONLY the script text.";
 
-// Template formats for the spoken script — each is a Gemma instruction.
+// Template formats for the spoken script — each is a model instruction.
 const TEMPLATES: { id: string; label: string; prompt: string }[] = [
   {
     id: "standard",
@@ -59,7 +64,7 @@ const TEMPLATES: { id: string; label: string; prompt: string }[] = [
   },
 ];
 
-// Preset Qwen3-TTS speakers (plus the engine's default designed voice).
+// Preset TTS speakers (plus the engine's default designed voice).
 const SPEAKERS = [
   "Default",
   "Serena",
@@ -87,6 +92,7 @@ export const AudioBriefSettings: React.FC = () => {
   const [drafting, setDrafting] = useState(false);
   const [rendering, setRendering] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [engineMissing, setEngineMissing] = useState(false);
   const [templateId, setTemplateId] = useState(TEMPLATES[0].id);
   const [speaker, setSpeaker] = useState(SPEAKERS[0]); // "Default"
   const [tempo, setTempo] = useState(1.12); // "Brisk"
@@ -146,36 +152,56 @@ export const AudioBriefSettings: React.FC = () => {
         tempo,
       );
       if (r.status !== "ok") throw new Error(r.error);
+      setEngineMissing(false);
       setAudioUrl(convertFileSrc(r.data, "asset"));
       toast.success("Audio brief ready.");
     } catch (e) {
-      toast.error(`Audio render failed: ${String(e)}`);
+      const msg = String(e);
+      // The backend says "...voice engine not found..." when no local TTS engine
+      // is installed — surface a helpful setup card instead of a bare toast.
+      if (/not found|no such|couldn'?t (find|locate)|engine/i.test(msg)) {
+        setEngineMissing(true);
+      }
+      toast.error(`Audio render failed: ${msg}`);
     } finally {
       setRendering(false);
     }
   };
 
-  return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4">
-      <div>
-        <h2 className="text-lg font-semibold text-text">Audio brief</h2>
-        <p className="mt-1 text-xs text-text-subtle">
-          Paste or import text. The local model drafts a spoken script (Gemma),
-          then renders it to audio on-device (Qwen3-TTS). Nothing leaves your
-          machine.
-        </p>
-      </div>
+  const inputClass =
+    "w-full resize-y rounded-lg border border-glass-border bg-glass-surface-thin px-3.5 py-3 text-sm leading-relaxed text-text placeholder:text-text-subtle transition-colors focus:outline-none";
+  const stepLabel =
+    "text-xs font-semibold uppercase tracking-wider text-text-subtle";
+  const fieldLabel = "text-xs font-medium text-text-subtle";
 
-      {/* Source */}
-      <div className="space-y-1">
-        <div className="flex items-center justify-between">
-          <label className="text-xs text-text-subtle">Source text</label>
+  return (
+    <div className="mx-auto w-full max-w-3xl space-y-6 px-6 py-6">
+      {/* Header */}
+      <header className="space-y-2.5">
+        <h2 className="text-xl font-semibold tracking-tight text-text">
+          Audio brief
+        </h2>
+        <p className="max-w-prose text-sm leading-relaxed text-text-muted">
+          Turn any text into a spoken brief — entirely on your device. The local
+          model drafts a script you can edit, then the on-device voice reads it
+          aloud.
+        </p>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-glass-border bg-glass-surface-thin px-2.5 py-1 text-xs font-medium text-text-muted">
+          <ShieldCheck size={13} className="text-aurora-cyan" />
+          On-device · nothing leaves your machine
+        </span>
+      </header>
+
+      {/* Step 1 — Source → Draft */}
+      <section className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <span className={stepLabel}>1 · Source text</span>
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="flex items-center gap-1 text-xs text-text-subtle transition-colors hover:text-aurora-cyan"
+            className="inline-flex items-center gap-1.5 text-xs text-text-muted transition-colors hover:text-aurora-cyan"
           >
-            <FileUp size={13} /> Import .txt / .md
+            <FileUp size={14} /> Import .txt / .md
           </button>
           <input
             ref={fileInputRef}
@@ -190,92 +216,119 @@ export const AudioBriefSettings: React.FC = () => {
           onChange={(e) => setSource(e.target.value)}
           rows={6}
           placeholder="Paste any text, or import a .txt / .md document…"
-          className="w-full resize-y rounded-lg border border-glass-border bg-glass-surface-thin px-3 py-2 text-sm text-text placeholder:text-text-subtle focus:outline-none"
+          className={inputClass}
         />
-        {/* v1.21.0: use the app's themed Dropdown (portal-based, readable on
-            dark) — native <select> option popups render OS-default white and
-            the near-white option text was invisible. */}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1">
-          <div className="flex items-center gap-1.5 text-xs text-text-subtle">
-            Format
+        <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-3">
+          <div className="flex flex-col gap-1.5">
+            <label className={fieldLabel}>Format</label>
             <Dropdown
               options={TEMPLATES.map((t) => ({ value: t.id, label: t.label }))}
               selectedValue={templateId}
               onSelect={setTemplateId}
             />
           </div>
-          <div className="flex items-center gap-1.5 text-xs text-text-subtle">
-            Voice
-            <Dropdown
-              options={SPEAKERS.map((s) => ({ value: s, label: s }))}
-              selectedValue={speaker}
-              onSelect={setSpeaker}
-            />
-          </div>
-          <div className="flex items-center gap-1.5 text-xs text-text-subtle">
-            Pace
-            <Dropdown
-              options={TEMPOS.map((t) => ({
-                value: String(t.value),
-                label: t.label,
-              }))}
-              selectedValue={String(tempo)}
-              onSelect={(v) => setTempo(Number(v))}
-            />
-          </div>
+          <button
+            type="button"
+            onClick={draftTranscript}
+            disabled={drafting || !source.trim()}
+            className="korero-btn-primary"
+          >
+            {drafting ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Wand2 size={14} />
+            )}
+            {drafting ? "Drafting…" : "Draft script"}
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={draftTranscript}
-          disabled={drafting || !source.trim()}
-          className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-surface-thin px-3 py-1.5 text-sm transition-colors hover:text-aurora-cyan disabled:opacity-50"
-        >
-          {drafting ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <Wand2 size={14} />
-          )}
-          {drafting ? "Drafting…" : "Draft script (Gemma)"}
-        </button>
-      </div>
+      </section>
 
-      {/* Spoken script */}
+      {/* Step 2 — Script → Render */}
       {(transcript || drafting) && (
-        <div className="space-y-1">
-          <label className="text-xs text-text-subtle">
-            Spoken script (editable)
-          </label>
+        <section className="space-y-3 border-t border-glass-border pt-6">
+          <span className={stepLabel}>2 · Spoken script</span>
           <textarea
             value={transcript}
             onChange={(e) => setTranscript(e.target.value)}
             rows={8}
-            placeholder="The drafted script will appear here…"
-            className="w-full resize-y rounded-lg border border-glass-border bg-glass-surface-thin px-3 py-2 text-sm text-text placeholder:text-text-subtle focus:outline-none"
+            placeholder="The drafted script will appear here — edit freely before rendering…"
+            className={inputClass}
           />
-          <button
-            type="button"
-            onClick={renderAudio}
-            disabled={rendering || !transcript.trim()}
-            className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-surface-thin px-3 py-1.5 text-sm transition-colors hover:text-aurora-cyan disabled:opacity-50"
-          >
-            {rendering ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <Volume2 size={14} />
-            )}
-            {rendering ? "Rendering…" : "Render audio (Qwen3-TTS)"}
-          </button>
+          <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-3">
+            <div className="flex flex-wrap items-end gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className={fieldLabel}>Voice</label>
+                <Dropdown
+                  options={SPEAKERS.map((s) => ({ value: s, label: s }))}
+                  selectedValue={speaker}
+                  onSelect={setSpeaker}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className={fieldLabel}>Pace</label>
+                <Dropdown
+                  options={TEMPOS.map((t) => ({
+                    value: String(t.value),
+                    label: t.label,
+                  }))}
+                  selectedValue={String(tempo)}
+                  onSelect={(v) => setTempo(Number(v))}
+                />
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={renderAudio}
+              disabled={rendering || !transcript.trim()}
+              className="korero-btn-primary"
+            >
+              {rendering ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Volume2 size={14} />
+              )}
+              {rendering ? "Rendering…" : "Render audio"}
+            </button>
+          </div>
           {rendering && (
-            <p className="flex items-center gap-1.5 text-xs text-text-subtle">
+            <p className="flex items-center gap-2 text-xs text-text-subtle">
               <Loader2 size={12} className="animate-spin" /> Rendering on-device —
-              GPU-bound, can take a few minutes. Leave it running.
+              GPU-bound, this can take a few minutes. You can leave it running.
             </p>
           )}
+        </section>
+      )}
+
+      {/* Audio preview */}
+      {audioUrl && !rendering && (
+        <div className="space-y-2 rounded-lg border border-glass-border bg-glass-surface-thin p-3">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-text-subtle">
+            <Volume2 size={13} className="text-aurora-cyan" /> Preview
+          </div>
+          <audio controls src={audioUrl} className="w-full" />
         </div>
       )}
 
-      {audioUrl && !rendering && (
-        <audio controls src={audioUrl} className="mt-1 w-full" />
+      {/* Engine-not-set-up help (shown after a render fails because no local
+          TTS engine is installed). Everything else on the page still works. */}
+      {engineMissing && (
+        <div className="space-y-1.5 rounded-lg border border-glass-border bg-glass-surface-thin p-3.5 text-xs leading-relaxed text-text-muted">
+          <p className="font-medium text-text">
+            The on-device voice engine isn't set up yet
+          </p>
+          <p>
+            Audio Brief needs a local text-to-speech engine. Point Kōrero at one
+            by setting the{" "}
+            <code className="rounded bg-glass-surface px-1 py-0.5 text-text">
+              KORERO_TTS_DIR
+            </code>{" "}
+            environment variable to the engine folder, or place it at{" "}
+            <code className="rounded bg-glass-surface px-1 py-0.5 text-text">
+              %APPDATA%\com.nkeating.korero\tts
+            </code>
+            . Drafting scripts and everything else on this page work without it.
+          </p>
+        </div>
       )}
     </div>
   );
