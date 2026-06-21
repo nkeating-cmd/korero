@@ -27,6 +27,7 @@ import {
   Cpu,
   Volume2,
   FolderOpen,
+  Search,
 } from "lucide-react";
 import { toast } from "sonner";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -235,6 +236,8 @@ export const MeetingsSettings: React.FC = () => {
   // v1.22.0: last exported file path — surfaced as a copyable + "Show in folder"
   // row (replaces the old ephemeral, non-selectable "Exported to <path>" toast).
   const [exportedPath, setExportedPath] = useState<string | null>(null);
+  // v1.22.0: meetings search query — filters the list by title + transcript + notes.
+  const [search, setSearch] = useState("");
   const [editingListId, setEditingListId] = useState<string | null>(null);
   // v1.14.5: which speaker tag is being renamed in the transcript view.
   const [editingLabel, setEditingLabel] = useState<null | "you" | "others">(
@@ -537,6 +540,26 @@ export const MeetingsSettings: React.FC = () => {
   const titleOf = (m: Meeting) =>
     m.title.trim() || `Meeting · ${new Date(m.createdAt).toLocaleString()}`;
 
+  // v1.22.0: auto-generate a meeting title stamped with the date + time at
+  // creation. The user can overwrite it in the title field or the list.
+  const defaultMeetingTitle = (when: number) =>
+    `Meeting ${new Date(when).toLocaleString(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    })}`;
+
+  // v1.22.0: case-insensitive search across title + transcript + processed notes.
+  const searchQ = search.trim().toLowerCase();
+  const filteredMeetings = searchQ
+    ? meetings.filter((m) =>
+        `${titleOf(m)} ${m.you} ${m.others} ${
+          m.transcript?.map((s) => s.text).join(" ") ?? ""
+        } ${m.processed}`
+          .toLowerCase()
+          .includes(searchQ),
+      )
+    : meetings;
+
   // v1.17.0: merge two meetings into a NEW combined entry — non-destructive,
   // both originals are kept. Parts are joined in chronological order, so
   // "Part 1" + "Part 2" imports line up correctly.
@@ -658,7 +681,7 @@ export const MeetingsSettings: React.FC = () => {
           } else {
             const m: Meeting = {
               id: newId(),
-              title: "",
+              title: defaultMeetingTitle(Date.now()),
               you,
               others,
               // v1.17.0: chronological, interleaved transcript from the backend.
@@ -1388,16 +1411,33 @@ export const MeetingsSettings: React.FC = () => {
 
       <div className="flex gap-4">
         {/* Meeting list */}
-        <div className="w-56 shrink-0 glass-card p-2 flex flex-col gap-1 max-h-[55vh] overflow-y-auto">
-          {meetings.length === 0 ? (
+        <div className="w-56 shrink-0 flex flex-col gap-2">
+          {/* v1.22.0: search across meetings (title + transcript + notes). */}
+          <div className="relative">
+            <Search
+              size={13}
+              className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-subtle"
+            />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search meetings…"
+              aria-label="Search meetings"
+              className="w-full rounded-lg border border-glass-border bg-glass-surface-thin py-1.5 pl-7 pr-2 text-xs text-text placeholder:text-text-subtle focus:outline-none"
+            />
+          </div>
+          <div className="glass-card flex max-h-[55vh] flex-col gap-1 overflow-y-auto p-2">
+          {filteredMeetings.length === 0 ? (
             <div className="px-3 py-6 flex flex-col items-center gap-2 text-center">
               <Users size={20} className="text-text-subtle" />
               <p className="text-xs text-text-subtle">
-                No meetings yet. Press Record to capture one.
+                {meetings.length === 0
+                  ? "No meetings yet. Press Record to capture one."
+                  : `No meetings match "${search.trim()}".`}
               </p>
             </div>
           ) : (
-            meetings.map((m) => {
+            filteredMeetings.map((m) => {
               const isActive = m.id === active?.id;
               const isEditing = editingListId === m.id;
               return (
@@ -1455,6 +1495,7 @@ export const MeetingsSettings: React.FC = () => {
               );
             })
           )}
+          </div>
         </div>
 
         {/* Detail */}
