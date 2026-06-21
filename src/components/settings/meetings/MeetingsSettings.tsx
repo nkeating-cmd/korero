@@ -26,9 +26,11 @@ import {
   GitMerge,
   Cpu,
   Volume2,
+  FolderOpen,
 } from "lucide-react";
 import { toast } from "sonner";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -230,6 +232,9 @@ export const MeetingsSettings: React.FC = () => {
   const [recordings, setRecordings] = useState<RecordingFile[] | null>(null);
   const [busyFile, setBusyFile] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // v1.22.0: last exported file path — surfaced as a copyable + "Show in folder"
+  // row (replaces the old ephemeral, non-selectable "Exported to <path>" toast).
+  const [exportedPath, setExportedPath] = useState<string | null>(null);
   const [editingListId, setEditingListId] = useState<string | null>(null);
   // v1.14.5: which speaker tag is being renamed in the transcript view.
   const [editingLabel, setEditingLabel] = useState<null | "you" | "others">(
@@ -998,8 +1003,10 @@ export const MeetingsSettings: React.FC = () => {
     const base = active.title.trim() || "meeting";
     try {
       const res = await commands.meetingExportTranscript(`${base}-${stamp}`, parts.join("\n"));
-      if (res.status === "ok") toast.success(`Exported to ${res.data}`);
-      else toast.error(`Export failed: ${res.error}`);
+      if (res.status === "ok") {
+        setExportedPath(res.data);
+        toast.success("Exported.");
+      } else toast.error(`Export failed: ${res.error}`);
     } catch (e) {
       toast.error(`Export failed: ${String(e)}`);
     }
@@ -1504,6 +1511,46 @@ export const MeetingsSettings: React.FC = () => {
                 </div>
               </div>
 
+              {/* v1.22.0: export result — a selectable path + "Show in folder" +
+                  "Copy", so the file location is both copy/pasteable AND openable
+                  (was an ephemeral, non-selectable "Exported to <path>" toast). */}
+              {exportedPath && (
+                <div className="flex items-center gap-2 rounded-lg border border-glass-border bg-glass-surface-thin px-3 py-2 text-xs text-text-muted">
+                  <Check size={13} className="shrink-0 text-pill-positive" />
+                  <span className="shrink-0">Exported to</span>
+                  <code
+                    className="min-w-0 flex-1 select-all truncate font-mono text-text"
+                    title={exportedPath}
+                  >
+                    {exportedPath}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      revealItemInDir(exportedPath).catch(() =>
+                        toast.error("Could not open the folder."),
+                      )
+                    }
+                    className="inline-flex shrink-0 items-center gap-1 transition-colors hover:text-aurora-cyan"
+                    title="Open the containing folder"
+                  >
+                    <FolderOpen size={13} /> Show in folder
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      writeText(exportedPath)
+                        .then(() => toast.success("Path copied."))
+                        .catch(() => toast.error("Could not copy the path."))
+                    }
+                    className="inline-flex shrink-0 items-center gap-1 transition-colors hover:text-aurora-cyan"
+                    title="Copy the file path"
+                  >
+                    <Copy size={13} /> Copy
+                  </button>
+                </div>
+              )}
+
               {/* v1.17.0: only meaningful for RECORDED meetings — an import
                   always has exactly one audio source, so warning about a
                   missing second one was noise. */}
@@ -1540,7 +1587,11 @@ export const MeetingsSettings: React.FC = () => {
 
               {/* Transcript — v1.14.5: speaker tags are editable (pencil), so
                   "Others" can become "Gerard" etc. Labels persist with the
-                  meeting and flow into copy/export/post-processing. */}
+                  meeting and flow into copy/export/post-processing.
+                  v1.22.0: the transcript scrolls within its OWN box (max-height
+                  + overflow-y) so a long transcript no longer scrolls the whole
+                  app; pr-2 keeps the text clear of the scrollbar. */}
+              <div className="max-h-[46vh] space-y-4 overflow-y-auto overflow-x-hidden pr-2">
               {(
                 [
                   {
@@ -1643,6 +1694,7 @@ export const MeetingsSettings: React.FC = () => {
                     ))}
                 </div>
               )}
+              </div>
 
               {/* Actions */}
               <div className="space-y-2 pt-3 border-t border-glass-border">

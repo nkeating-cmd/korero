@@ -11,6 +11,7 @@
     "core:window:default",
     "core:resources:default",
     "opener:default",
+    "opener:allow-reveal-item-in-dir",
     "store:default",
     "process:default",
     "updater:default",

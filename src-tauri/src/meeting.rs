@@ -749,14 +749,19 @@ pub fn cleanup_old_recordings(app: &AppHandle) {
     let mut removed = 0u32;
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("wav") {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        // Eligible for cleanup:
+        //   - meeting / device-test WAVs (original behaviour), and
+        //   - v1.22.0: audio-brief render artifacts (audio-brief-*.mp3 + any
+        //     orphaned .txt narration script). The sweep previously matched only
+        //     ".wav", so audio briefs accumulated in meetings_dir forever.
+        let is_wav = ext == "wav";
+        let is_brief = name.starts_with("audio-brief-") && (ext == "mp3" || ext == "txt");
+        if !is_wav && !is_brief {
             continue;
         }
-        let is_test = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| n.starts_with("test-"))
-            .unwrap_or(false);
+        let is_test = name.starts_with("test-");
         let too_old = entry
             .metadata()
             .ok()
