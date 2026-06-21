@@ -469,7 +469,9 @@ impl TranscriptionManager {
         current_model.clone()
     }
 
-    pub fn transcribe(&self, audio: Vec<f32>) -> Result<String> {
+    pub fn transcribe(&self, mut audio: Vec<f32>) -> Result<String> {
+        // Korero (v1.22.0): loudness-normalise quiet recordings before ASR.
+        crate::corrections::normalize_for_asr(&mut audio);
         #[cfg(debug_assertions)]
         if std::env::var("HANDY_FORCE_TRANSCRIPTION_FAILURE").is_ok() {
             return Err(anyhow::anyhow!(

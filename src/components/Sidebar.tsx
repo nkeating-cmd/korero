@@ -10,7 +10,7 @@ import {
   History,
   Info,
   Wand2,
-  BrainCircuit,
+  Boxes,
   LifeBuoy,
   NotebookPen,
   Home,
@@ -68,7 +68,7 @@ export const SECTIONS_CONFIG = {
   meetings: { labelKey: "sidebar.meetings", label: "Meetings", icon: UsersRound, component: MeetingsSettings, enabled: () => true },
   audiobrief: { labelKey: "sidebar.audioBrief", label: "Audio brief", icon: Headphones, component: AudioBriefSettings, enabled: () => true },
   history: { labelKey: "sidebar.history", icon: History, component: HistorySettings, enabled: () => true },
-  models: { labelKey: "sidebar.models", icon: BrainCircuit, component: ModelsSettings, enabled: () => true },
+  models: { labelKey: "sidebar.models", icon: Boxes, component: ModelsSettings, enabled: () => true },
   // always visible — hiding it made the feature undiscoverable (its enable
   // toggle lives inside the page). Label matches the Home "Post-processing" card.
   postprocessing: { labelKey: "sidebar.postProcessing", label: "Post-processing", icon: Wand2, component: PostProcessingSettings, enabled: () => true },

@@ -1,8 +1,17 @@
 /* eslint-disable i18next/no-literal-string */
 import React, { useRef, useState } from "react";
-import { Loader2, FileUp, Volume2, Wand2, ShieldCheck } from "lucide-react";
+import {
+  Loader2,
+  FileUp,
+  Volume2,
+  Wand2,
+  ShieldCheck,
+  Download,
+  FolderOpen,
+} from "lucide-react";
 import { toast } from "sonner";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { commands } from "@/bindings";
 import { Dropdown } from "@/components/ui/Dropdown";
 
@@ -92,6 +101,7 @@ export const AudioBriefSettings: React.FC = () => {
   const [drafting, setDrafting] = useState(false);
   const [rendering, setRendering] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [audioPath, setAudioPath] = useState<string | null>(null);
   const [engineMissing, setEngineMissing] = useState(false);
   const [templateId, setTemplateId] = useState(TEMPLATES[0].id);
   const [speaker, setSpeaker] = useState(SPEAKERS[0]); // "Default"
@@ -154,6 +164,7 @@ export const AudioBriefSettings: React.FC = () => {
       if (r.status !== "ok") throw new Error(r.error);
       setEngineMissing(false);
       setAudioUrl(convertFileSrc(r.data, "asset"));
+      setAudioPath(r.data);
       toast.success("Audio brief ready.");
     } catch (e) {
       const msg = String(e);
@@ -308,6 +319,29 @@ export const AudioBriefSettings: React.FC = () => {
             <Volume2 size={13} className="text-aurora-cyan" /> Preview
           </div>
           <audio controls src={audioUrl} className="w-full" />
+          <div className="flex items-center gap-3 text-xs text-text-muted">
+            <a
+              href={audioUrl}
+              download="audio-brief.mp3"
+              className="inline-flex items-center gap-1 transition-colors hover:text-aurora-cyan"
+            >
+              <Download size={13} /> Download
+            </a>
+            {audioPath && (
+              <button
+                type="button"
+                onClick={() =>
+                  revealItemInDir(audioPath).catch(() =>
+                    toast.error("Could not open the folder."),
+                  )
+                }
+                className="inline-flex items-center gap-1 transition-colors hover:text-aurora-cyan"
+                title="Open the folder where the audio is saved"
+              >
+                <FolderOpen size={13} /> Show in folder
+              </button>
+            )}
+          </div>
         </div>
       )}
 

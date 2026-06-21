@@ -14,6 +14,55 @@ use crate::settings::TranscriptCorrection;
 /// Cap the glossary so a huge corrections list can't crowd out the prompt.
 const GLOSSARY_MAX: usize = 50;
 
+/// v1.22.0: loudness-normalise a mono buffer before ASR. Quiet / under-recorded
+/// audio measurably hurts Whisper/Parakeet accuracy; this lifts it toward the
+/// ~-20 dBFS level the model front-ends expect. SAFE BY DESIGN:
+///   - **boost-only** — never attenuates already-loud audio,
+///   - **peak-capped** — scales so the loudest sample stays below ~-0.4 dBFS
+///     (never introduces clipping),
+///   - **silence-guarded** — a near-silent buffer is left untouched (never
+///     amplifies room tone / hiss into "speech").
+/// A no-op on well-levelled or silent audio. Pure DSP, no model dependency.
+/// `transcribe-rs` exposes no normalization, so this lives in our pipeline and
+/// is applied once at the top of `TranscriptionManager::transcribe`.
+pub fn normalize_for_asr(samples: &mut [f32]) {
+    if samples.is_empty() {
+        return;
+    }
+    // Linear amplitudes (dBFS -> linear = 10^(dB/20)).
+    const TARGET_RMS: f32 = 0.1; // ~ -20 dBFS, the level ASR front-ends expect
+    const PEAK_CEILING: f32 = 0.95; // ~ -0.4 dBFS, leave headroom / never clip
+    const SILENCE_FLOOR: f32 = 0.005; // ~ -46 dBFS RMS; below this = do not boost
+
+    let mut sum_sq = 0.0f64;
+    let mut peak = 0.0f32;
+    for &s in samples.iter() {
+        sum_sq += (s as f64) * (s as f64);
+        let a = s.abs();
+        if a > peak {
+            peak = a;
+        }
+    }
+    let rms = (sum_sq / samples.len() as f64).sqrt() as f32;
+    // Silence / invalid-peak guard.
+    if rms < SILENCE_FLOOR || peak <= 0.0 {
+        return;
+    }
+    // Boost-only: leave audio that is already at/above target alone.
+    let mut gain = TARGET_RMS / rms;
+    if gain <= 1.0 {
+        return;
+    }
+    // Never push the loudest sample past the ceiling (clip-safe).
+    gain = gain.min(PEAK_CEILING / peak);
+    if gain <= 1.0 {
+        return;
+    }
+    for s in samples.iter_mut() {
+        *s *= gain;
+    }
+}
+
 /// Apply every correction as a case-insensitive, word-bounded replacement.
 /// Multi-word `wrong` phrases are supported. Invalid/empty pairs are skipped.
 /// Replacement preserves the user's exact `right` casing.

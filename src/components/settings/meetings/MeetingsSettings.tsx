@@ -220,6 +220,8 @@ export const MeetingsSettings: React.FC = () => {
   // GPU render; briefUrl is an asset:// URL for the produced MP3.
   const [briefBusy, setBriefBusy] = useState(false);
   const [briefUrl, setBriefUrl] = useState<string | null>(null);
+  // v1.22.0: raw MP3 path (for Download + Show-in-folder on the audio brief).
+  const [briefPath, setBriefPath] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [systemCaptured, setSystemCaptured] = useState<boolean | null>(null);
   const [busy, setBusy] = useState<null | "transcribe" | "post" | "both">(null);
@@ -988,6 +990,7 @@ export const MeetingsSettings: React.FC = () => {
       const r = await commands.meetingGenerateAudioBrief(text, null, null);
       if (r.status !== "ok") throw new Error(r.error);
       setBriefUrl(convertFileSrc(r.data, "asset"));
+      setBriefPath(r.data);
       toast.success("Audio brief ready.");
     } catch (e) {
       toast.error(`Audio brief failed: ${String(e)}`);
@@ -1924,7 +1927,32 @@ export const MeetingsSettings: React.FC = () => {
                       </p>
                     )}
                     {briefUrl && !briefBusy && (
-                      <audio controls src={briefUrl} className="w-full mt-1" />
+                      <div className="mt-1 space-y-1.5">
+                        <audio controls src={briefUrl} className="w-full" />
+                        <div className="flex items-center gap-3 text-xs text-text-muted">
+                          <a
+                            href={briefUrl}
+                            download="audio-brief.mp3"
+                            className="inline-flex items-center gap-1 transition-colors hover:text-aurora-cyan"
+                          >
+                            <Download size={13} /> Download
+                          </a>
+                          {briefPath && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                revealItemInDir(briefPath).catch(() =>
+                                  toast.error("Could not open the folder."),
+                                )
+                              }
+                              className="inline-flex items-center gap-1 transition-colors hover:text-aurora-cyan"
+                              title="Open the folder where the audio is saved"
+                            >
+                              <FolderOpen size={13} /> Show in folder
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     )}
                   </div>
                 )}
