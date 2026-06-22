@@ -1,4 +1,4 @@
-﻿Korero narrow patches applied 2026-06-21 23:55:34
+﻿Korero narrow patches applied 2026-06-22 16:27:39
 
 SKIP  overlay.rs: overlay window dims (fresh + v1 source forms) -- already patched
 SKIP  AccessibilityOnboarding.tsx: drop HandyTextLogo render -- already patched
@@ -95,8 +95,7 @@ OK    bindings.ts: AppSettings.transcript_corrections field (pre-seed)
 SKIP  transcription.rs: apply user-taught corrections after filtering -- SkipIfPresent token already in file
 SKIP  transcription.rs: force CPU execution provider for Canary models -- SkipIfPresent token already in file
 SKIP  transcription.rs: seed Whisper initial_prompt from custom words + taught corrections -- SkipIfPresent token already in file
-OK    transcription.rs: loudness-normalise audio before ASR
-      Why: Korero (v1.22.0): quiet / under-recorded audio hurts Whisper/Parakeet accuracy. Normalise the 16kHz buffer at the top of transcribe(), before every engine branch. Boost-only, peak-capped, silence-guarded (corrections::normalize_for_asr) -- never clips, never amplifies silence, a no-op on already-good audio. transcribe-rs exposes no normalization so it lives in our pipeline.
+SKIP  transcription.rs: loudness-normalise audio before ASR -- SkipIfPresent token already in file
 OK    bindings.ts: updateTranscriptCorrections / updatePostProcessPrompts stubs (pre-seed)
       Why: Korero (v1.19.2): pre-seed the full-array persistence commands the settings store now routes to. Production = release build skips the debug specta export, so these stubs must be seeded for tsc. This is the persistence path for taught corrections (which previously never reached the backend) and the prompts array (add/delete, incl. the Meetings save-as-new no-op).
 SKIP  settingsStore.ts: persist transcript_corrections + post_process_prompts via updateSetting -- SkipIfPresent token already in file

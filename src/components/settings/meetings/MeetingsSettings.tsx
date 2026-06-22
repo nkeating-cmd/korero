@@ -222,6 +222,12 @@ export const MeetingsSettings: React.FC = () => {
   const [briefUrl, setBriefUrl] = useState<string | null>(null);
   // v1.22.0: raw MP3 path (for Download + Show-in-folder on the audio brief).
   const [briefPath, setBriefPath] = useState<string | null>(null);
+  // v1.22.0: edit/refine the processed notes + inline-edit a transcript segment.
+  const [editingNotes, setEditingNotes] = useState(false);
+  const [notesDraft, setNotesDraft] = useState("");
+  const [feedback, setFeedback] = useState("");
+  const [refining, setRefining] = useState(false);
+  const [editingSegIdx, setEditingSegIdx] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [systemCaptured, setSystemCaptured] = useState<boolean | null>(null);
   const [busy, setBusy] = useState<null | "transcribe" | "post" | "both">(null);
@@ -260,6 +266,13 @@ export const MeetingsSettings: React.FC = () => {
   // resumes from here instead of 0 (set by the mount-time status restore).
   const restoredElapsedRef = useRef(0);
   const active = meetings.find((m) => m.id === activeId) ?? null;
+
+  // v1.22.0: clear per-meeting edit state when the active meeting changes.
+  useEffect(() => {
+    setEditingNotes(false);
+    setEditingSegIdx(null);
+    setFeedback("");
+  }, [activeId]);
   const currentModel = settings?.selected_model ?? "";
 
   // v1.20.0: the active POST-PROCESSING provider/model (distinct from the
@@ -1009,6 +1022,66 @@ export const MeetingsSettings: React.FC = () => {
     }
   };
 
+  // v1.22.0: save manual edits to the processed notes.
+  const saveNotes = () => {
+    if (!active) return;
+    patchMeeting(active.id, { processed: notesDraft });
+    setEditingNotes(false);
+    toast.success("Notes updated.");
+  };
+
+  // v1.22.0: refine the processed notes with free-text feedback to the model
+  // (constrained to revise, not rewrite or invent). Undo restores the previous.
+  const refineNotes = async () => {
+    if (!active || refining) return;
+    const fb = feedback.trim();
+    if (!fb) {
+      toast.message("Tell the AI what to improve.");
+      return;
+    }
+    const current = active.processed.trim();
+    if (!current) {
+      toast.message("Generate notes first.");
+      return;
+    }
+    setRefining(true);
+    const prev = active.processed;
+    const id = active.id;
+    try {
+      const prompt =
+        "You are revising EXISTING meeting notes based on the reader's feedback. " +
+        "Apply the feedback faithfully, keep the same Markdown structure and headings where still appropriate, " +
+        "do not invent facts or add content not supported by the notes, and output ONLY the revised notes " +
+        'with no preamble or commentary. Feedback: "' +
+        fb +
+        '".';
+      const r = await commands.meetingPostProcess(current, prompt);
+      if (r.status !== "ok") throw new Error(r.error);
+      patchMeeting(id, { processed: r.data });
+      setFeedback("");
+      toast.success("Notes refined.", {
+        action: {
+          label: "Undo",
+          onClick: () => patchMeeting(id, { processed: prev }),
+        },
+      });
+    } catch (e) {
+      toast.error(`Refine failed: ${String(e)}`);
+    } finally {
+      setRefining(false);
+    }
+  };
+
+  // v1.22.0: save an inline edit to a single transcript segment.
+  const saveSegment = (idx: number, text: string) => {
+    if (!active) return;
+    const next = (active.transcript ?? []).map((s, i) =>
+      i === idx ? { ...s, text } : s,
+    );
+    patchMeeting(active.id, { transcript: next });
+    setEditingSegIdx(null);
+  };
+
   const exportActive = async () => {
     if (!active) return;
     const parts = [
@@ -1714,12 +1787,14 @@ export const MeetingsSettings: React.FC = () => {
                   in the order they actually spoke. */}
               {active.transcript && active.transcript.length > 0 && (
                 <div className="space-y-1.5">
-                  {active.transcript
-                    .filter((s) => s.text.trim())
-                    .map((s, i) => (
+                  {active.transcript.map((s, i) => {
+                    if (!s.text.trim() && editingSegIdx !== i) return null;
+                    const label =
+                      s.source === "you" ? active.youLabel : active.othersLabel;
+                    return (
                       <p
                         key={i}
-                        className="text-sm text-text-muted leading-relaxed"
+                        className="group text-sm text-text-muted leading-relaxed"
                       >
                         <span
                           className={`font-semibold ${
@@ -1728,14 +1803,40 @@ export const MeetingsSettings: React.FC = () => {
                               : "text-aurora-purple"
                           }`}
                         >
-                          {s.source === "you"
-                            ? active.youLabel
-                            : active.othersLabel}
-                          :
+                          {label}:
                         </span>{" "}
-                        {s.text.trim()}
+                        {editingSegIdx === i ? (
+                          <input
+                            autoFocus
+                            defaultValue={s.text.trim()}
+                            onBlur={(e) => saveSegment(i, e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter")
+                                saveSegment(
+                                  i,
+                                  (e.target as HTMLInputElement).value,
+                                );
+                              else if (e.key === "Escape")
+                                setEditingSegIdx(null);
+                            }}
+                            className="w-full rounded border border-aurora-cyan/50 bg-glass-surface-thin px-1.5 py-0.5 text-sm text-text focus:outline-none"
+                          />
+                        ) : (
+                          <>
+                            {s.text.trim()}
+                            <button
+                              type="button"
+                              onClick={() => setEditingSegIdx(i)}
+                              title="Edit this line"
+                              className="ml-1 align-middle opacity-0 transition-opacity group-hover:opacity-100 text-text-subtle hover:text-aurora-cyan"
+                            >
+                              <Pencil size={11} />
+                            </button>
+                          </>
+                        )}
                       </p>
-                    ))}
+                    );
+                  })}
                 </div>
               )}
               </div>
@@ -1914,11 +2015,81 @@ export const MeetingsSettings: React.FC = () => {
                         >
                           <Copy size={13} />
                         </button>
+                        {!editingNotes && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setNotesDraft(active.processed);
+                              setEditingNotes(true);
+                            }}
+                            title="Edit the processed notes"
+                            className="text-text-subtle hover:text-aurora-cyan transition-colors"
+                          >
+                            <Pencil size={13} />
+                          </button>
+                        )}
                       </div>
                     </div>
-                    <div className="glass-card-thin md-body">
-                      <Markdown>{active.processed.trim()}</Markdown>
-                    </div>
+                    {editingNotes ? (
+                      <div className="space-y-2">
+                        <textarea
+                          value={notesDraft}
+                          onChange={(e) => setNotesDraft(e.target.value)}
+                          rows={12}
+                          aria-label="Edit processed notes"
+                          className="w-full resize-y rounded-lg border border-glass-border bg-glass-surface-thin px-3 py-2 font-mono text-sm leading-relaxed text-text focus:outline-none"
+                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={saveNotes}
+                            className="inline-flex items-center rounded-md bg-aurora-cyan/15 px-2.5 py-1 text-xs font-medium text-aurora-cyan transition-colors hover:bg-aurora-cyan/25"
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingNotes(false)}
+                            className="inline-flex items-center rounded-md px-2.5 py-1 text-xs text-text-muted transition-colors hover:text-text"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="glass-card-thin md-body">
+                        <Markdown>{active.processed.trim()}</Markdown>
+                      </div>
+                    )}
+                    {/* v1.22.0: give the AI feedback to improve the notes. */}
+                    {!editingNotes && (
+                      <div className="flex items-center gap-2 pt-1">
+                        <input
+                          value={feedback}
+                          onChange={(e) => setFeedback(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") refineNotes();
+                          }}
+                          placeholder="Tell the AI how to improve these notes…"
+                          aria-label="Feedback to improve the notes"
+                          disabled={refining}
+                          className="min-w-0 flex-1 rounded-lg border border-glass-border bg-glass-surface-thin px-3 py-1.5 text-xs text-text placeholder:text-text-subtle focus:outline-none disabled:opacity-50"
+                        />
+                        <button
+                          type="button"
+                          onClick={refineNotes}
+                          disabled={refining || !feedback.trim()}
+                          className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-glass-border bg-glass-surface-thin px-2.5 py-1.5 text-xs text-text-muted transition-colors hover:text-aurora-cyan disabled:opacity-50"
+                        >
+                          {refining ? (
+                            <Loader2 size={13} className="animate-spin" />
+                          ) : (
+                            <Sparkles size={13} />
+                          )}
+                          {refining ? "Refining…" : "Refine"}
+                        </button>
+                      </div>
+                    )}
                     {briefBusy && (
                       <p className="flex items-center gap-1.5 text-xs text-text-subtle">
                         <Loader2 size={12} className="animate-spin" /> Rendering
