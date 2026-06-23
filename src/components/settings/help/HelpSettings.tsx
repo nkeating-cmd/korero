@@ -210,6 +210,72 @@ export const HelpSettings: React.FC = () => {
         </Guide>
       </SettingsGroup>
 
+      <SettingsGroup title="Meetings">
+        <Guide title="Record a meeting">
+          <p>
+            Open Meetings and record to capture both sides of a conversation —
+            your microphone and the system audio (a call, a video) — on your
+            machine. Stop to get a transcript. Each meeting is saved with an
+            automatic date-and-time title you can rename, and you can search
+            across every meeting.
+          </p>
+        </Guide>
+        <Guide title="Fix and teach words">
+          <p>
+            Select a mis-heard word in the transcript and choose Teach a
+            correction to fix it everywhere and bias future transcriptions
+            toward the right spelling. You can also hover any line and edit it
+            directly for a one-off fix.
+          </p>
+        </Guide>
+        <Guide title="Notes you can edit and refine">
+          <p>
+            Turn a transcript into tidy notes with post-processing, then edit
+            the notes in place — or type feedback (for example "make it
+            shorter" or "pull out the action items") and Refine to have the AI
+            revise them. Undo restores the previous version.
+          </p>
+        </Guide>
+      </SettingsGroup>
+
+      <SettingsGroup title="Audio brief (text-to-speech)">
+        <Guide title="Listen instead of read">
+          <p>
+            The Audio brief page turns a document, a meeting, or any text into a
+            short spoken MP3. A model first drafts a script written for the ear;
+            you edit it, then the on-device voice reads it aloud. Like
+            everything else in Kōrero, it runs locally — nothing is uploaded.
+          </p>
+        </Guide>
+        <Guide title="Voice, style and pace">
+          <p>
+            Choose a preset Voice, a delivery Style (for example warm,
+            professional, or energetic), and a Pace. Pick the Default voice to
+            use the engine's designed narrator, or one of the named speakers for
+            a distinct timbre.
+          </p>
+        </Guide>
+        <Guide title="Save and find your audio">
+          <p>
+            Once it has rendered you can play it, Download the MP3, or use Show
+            in folder to open where it was saved.
+          </p>
+        </Guide>
+        <Guide title="Setting up the voice engine">
+          <p>
+            The spoken-voice (text-to-speech) engine runs on-device and is set
+            up separately from the app. If you see "voice engine not set up",
+            install the local TTS engine — or point Kōrero at an existing one
+            with the KORERO_TTS_DIR environment variable. Settings → Models
+            shows whether the engine is detected.
+          </p>
+          <Callout tone="info">
+            Speech-to-text works out of the box; the spoken audio-brief voice is
+            an optional add-on you set up once.
+          </Callout>
+        </Guide>
+      </SettingsGroup>
+
       <SettingsGroup title="Troubleshooting">
         <Guide title="A shortcut stopped responding">
           <p>

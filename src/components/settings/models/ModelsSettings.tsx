@@ -1,12 +1,24 @@
+/* eslint-disable i18next/no-literal-string */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, Globe } from "lucide-react";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import {
+  ChevronDown,
+  Globe,
+  Mic2,
+  Wand2,
+  AudioLines,
+  CheckCircle2,
+  AlertTriangle,
+  Loader2,
+  FolderOpen,
+} from "lucide-react";
 import type { ModelCardStatus } from "@/components/onboarding";
 import { ModelCard } from "@/components/onboarding";
 import { useModelStore } from "@/stores/modelStore";
 import { LANGUAGES } from "@/lib/constants/languages.ts";
-import type { ModelInfo } from "@/bindings";
+import { commands, type ModelInfo } from "@/bindings";
 
 // check if model supports a language based on its supported_languages list
 const modelSupportsLanguage = (model: ModelInfo, langCode: string): boolean => {
@@ -35,6 +47,29 @@ export const ModelsSettings: React.FC = () => {
     selectModel,
     deleteModel,
   } = useModelStore();
+
+  // v1.22.0: live status of the on-device TTS (audio-brief) engine, shown in the
+  // Text-to-speech section so Models is the single place to check every model.
+  const [ttsState, setTtsState] = useState<
+    | { kind: "checking" }
+    | { kind: "ready"; path: string }
+    | { kind: "missing"; detail: string }
+  >({ kind: "checking" });
+
+  const checkTts = async () => {
+    setTtsState({ kind: "checking" });
+    try {
+      const r = await commands.ttsEngineStatus();
+      if (r.status === "ok") setTtsState({ kind: "ready", path: r.data });
+      else setTtsState({ kind: "missing", detail: r.error });
+    } catch (e) {
+      setTtsState({ kind: "missing", detail: String(e) });
+    }
+  };
+
+  useEffect(() => {
+    checkTts();
+  }, []);
 
   // click outside handler for language dropdown
   useEffect(() => {
@@ -207,13 +242,20 @@ export const ModelsSettings: React.FC = () => {
 
   return (
     <div className="max-w-3xl w-full mx-auto space-y-4">
-      <div className="mb-4">
+      <div className="mb-1">
         <h1 className="text-xl font-semibold mb-2">
           {t("settings.models.title")}
         </h1>
         <p className="text-sm text-text/60">
-          {t("settings.models.description")}
+          Download and manage the on-device models Kōrero uses — speech-to-text,
+          the audio-brief voice, and local post-processing — all in one place.
         </p>
+      </div>
+
+      {/* v1.22.0: Speech-to-Text section header above the existing manager. */}
+      <div className="flex items-center gap-2 pt-2">
+        <Mic2 className="h-4 w-4 text-aurora-cyan" />
+        <h2 className="text-sm font-semibold text-text">Speech-to-text</h2>
       </div>
       {filteredModels.length > 0 ? (
         <div className="space-y-6">
@@ -360,6 +402,112 @@ export const ModelsSettings: React.FC = () => {
           {t("settings.models.noModelsMatch")}
         </div>
       )}
+
+      {/* v1.22.0: Post-processing models — honest about cloud (API key) vs
+          fully-local Ollama; the actual provider/model pickers live in Post
+          Process, so this avoids a second source of truth. */}
+      <section className="space-y-2 pt-2">
+        <div className="flex items-center gap-2">
+          <Wand2 className="h-4 w-4 text-aurora-purple" />
+          <h2 className="text-sm font-semibold text-text">Post-processing</h2>
+        </div>
+        <div className="space-y-2 rounded-xl border border-glass-border bg-glass-surface-thin p-4 text-sm leading-relaxed text-text-muted">
+          <p>
+            Post-processing cleans up and reshapes your transcripts — into an
+            email, a meeting note, and so on. It runs one of two ways:
+          </p>
+          <p>
+            <span className="font-medium text-text">Cloud provider</span> — fast
+            and nothing to download; you just paste an API key. Pick the provider
+            and key in <span className="font-medium text-text">Post Process</span>.
+          </p>
+          <p>
+            <span className="font-medium text-text">Fully local (Ollama)</span> —
+            no API key, and nothing leaves your machine. Install Ollama, then pull
+            a model from{" "}
+            <span className="font-medium text-text">Post Process</span>, where the
+            model picker and a one-click pull live.
+          </p>
+        </div>
+      </section>
+
+      {/* v1.22.0: Text-to-Speech (audio-brief voice) — live engine status via
+          tts_engine_status, reusing the same resolver as the renderer. */}
+      <section className="space-y-2 pt-2">
+        <div className="flex items-center gap-2">
+          <AudioLines className="h-4 w-4 text-aurora-cyan" />
+          <h2 className="text-sm font-semibold text-text">
+            Text-to-speech (audio brief)
+          </h2>
+        </div>
+        <div className="space-y-3 rounded-xl border border-glass-border bg-glass-surface-thin p-4 text-sm leading-relaxed text-text-muted">
+          <p>
+            The audio-brief voice reads your notes aloud, fully on-device. It is
+            an optional add-on, set up separately from the app.
+          </p>
+
+          {ttsState.kind === "checking" && (
+            <div className="flex items-center gap-2 text-text-subtle">
+              <Loader2 className="h-4 w-4 animate-spin" /> Checking for the voice
+              engine…
+            </div>
+          )}
+
+          {ttsState.kind === "ready" && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-pill-positive">
+                <CheckCircle2 className="h-4 w-4" />
+                <span className="font-medium">Voice engine ready</span>
+              </div>
+              <p className="break-all font-mono text-xs text-text-subtle">
+                {ttsState.path}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => revealItemInDir(ttsState.path).catch(() => {})}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-glass-border px-2.5 py-1.5 text-xs text-text-muted transition-colors hover:text-aurora-cyan"
+                >
+                  <FolderOpen className="h-3.5 w-3.5" /> Open engine folder
+                </button>
+                <button
+                  type="button"
+                  onClick={checkTts}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-glass-border px-2.5 py-1.5 text-xs text-text-muted transition-colors hover:text-aurora-cyan"
+                >
+                  Re-check
+                </button>
+              </div>
+            </div>
+          )}
+
+          {ttsState.kind === "missing" && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-pill-warning">
+                <AlertTriangle className="h-4 w-4" />
+                <span className="font-medium">Voice engine not set up</span>
+              </div>
+              <p>
+                Speech-to-text and post-processing work without it. To enable
+                spoken audio briefs, install the local TTS engine, then set the{" "}
+                <span className="font-mono text-xs">KORERO_TTS_DIR</span>{" "}
+                environment variable to its folder (or place it under{" "}
+                <span className="font-mono text-xs">
+                  %APPDATA%\com.nkeating.korero\tts
+                </span>
+                ).
+              </p>
+              <button
+                type="button"
+                onClick={checkTts}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-glass-border px-2.5 py-1.5 text-xs text-text-muted transition-colors hover:text-aurora-cyan"
+              >
+                Re-check
+              </button>
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   );
 };

@@ -1059,9 +1059,17 @@ async updateRecordingRetentionPeriod(period: string) : Promise<Result<null, stri
 async checkOllamaConnection(baseUrl: string) : Promise<boolean> {
     return await TAURI_INVOKE("check_ollama_connection", { baseUrl });
 },
-async meetingGenerateAudioBrief(text: string, speaker: string | null, tempo: number | null) : Promise<Result<string, string>> {
+async meetingGenerateAudioBrief(text: string, speaker: string | null, style: string | null, tempo: number | null) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("meeting_generate_audio_brief", { text, speaker, tempo }) };
+    return { status: "ok", data: await TAURI_INVOKE("meeting_generate_audio_brief", { text, speaker, style, tempo }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async ttsEngineStatus() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("tts_engine_status") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

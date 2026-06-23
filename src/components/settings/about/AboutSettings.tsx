@@ -1,3 +1,4 @@
+/* eslint-disable i18next/no-literal-string */
 import React, { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { getVersion } from "@tauri-apps/api/app";
@@ -69,15 +70,20 @@ export const AboutSettings: React.FC = () => {
         <LogDirectory grouped={true} />
       </SettingsGroup>
 
-      <SettingsGroup title={t("settings.about.acknowledgments.title")}>
+      <SettingsGroup title="About Kōrero">
         <SettingContainer
-          title={t("settings.about.acknowledgments.whisper.title")}
-          description={t("settings.about.acknowledgments.whisper.description")}
+          title="What it is"
+          description="A personal, on-device speech app — dictation, meeting notes, and spoken audio briefs. Your audio and text never leave your computer."
           grouped={true}
           layout="stacked"
         >
-          <div className="text-sm text-mid-gray">
-            {t("settings.about.acknowledgments.whisper.details")}
+          <div className="text-sm text-text-muted leading-relaxed">
+            Kōrero is a personal fork of Handy (MIT) by CJ Pais. Speech-to-text
+            is powered by whisper.cpp and NVIDIA Parakeet via the transcribe-rs
+            runtime. Spoken audio briefs are produced by a local Qwen3-TTS
+            engine. Post-processing runs either on a cloud provider with your
+            own API key, or fully locally via Ollama. With thanks to all of
+            these open-source projects.
           </div>
         </SettingContainer>
       </SettingsGroup>

@@ -505,6 +505,7 @@ pub fn run(cli_args: CliArgs) {
             meeting::meeting_prewarm_post_process,
             meeting::meeting_provider_is_local,
             meeting::meeting_generate_audio_brief,
+            meeting::tts_engine_status, // Kōrero (v1.22.0): Models-page TTS engine probe
             // Kōrero fork (v1.13.4): meetings metadata store on disk.
             meeting::meetings_store_load,
             meeting::meetings_store_save,

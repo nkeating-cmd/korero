@@ -1,4 +1,4 @@
-﻿Korero narrow patches applied 2026-06-22 16:27:39
+﻿Korero narrow patches applied 2026-06-23 20:14:15
 
 SKIP  overlay.rs: overlay window dims (fresh + v1 source forms) -- already patched
 SKIP  AccessibilityOnboarding.tsx: drop HandyTextLogo render -- already patched
@@ -44,6 +44,8 @@ OK    bindings.ts: add updatePostProcessedText stub
       Why: Korero (v1.4.0): pre-seeds updatePostProcessedText so tsc succeeds in the production build before specta regenerates bindings. Uses full try/catch format matching specta output (note double-space before 'as any'). Single-line Find -- deleteHistoryEntry is unique.
 OK    bindings.ts: add meetingGenerateAudioBrief stub
       Why: Korero (v1.21.0): pre-seed meetingGenerateAudioBrief so tsc succeeds in the production build before specta regenerates bindings. Returns Result<string,string> (the MP3 path, or an error message). Format matches specta output (note double-space before 'as any'). Anchored on pullOllamaModel, a stable Korero binding present in bindings.ts.
+OK    bindings.ts: add ttsEngineStatus stub
+      Why: Korero (v1.22.0): pre-seed ttsEngineStatus so tsc succeeds in the production build before specta regenerates bindings. Returns Result<string,string> (the engine dir if found, or an error listing where it looked). Anchored on pullOllamaModel, a stable Korero binding present in bindings.ts.
 OK    recorder.rs: init optional denoiser (48 kHz only)
       Why: Korero (v1.11.0): construct an RNNoise denoiser at the top of run_consumer when the capture device runs at 48 kHz (RNNoise is 48 kHz-only); None otherwise.
 OK    recorder.rs: denoise raw stream (main loop)

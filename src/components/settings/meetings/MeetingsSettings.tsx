@@ -1000,7 +1000,7 @@ export const MeetingsSettings: React.FC = () => {
     setBriefBusy(true);
     setBriefUrl(null);
     try {
-      const r = await commands.meetingGenerateAudioBrief(text, null, null);
+      const r = await commands.meetingGenerateAudioBrief(text, null, null, null);
       if (r.status !== "ok") throw new Error(r.error);
       setBriefUrl(convertFileSrc(r.data, "asset"));
       setBriefPath(r.data);

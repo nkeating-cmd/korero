@@ -95,6 +95,18 @@ const TEMPOS: { label: string; value: number }[] = [
   { label: "Fast", value: 1.25 },
 ];
 
+// Delivery styles → the engine's --style (instruct). "" = the voice's natural
+// delivery. Applies to both the designed default voice and the named speakers.
+const STYLES: { label: string; value: string }[] = [
+  { label: "Natural", value: "" },
+  { label: "Warm & friendly", value: "warm and friendly" },
+  { label: "Professional", value: "professional and clear" },
+  { label: "Energetic", value: "energetic and upbeat" },
+  { label: "Calm", value: "calm and measured" },
+  { label: "Authoritative", value: "authoritative and confident" },
+  { label: "Conversational", value: "relaxed and conversational" },
+];
+
 export const AudioBriefSettings: React.FC = () => {
   const [source, setSource] = useState("");
   const [transcript, setTranscript] = useState("");
@@ -106,6 +118,7 @@ export const AudioBriefSettings: React.FC = () => {
   const [templateId, setTemplateId] = useState(TEMPLATES[0].id);
   const [speaker, setSpeaker] = useState(SPEAKERS[0]); // "Default"
   const [tempo, setTempo] = useState(1.12); // "Brisk"
+  const [style, setStyle] = useState(STYLES[0].value); // "" = natural delivery
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -159,6 +172,7 @@ export const AudioBriefSettings: React.FC = () => {
       const r = await commands.meetingGenerateAudioBrief(
         text,
         speaker === "Default" ? null : speaker,
+        style || null,
         tempo,
       );
       if (r.status !== "ok") throw new Error(r.error);
@@ -275,6 +289,14 @@ export const AudioBriefSettings: React.FC = () => {
                   options={SPEAKERS.map((s) => ({ value: s, label: s }))}
                   selectedValue={speaker}
                   onSelect={setSpeaker}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className={fieldLabel}>Style</label>
+                <Dropdown
+                  options={STYLES.map((s) => ({ value: s.value, label: s.label }))}
+                  selectedValue={style}
+                  onSelect={setStyle}
                 />
               </div>
               <div className="flex flex-col gap-1.5">
