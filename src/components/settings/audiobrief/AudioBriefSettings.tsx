@@ -1,5 +1,5 @@
 /* eslint-disable i18next/no-literal-string */
-import React, { useRef, useState } from "react";
+import React, { useRef } from "react";
 import {
   Loader2,
   FileUp,
@@ -12,8 +12,14 @@ import {
 import { toast } from "sonner";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { commands } from "@/bindings";
 import { Dropdown } from "@/components/ui/Dropdown";
+import {
+  useAudioBriefStore,
+  TEMPLATES,
+  SPEAKERS,
+  TEMPOS,
+  STYLES,
+} from "@/stores/audioBriefStore";
 
 /**
  * Kōrero (v1.22.0): Audio Brief.
@@ -24,103 +30,43 @@ import { Dropdown } from "@/components/ui/Dropdown";
  * existing meetingPostProcess + meetingGenerateAudioBrief commands — no
  * transcript leaves the machine.
  *
- * v1.22.0 polish: logical two-step layout (Format sits with Draft; Voice + Pace
- * sit with Render), aligned label/control stacks on an 8pt rhythm, the unified
- * primary buttons, a wrapped audio preview, and a graceful "engine not set up"
- * state when the on-device voice engine is absent.
+ * v1.22.0 (background-safe): all working state AND the draft/render actions live
+ * in a Zustand
+ * store (audioBriefStore), NOT in component state. The settings panel unmounts
+ * the inactive section, so component state used to reset whenever you left this
+ * tab mid-run. Now a draft or render keeps running in the BACKGROUND and its
+ * result (the script, and the saved MP3 path) is captured by the store even
+ * while you're elsewhere; returning to the tab simply re-binds to it. This file
+ * is now a thin view over that store.
  */
 
-// Shared rules every format obeys (audio is linear; write for the ear).
-const BASE_RULES =
-  " Write numbers as words (e.g. three hundred and eighty-three dollars); expand abbreviations on first use; remove URLs, reference codes, IDs and emoji; short one-idea sentences; NZ English; no titles, headings, or speaker labels. Return ONLY the script text.";
-
-// Template formats for the spoken script — each is a model instruction.
-const TEMPLATES: { id: string; label: string; prompt: string }[] = [
-  {
-    id: "standard",
-    label: "Standard brief",
-    prompt:
-      "Rewrite the text below into a short SPOKEN audio brief (150-300 words): lead with the single most important point, then supporting detail, then a clean one-line close." +
-      BASE_RULES,
-  },
-  {
-    id: "executive",
-    label: "Executive summary",
-    prompt:
-      "Rewrite the text below into a 120-200 word SPOKEN executive summary: the decision or headline first, then the two or three things that matter and any risk, then what happens next." +
-      BASE_RULES,
-  },
-  {
-    id: "actions",
-    label: "Action items",
-    prompt:
-      "From the text below, produce a SPOKEN run-through of the action items: for each, say who does what by when. Open with a one-line context sentence. Under 200 words." +
-      BASE_RULES,
-  },
-  {
-    id: "insights",
-    label: "Key insights",
-    prompt:
-      "From the text below, give a SPOKEN rundown of the three or four key insights, each a sentence or two, then one 'so what' line on why it matters. Under 220 words." +
-      BASE_RULES,
-  },
-  {
-    id: "narrative",
-    label: "Narrative",
-    prompt:
-      "Retell the text below as a short SPOKEN narrative that flows naturally when heard, about 200-300 words, with a clear beginning, middle and end." +
-      BASE_RULES,
-  },
-];
-
-// Preset TTS speakers (plus the engine's default designed voice).
-const SPEAKERS = [
-  "Default",
-  "Serena",
-  "Aiden",
-  "Ryan",
-  "Vivian",
-  "Sohee",
-  "Ono Anna",
-  "Dylan",
-  "Eric",
-  "Uncle Fu",
-];
-
-// Pace presets → engine --tempo value.
-const TEMPOS: { label: string; value: number }[] = [
-  { label: "Slower", value: 0.95 },
-  { label: "Normal", value: 1.0 },
-  { label: "Brisk", value: 1.12 },
-  { label: "Fast", value: 1.25 },
-];
-
-// Delivery styles → the engine's --style (instruct). "" = the voice's natural
-// delivery. Applies to both the designed default voice and the named speakers.
-const STYLES: { label: string; value: string }[] = [
-  { label: "Natural", value: "" },
-  { label: "Warm & friendly", value: "warm and friendly" },
-  { label: "Professional", value: "professional and clear" },
-  { label: "Energetic", value: "energetic and upbeat" },
-  { label: "Calm", value: "calm and measured" },
-  { label: "Authoritative", value: "authoritative and confident" },
-  { label: "Conversational", value: "relaxed and conversational" },
-];
-
 export const AudioBriefSettings: React.FC = () => {
-  const [source, setSource] = useState("");
-  const [transcript, setTranscript] = useState("");
-  const [drafting, setDrafting] = useState(false);
-  const [rendering, setRendering] = useState(false);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [audioPath, setAudioPath] = useState<string | null>(null);
-  const [engineMissing, setEngineMissing] = useState(false);
-  const [templateId, setTemplateId] = useState(TEMPLATES[0].id);
-  const [speaker, setSpeaker] = useState(SPEAKERS[0]); // "Default"
-  const [tempo, setTempo] = useState(1.12); // "Brisk"
-  const [style, setStyle] = useState(STYLES[0].value); // "" = natural delivery
+  const {
+    source,
+    transcript,
+    drafting,
+    rendering,
+    audioPath,
+    engineMissing,
+    templateId,
+    speaker,
+    tempo,
+    style,
+    setSource,
+    setTranscript,
+    setTemplateId,
+    setSpeaker,
+    setTempo,
+    setStyle,
+    draftTranscript,
+    renderAudio,
+  } = useAudioBriefStore();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Derive the playable asset URL from the stored on-disk path, so it survives
+  // tab switches (the path is the canonical value held in the store).
+  const audioUrl = audioPath ? convertFileSrc(audioPath, "asset") : null;
 
   // Import via a native <input type=file> + FileReader (pure web). Avoids the
   // Tauri fs-plugin scope handling for arbitrary user-picked paths.
@@ -135,62 +81,6 @@ export const AudioBriefSettings: React.FC = () => {
     reader.onerror = () => toast.error("Could not read that file.");
     reader.readAsText(file);
     e.target.value = ""; // let the same file be re-imported
-  };
-
-  const draftTranscript = async () => {
-    const text = source.trim();
-    if (!text) {
-      toast.message("Paste or import some text first.");
-      return;
-    }
-    if (drafting) return;
-    setDrafting(true);
-    try {
-      const tpl = TEMPLATES.find((t) => t.id === templateId) ?? TEMPLATES[0];
-      const r = await commands.meetingPostProcess(text, tpl.prompt);
-      if (r.status !== "ok") throw new Error(r.error);
-      setTranscript(r.data.trim());
-      setAudioUrl(null);
-      toast.success("Draft ready — edit it, then render audio.");
-    } catch (e) {
-      toast.error(`Draft failed: ${String(e)}`);
-    } finally {
-      setDrafting(false);
-    }
-  };
-
-  const renderAudio = async () => {
-    const text = transcript.trim();
-    if (!text) {
-      toast.message("Draft or write a script first.");
-      return;
-    }
-    if (rendering) return;
-    setRendering(true);
-    setAudioUrl(null);
-    try {
-      const r = await commands.meetingGenerateAudioBrief(
-        text,
-        speaker === "Default" ? null : speaker,
-        style || null,
-        tempo,
-      );
-      if (r.status !== "ok") throw new Error(r.error);
-      setEngineMissing(false);
-      setAudioUrl(convertFileSrc(r.data, "asset"));
-      setAudioPath(r.data);
-      toast.success("Audio brief ready.");
-    } catch (e) {
-      const msg = String(e);
-      // The backend says "...voice engine not found..." when no local TTS engine
-      // is installed — surface a helpful setup card instead of a bare toast.
-      if (/not found|no such|couldn'?t (find|locate)|engine/i.test(msg)) {
-        setEngineMissing(true);
-      }
-      toast.error(`Audio render failed: ${msg}`);
-    } finally {
-      setRendering(false);
-    }
   };
 
   const inputClass =
@@ -209,7 +99,7 @@ export const AudioBriefSettings: React.FC = () => {
         <p className="max-w-prose text-sm leading-relaxed text-text-muted">
           Turn any text into a spoken brief — entirely on your device. The local
           model drafts a script you can edit, then the on-device voice reads it
-          aloud.
+          aloud. A draft or render keeps going if you switch tabs.
         </p>
         <span className="inline-flex items-center gap-1.5 rounded-full border border-glass-border bg-glass-surface-thin px-2.5 py-1 text-xs font-medium text-text-muted">
           <ShieldCheck size={13} className="text-aurora-cyan" />
@@ -328,7 +218,8 @@ export const AudioBriefSettings: React.FC = () => {
           {rendering && (
             <p className="flex items-center gap-2 text-xs text-text-subtle">
               <Loader2 size={12} className="animate-spin" /> Rendering on-device —
-              GPU-bound, this can take a few minutes. You can leave it running.
+              GPU-bound, this can take a few minutes. You can switch tabs; it
+              keeps running and the audio is saved when it finishes.
             </p>
           )}
         </section>
