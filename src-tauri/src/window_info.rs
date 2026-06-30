@@ -45,3 +45,10 @@ pub fn get_active_window_title() -> Result<String, String> {
         Err("Active-window detection is Windows-only in this spike.".to_string())
     }
 }
+
+/// Kōrero (v1.22.0, P2): the foreground window title as an Option (the Ok side
+/// of get_active_window_title, trimmed-non-empty) — for per-app prompt routing
+/// in the dictation post-processing path. None when unavailable.
+pub fn active_window_title() -> Option<String> {
+    get_active_window_title().ok().filter(|t| !t.trim().is_empty())
+}

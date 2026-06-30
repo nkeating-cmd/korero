@@ -571,6 +571,11 @@ pub struct AppSettings {
     pub post_process_prompts: Vec<LLMPrompt>,
     #[serde(default)]
     pub post_process_selected_prompt_id: Option<String>,
+    // Kōrero (v1.22.0, P2): per-app prompt routing. Each entry is
+    // "window_title_substring=prompt_id" (case-insensitive). Empty (the default)
+    // = routing off, so the globally-selected prompt is always used.
+    #[serde(default)]
+    pub post_process_app_routes: Vec<String>,
     #[serde(default)]
     pub mute_while_recording: bool,
     #[serde(default)]
@@ -968,6 +973,17 @@ pub fn update_post_process_prompts(
     Ok(())
 }
 
+/// Kōrero (v1.22.0, P2): persist the per-app prompt routing table (a list of
+/// "window_title_substring=prompt_id" entries). Empty disables routing.
+#[tauri::command]
+#[specta::specta]
+pub fn set_post_process_app_routes(app: AppHandle, routes: Vec<String>) -> Result<(), String> {
+    let mut settings = get_settings(&app);
+    settings.post_process_app_routes = routes;
+    write_settings(&app, settings);
+    Ok(())
+}
+
 fn default_post_process_prompts() -> Vec<LLMPrompt> {
     vec![
         LLMPrompt {
@@ -979,7 +995,7 @@ fn default_post_process_prompts() -> Vec<LLMPrompt> {
             // boundaries without conflicting with the earlier "do not reorder" guard.
             // Migration in ensure_post_process_defaults() upgrades existing installs
             // that still carry the v1.6.0 default text.
-            prompt: "Clean this transcript using NZ English spelling (colour, organise, whānau, etc.):\n1. Fix spelling, capitalisation, and punctuation errors\n2. Convert number words to digits (twenty-five → 25, ten percent → 10%, five dollars → $5)\n3. Replace spoken punctuation with symbols (period → ., comma → ,, question mark → ?)\n4. Remove filler words (um, uh, like as filler)\n5. Preserve te reo Māori words exactly as spoken\n6. Do NOT add, invent, or insert any speaker labels. ONLY if the transcript already begins lines with speaker labels (e.g. \"You:\" or a name): keep every existing label exactly as written, never merge, move, drop, or reassign text across speakers, and tidy wording only WITHIN each speaker's turn (join broken fragments inside a turn, never across a label). If the text has NO speaker labels — e.g. single-speaker dictation — return clean prose with no \"You:\" or name prefixes added.\n\nPreserve exact meaning. Do not add content or invent details. Use NZ English throughout.\n\nReturn ONLY the cleaned transcript — no preamble, notes, headings, or repetition of these instructions. Never write a lead-in such as \"Here is the cleaned transcript\".\n\nTranscript:\n${output}".to_string(),
+            prompt: "Clean this transcript using NZ English spelling (colour, organise, whānau, etc.):\n1. Fix spelling, capitalisation, and punctuation errors\n2. Convert number words to digits (twenty-five → 25, ten percent → 10%, five dollars → $5)\n3. Replace spoken punctuation with symbols (period → ., comma → ,, question mark → ?)\n4. Remove filler words and false starts (um, uh, er, like as filler), and resolve self-corrections by keeping only the final intended wording (for example 'send it to, uh, send it to Sarah' becomes 'send it to Sarah', and 'meet on Tuesday, no, Wednesday' becomes 'meet on Wednesday') without changing the meaning\n5. Preserve te reo Māori words exactly as spoken\n6. Do NOT add, invent, or insert any speaker labels. ONLY if the transcript already begins lines with speaker labels (e.g. \"You:\" or a name): keep every existing label exactly as written, never merge, move, drop, or reassign text across speakers, and tidy wording only WITHIN each speaker's turn (join broken fragments inside a turn, never across a label). If the text has NO speaker labels — e.g. single-speaker dictation — return clean prose with no \"You:\" or name prefixes added.\n\nPreserve exact meaning. Do not add content or invent details. Use NZ English throughout.\n\nReturn ONLY the cleaned transcript — no preamble, notes, headings, or repetition of these instructions. Never write a lead-in such as \"Here is the cleaned transcript\".\n\nTranscript:\n${output}".to_string(),
         },
         LLMPrompt {
             id: "korero_client_email".to_string(),
@@ -1135,7 +1151,13 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
                         // dictation. Upgrade those installs to the reworded rule 6.
                         || existing
                             .prompt
-                            .contains("Keep EVERY speaker label exactly as written"))
+                            .contains("Keep EVERY speaker label exactly as written")
+                        // Kōrero (v1.22.0): upgrade installs carrying the v1.20.1
+                        // default (old rule 4) to the new disfluency / self-
+                        // correction cleanup.
+                        || existing
+                            .prompt
+                            .contains("4. Remove filler words (um, uh, like as filler)"))
                 {
                     debug!("Migrating korero_clean_transcript prompt to current default (no-invent speaker labels)");
                     existing.prompt = default_prompt.prompt.clone();
@@ -1294,6 +1316,7 @@ pub fn get_default_settings() -> AppSettings {
         post_process_models: default_post_process_models(),
         post_process_prompts: default_post_process_prompts(),
         post_process_selected_prompt_id: Some("korero_clean_transcript".to_string()),
+        post_process_app_routes: Vec::new(),
         mute_while_recording: false,
         append_trailing_space: true,  // Kōrero: smoother inline dictation
         app_language: default_app_language(),

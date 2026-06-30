@@ -86,8 +86,31 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
         return None;
     }
 
-    let selected_prompt_id = match &settings.post_process_selected_prompt_id {
-        Some(id) => id.clone(),
+    // Korero (v1.22.0, P2): per-app prompt routing. If the user configured routes
+    // and the foreground window's title matches one, use that route's prompt;
+    // otherwise fall back to the globally-selected prompt. Empty routes (the
+    // default) = no behaviour change.
+    let routed_prompt_id = if settings.post_process_app_routes.is_empty() {
+        None
+    } else {
+        crate::window_info::active_window_title().and_then(|title| {
+            let title_l = title.to_lowercase();
+            settings.post_process_app_routes.iter().find_map(|entry| {
+                let (m, pid) = entry.split_once('=')?;
+                let m = m.trim().to_lowercase();
+                let pid = pid.trim();
+                if !m.is_empty() && !pid.is_empty() && title_l.contains(&m) {
+                    Some(pid.to_string())
+                } else {
+                    None
+                }
+            })
+        })
+    };
+    let selected_prompt_id = match routed_prompt_id
+        .or_else(|| settings.post_process_selected_prompt_id.clone())
+    {
+        Some(id) => id,
         None => {
             debug!("Post-processing skipped because no prompt is selected");
             return None;

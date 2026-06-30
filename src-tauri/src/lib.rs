@@ -440,6 +440,7 @@ pub fn run(cli_args: CliArgs) {
             // they never reached the backend) and the prompts array (add/delete).
             corrections::update_transcript_corrections,
             settings::update_post_process_prompts,
+            settings::set_post_process_app_routes, // Kōrero (v1.22.0, P2): per-app prompt routing
             show_main_window_command,
             commands::cancel_operation,
             // Kōrero fork (v1.19.3): overlay "stop" button finishes a latched

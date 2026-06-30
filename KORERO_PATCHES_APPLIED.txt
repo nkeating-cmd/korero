@@ -1,4 +1,4 @@
-﻿Korero narrow patches applied 2026-06-23 21:28:54
+﻿Korero narrow patches applied 2026-06-30 23:53:01
 
 SKIP  overlay.rs: overlay window dims (fresh + v1 source forms) -- already patched
 SKIP  AccessibilityOnboarding.tsx: drop HandyTextLogo render -- already patched
@@ -46,6 +46,12 @@ OK    bindings.ts: add meetingGenerateAudioBrief stub
       Why: Korero (v1.21.0): pre-seed meetingGenerateAudioBrief so tsc succeeds in the production build before specta regenerates bindings. Returns Result<string,string> (the MP3 path, or an error message). Format matches specta output (note double-space before 'as any'). Anchored on pullOllamaModel, a stable Korero binding present in bindings.ts.
 OK    bindings.ts: add ttsEngineStatus stub
       Why: Korero (v1.22.0): pre-seed ttsEngineStatus so tsc succeeds in the production build before specta regenerates bindings. Returns Result<string,string> (the engine dir if found, or an error listing where it looked). Anchored on pullOllamaModel, a stable Korero binding present in bindings.ts.
+OK    actions.rs: per-app prompt routing (P2)
+      Why: Korero (v1.22.0, P2): route the dictation post-processing prompt by the foreground window title before falling back to the globally-selected prompt. actions.rs is upstream (synced, not overlaid), so this is a surgical patch. Empty routes (the default) = no behaviour change.
+OK    bindings.ts: AppSettings.post_process_app_routes field (pre-seed)
+      Why: Korero (v1.22.0, P2): pre-seed the AppSettings field so tsc accepts getSetting('post_process_app_routes') before specta regenerates. Anchored on mute_while_recording (proven present in the reference by the denoise field patch). Single-line.
+OK    bindings.ts: setPostProcessAppRoutes command (pre-seed)
+      Why: Korero (v1.22.0, P2): pre-seed the command stub so tsc succeeds before specta regenerates. Anchored on changeMuteWhileRecordingSetting (proven present in the reference by the denoise command patch).
 OK    recorder.rs: init optional denoiser (48 kHz only)
       Why: Korero (v1.11.0): construct an RNNoise denoiser at the top of run_consumer when the capture device runs at 48 kHz (RNNoise is 48 kHz-only); None otherwise.
 OK    recorder.rs: denoise raw stream (main loop)

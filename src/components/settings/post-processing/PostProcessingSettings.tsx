@@ -37,6 +37,7 @@ import { CorrectionsManager } from "../../ui/Corrections";
 import { useSettings } from "../../../hooks/useSettings";
 import { PostProcessingToggle } from "../PostProcessingToggle";
 import { OllamaPullButton } from "../PostProcessingSettingsApi/OllamaPullButton";
+import { PostProcessAppRouting } from "./PostProcessAppRouting";
 
 const PostProcessingSettingsApiComponent: React.FC = () => {
   const { t } = useTranslation();
@@ -570,6 +571,12 @@ export const PostProcessingSettings: React.FC = () => {
 
       <SettingsGroup title={t("settings.postProcessing.prompts.title")}>
         <PostProcessingSettingsPrompts />
+      </SettingsGroup>
+
+      {/* Kōrero (v1.22.0, P2): per-app prompt routing — auto-pick a cleanup
+          prompt based on the focused app. */}
+      <SettingsGroup title="Per-app routing">
+        <PostProcessAppRouting />
       </SettingsGroup>
 
       {/* Kōrero (v1.15.0): corrections memory — teach the transcriber the
