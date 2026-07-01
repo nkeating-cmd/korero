@@ -224,6 +224,16 @@ function App() {
             description: event.payload.error,
           },
         );
+      } else if (
+        event.payload.event_type === "unloaded" &&
+        event.payload.error
+      ) {
+        // Kōrero (v1.22.0, ST2): a rare transcription-engine panic unloads the
+        // model (it auto-reloads on the next attempt). Surface it instead of a
+        // silent failure so the user knows to try that dictation again.
+        toast.error("Transcription engine hit an error and reloaded.", {
+          description: "Please try that dictation again.",
+        });
       }
     });
     return () => {

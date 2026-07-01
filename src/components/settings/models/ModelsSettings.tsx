@@ -257,6 +257,22 @@ export const ModelsSettings: React.FC = () => {
         <Mic2 className="h-4 w-4 text-aurora-cyan" />
         <h2 className="text-sm font-semibold text-text">Speech-to-text</h2>
       </div>
+
+      {/* v1.22.0 (AC1): help pick the right model for language + speed/accuracy. */}
+      <div className="rounded-xl border border-glass-border bg-glass-surface-thin p-3.5 text-sm leading-relaxed text-text-muted">
+        <p className="mb-1.5 font-medium text-text">Choosing a model</p>
+        <p>
+          <span className="font-medium text-text">Parakeet V3</span> (the default)
+          is the fastest, and among the most accurate for English and European
+          languages — best for everyday dictation. For{" "}
+          <span className="font-medium text-text">te reo Māori</span> or other
+          languages, choose a <span className="font-medium text-text">Whisper</span>{" "}
+          model (Large or Turbo): they cover 99 languages and apply your custom
+          words at the moment of transcription, sharpening names and jargon.
+          Larger models are more accurate but slower — pick the smallest that
+          reads your speech correctly.
+        </p>
+      </div>
       {filteredModels.length > 0 ? (
         <div className="space-y-6">
           {/* Downloaded Models Section — header always visible so filter stays accessible */}

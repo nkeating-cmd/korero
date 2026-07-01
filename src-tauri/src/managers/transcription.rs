@@ -56,7 +56,7 @@ pub struct LoadingGuard {
 
 impl Drop for LoadingGuard {
     fn drop(&mut self) {
-        let mut is_loading = self.is_loading.lock().unwrap();
+        let mut is_loading = self.is_loading.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         *is_loading = false;
         self.loading_condvar.notify_all();
     }
@@ -157,7 +157,7 @@ impl TranscriptionManager {
                 }
                 debug!("Idle watcher thread shutting down gracefully");
             });
-            *manager.watcher_handle.lock().unwrap() = Some(handle);
+            *manager.watcher_handle.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
         }
 
         Ok(manager)
@@ -181,7 +181,7 @@ impl TranscriptionManager {
     /// clear the flag and wake waiters. Returns `None` if a load is already in
     /// progress.
     pub fn try_start_loading(&self) -> Option<LoadingGuard> {
-        let mut is_loading = self.is_loading.lock().unwrap();
+        let mut is_loading = self.is_loading.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if *is_loading {
             return None;
         }
@@ -202,7 +202,7 @@ impl TranscriptionManager {
             *engine = None;
         }
         {
-            let mut current_model = self.current_model_id.lock().unwrap();
+            let mut current_model = self.current_model_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             *current_model = None;
         }
 
@@ -404,7 +404,7 @@ impl TranscriptionManager {
             *engine = Some(loaded_engine);
         }
         {
-            let mut current_model = self.current_model_id.lock().unwrap();
+            let mut current_model = self.current_model_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             *current_model = Some(model_id.to_string());
         }
 
@@ -465,7 +465,7 @@ impl TranscriptionManager {
     }
 
     pub fn get_current_model(&self) -> Option<String> {
-        let current_model = self.current_model_id.lock().unwrap();
+        let current_model = self.current_model_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         current_model.clone()
     }
 
@@ -495,9 +495,9 @@ impl TranscriptionManager {
         // Check if model is loaded, if not try to load it
         {
             // If the model is loading, wait for it to complete.
-            let mut is_loading = self.is_loading.lock().unwrap();
+            let mut is_loading = self.is_loading.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             while *is_loading {
-                is_loading = self.loading_condvar.wait(is_loading).unwrap();
+                is_loading = self.loading_condvar.wait(is_loading).unwrap_or_else(std::sync::PoisonError::into_inner);
             }
 
             let engine_guard = self.lock_engine();
@@ -886,7 +886,7 @@ impl Drop for TranscriptionManager {
         self.shutdown_signal.store(true, Ordering::Relaxed);
 
         // Wait for the thread to finish gracefully
-        if let Some(handle) = self.watcher_handle.lock().unwrap().take() {
+        if let Some(handle) = self.watcher_handle.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
             if let Err(e) = handle.join() {
                 warn!("Failed to join idle watcher thread: {:?}", e);
             } else {

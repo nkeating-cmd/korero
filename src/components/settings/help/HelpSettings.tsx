@@ -210,6 +210,40 @@ export const HelpSettings: React.FC = () => {
         </Guide>
       </SettingsGroup>
 
+      <SettingsGroup title="Getting the best accuracy">
+        <Guide title="Pick the right model">
+          <p>
+            For everyday English the default Parakeet V3 is both the fastest and
+            among the most accurate. If you dictate te reo Māori or other
+            languages, switch to a Whisper model (Large or Turbo) in Settings →
+            Models — they cover far more languages and apply your custom words at
+            the moment of transcription.
+          </p>
+        </Guide>
+        <Guide title="Teach it your words">
+          <p>
+            Add names, jargon and te reo terms as custom words, and fix recurring
+            mishears with Teach a correction. On Whisper models these bias the
+            transcription as it happens; on Parakeet they are applied as an
+            automatic correction afterwards. Either way, the more you teach it,
+            the sharper it gets.
+          </p>
+        </Guide>
+        <Guide title="Give it a clean signal">
+          <p>
+            Start speaking just after the start sound, keep a steady distance from
+            the microphone, and prefer a quiet room. Kōrero already trims silence
+            and lifts quiet audio automatically — but a good mic signal still
+            matters most.
+          </p>
+          <Callout tone="info">
+            Optional noise suppression (Settings → Advanced) can help in genuinely
+            noisy spaces, but may slightly reduce accuracy in quiet ones — A/B test
+            on your own microphone.
+          </Callout>
+        </Guide>
+      </SettingsGroup>
+
       <SettingsGroup title="Meetings">
         <Guide title="Record a meeting">
           <p>
