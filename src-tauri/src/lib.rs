@@ -205,16 +205,24 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     // Choose the appropriate initial icon based on theme
     let initial_icon_path = tray::get_icon_path(initial_theme, tray::TrayIconState::Idle);
 
+    // Kōrero (v1.22.0, S1): load the tray icon defensively. A missing or
+    // unreadable icon resource (e.g. a damaged/partial install) must NOT panic
+    // the whole app at startup — fall back to a blank icon and log a warning.
+    let tray_icon = app_handle
+        .path()
+        .resolve(&initial_icon_path, tauri::path::BaseDirectory::Resource)
+        .ok()
+        .and_then(|p| Image::from_path(p).ok())
+        .unwrap_or_else(|| {
+            log::warn!(
+                "Tray icon '{}' could not be loaded; using a blank fallback.",
+                initial_icon_path
+            );
+            Image::new_owned(vec![0, 0, 0, 0], 1, 1)
+        });
+
     let tray = TrayIconBuilder::new()
-        .icon(
-            Image::from_path(
-                app_handle
-                    .path()
-                    .resolve(initial_icon_path, tauri::path::BaseDirectory::Resource)
-                    .unwrap(),
-            )
-            .unwrap(),
-        )
+        .icon(tray_icon)
         .tooltip(tray::tray_tooltip())
         .show_menu_on_left_click(true)
         .icon_as_template(true)
