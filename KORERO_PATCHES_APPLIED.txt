@@ -1,4 +1,4 @@
-﻿Korero narrow patches applied 2026-07-02 09:47:46
+﻿Korero narrow patches applied 2026-07-02 18:48:52
 
 SKIP  overlay.rs: overlay window dims (fresh + v1 source forms) -- already patched
 SKIP  AccessibilityOnboarding.tsx: drop HandyTextLogo render -- already patched
@@ -51,10 +51,8 @@ OK    bindings.ts: AppSettings.post_process_app_routes field (pre-seed)
       Why: Korero (v1.22.0, P2): pre-seed the AppSettings field so tsc accepts getSetting('post_process_app_routes') before specta regenerates. Anchored on mute_while_recording (proven present in the reference by the denoise field patch). Single-line.
 OK    bindings.ts: setPostProcessAppRoutes command (pre-seed)
       Why: Korero (v1.22.0, P2): pre-seed the command stub so tsc succeeds before specta regenerates. Anchored on changeMuteWhileRecordingSetting (proven present in the reference by the denoise command patch).
-OK    transcription.rs: poison-tolerant mutex locks (ST1)
-      Why: Korero (v1.22.0, ST1): make the manager's Mutex locks poison-tolerant (recover the guard via PoisonError::into_inner) so a panic while a lock is held cannot cascade into a second panic on the next lock. The engine lock + the panic path were already hardened; this covers is_loading / current_model_id / watcher_handle. Substring replace-all of the plain '.lock().unwrap()' -- does NOT match the already-hardened '.lock().unwrap_or_else(...)' forms.
-OK    transcription.rs: poison-tolerant condvar wait (ST1)
-      Why: Korero (v1.22.0, ST1): the loading condvar wait also recovers the guard from poison instead of unwrapping. Separate SkipIfPresent marker so it is not skipped by the lock patch's PoisonError::into_inner sentinel.
+SKIP  transcription.rs: poison-tolerant mutex locks (ST1) -- SkipIfPresent token already in file
+SKIP  transcription.rs: poison-tolerant condvar wait (ST1) -- SkipIfPresent token already in file
 OK    recorder.rs: init optional denoiser (48 kHz only)
       Why: Korero (v1.11.0): construct an RNNoise denoiser at the top of run_consumer when the capture device runs at 48 kHz (RNNoise is 48 kHz-only); None otherwise.
 OK    recorder.rs: denoise raw stream (main loop)

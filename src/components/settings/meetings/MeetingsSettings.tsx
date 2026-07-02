@@ -1075,11 +1075,52 @@ export const MeetingsSettings: React.FC = () => {
   // v1.22.0: save an inline edit to a single transcript segment.
   const saveSegment = (idx: number, text: string) => {
     if (!active) return;
+    const before = (active.transcript ?? [])[idx]?.text ?? "";
     const next = (active.transcript ?? []).map((s, i) =>
       i === idx ? { ...s, text } : s,
     );
     patchMeeting(active.id, { transcript: next });
     setEditingSegIdx(null);
+    // v1.22.0 (N2): if the edit was a clean single-word fix, offer to TEACH it
+    // as a correction so it's fixed everywhere and biases future transcriptions.
+    suggestCorrectionFromEdit(before, text);
+  };
+
+  // Detect a clean one-word substitution (same word count, exactly one differing
+  // token) and OFFER to teach it. Deliberately conservative — skips rewrites,
+  // insertions and deletions so it never suggests noise, and only ever suggests
+  // (the user confirms with one click). Reuses the taught-corrections store, so
+  // an accepted suggestion both fixes the word everywhere and, on Whisper models,
+  // biases future decoding toward the right spelling.
+  const suggestCorrectionFromEdit = (beforeText: string, afterText: string) => {
+    const a = beforeText.trim().split(/\s+/).filter(Boolean);
+    const b = afterText.trim().split(/\s+/).filter(Boolean);
+    if (a.length === 0 || a.length !== b.length) return;
+    const changed: number[] = [];
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) changed.push(i);
+    if (changed.length !== 1) return; // only a single-word change
+    const strip = (w: string) =>
+      w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""); // keep macrons, drop punctuation
+    const wrong = strip(a[changed[0]]);
+    const right = strip(b[changed[0]]);
+    if (wrong.length < 2 || !right) return;
+    if (wrong.toLowerCase() === right.toLowerCase()) return;
+    const existing = settings?.transcript_corrections ?? [];
+    if (existing.some((c) => c.wrong.toLowerCase() === wrong.toLowerCase()))
+      return;
+    toast(`Teach "${wrong}" → "${right}"?`, {
+      description: "Fixes it everywhere and sharpens future transcriptions.",
+      action: {
+        label: "Teach",
+        onClick: () => {
+          updateSetting("transcript_corrections", [
+            ...existing,
+            { wrong, right },
+          ]);
+          toast.success(`Teaching "${wrong}" → "${right}".`);
+        },
+      },
+    });
   };
 
   const exportActive = async () => {
