@@ -449,6 +449,12 @@ pub fn run(cli_args: CliArgs) {
             corrections::update_transcript_corrections,
             settings::update_post_process_prompts,
             settings::set_post_process_app_routes, // Kōrero (v1.22.0, P2): per-app prompt routing
+            // Kōrero (v1.24.0, paths): configurable recording folder + Save-As export.
+            settings::set_meeting_recording_dir,
+            settings::set_meeting_export_dir,
+            meeting::meeting_dirs_info,
+            meeting::meeting_export_transcript_to,
+            meeting::meeting_move_recordings,
             show_main_window_command,
             commands::cancel_operation,
             // Kōrero fork (v1.19.3): overlay "stop" button finishes a latched

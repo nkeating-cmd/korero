@@ -398,12 +398,58 @@ fn selected_input_device(app: &AppHandle) -> Option<cpal::Device> {
         .map(|d| d.device)
 }
 
-fn meetings_dir(app: &AppHandle) -> Result<PathBuf, String> {
+/// The app-private default meetings folder (<app-data>\meetings). The
+/// meetings.json metadata store ALWAYS lives here regardless of any custom
+/// recording folder — transcripts and notes are app data, not user artefacts,
+/// and must not follow the recordings onto removable/synced drives.
+fn default_meetings_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = crate::portable::app_data_dir(app)
         .map_err(|e| format!("Failed to resolve app data dir: {e}"))?
         .join("meetings");
     std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create meetings dir: {e}"))?;
     Ok(dir)
+}
+
+/// Kōrero (v1.24.0, paths): where meeting MEDIA is written (WAV captures,
+/// audio-brief MP3s). Honours `meeting_recording_dir` when set; fails OPEN to
+/// the default folder (logged) so a vanished custom drive never blocks a
+/// recording from starting.
+fn meetings_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let settings = crate::settings::get_settings(app);
+    if let Some(custom) = settings
+        .meeting_recording_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let p = PathBuf::from(custom);
+        match std::fs::create_dir_all(&p) {
+            Ok(()) if p.is_dir() => return Ok(p),
+            Ok(()) => log::warn!(
+                "Custom recording path is not a folder; falling back to the default: {custom}"
+            ),
+            Err(e) => log::warn!(
+                "Custom recording folder unavailable ({e}); falling back to the default: {custom}"
+            ),
+        }
+    }
+    default_meetings_dir(app)
+}
+
+/// Every folder that may hold meeting WAVs: the active recording dir plus the
+/// default (when a custom dir is set) — so pre-change recordings stay visible,
+/// deletable, and retention-swept after the folder moves (plan decision D4).
+fn recording_scan_roots(app: &AppHandle) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(active) = meetings_dir(app) {
+        roots.push(active);
+    }
+    if let Ok(default) = default_meetings_dir(app) {
+        if !roots.contains(&default) {
+            roots.push(default);
+        }
+    }
+    roots
 }
 
 /// Begin capturing the meeting (microphone + system loopback).
@@ -735,41 +781,52 @@ const RECORDING_RETENTION_DAYS: u64 = 30;
 /// device-test files (a crash mid-test can orphan them). Called at startup
 /// and after each meeting stop. Best-effort: errors are logged, never fatal.
 pub fn cleanup_old_recordings(app: &AppHandle) {
-    let Ok(dir) = meetings_dir(app) else {
-        return;
-    };
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return;
-    };
     let cutoff = std::time::SystemTime::now()
         .checked_sub(std::time::Duration::from_secs(
             RECORDING_RETENTION_DAYS * 24 * 60 * 60,
         ))
         .unwrap_or(std::time::UNIX_EPOCH);
     let mut removed = 0u32;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        // Eligible for cleanup:
-        //   - meeting / device-test WAVs (original behaviour), and
-        //   - v1.22.0: audio-brief render artifacts (audio-brief-*.mp3 + any
-        //     orphaned .txt narration script). The sweep previously matched only
-        //     ".wav", so audio briefs accumulated in meetings_dir forever.
-        let is_wav = ext == "wav";
-        let is_brief = name.starts_with("audio-brief-") && (ext == "mp3" || ext == "txt");
-        if !is_wav && !is_brief {
+    // v1.24.0 (paths, risk R1 — CRITICAL): now that the recording folder can be
+    // user-chosen, the sweep must only ever touch files KŌRERO created. It
+    // previously deleted ANY old .wav in the folder — safe while app-private,
+    // silent data loss if pointed at Documents or a shared drive. Eligible:
+    //   - meeting-*.wav   (our capture naming) — aged out after retention
+    //   - test-*.wav      (device-test leftovers) — removed at any age
+    //   - audio-brief-*.mp3/.txt (v1.22.0 render artifacts) — aged out
+    // Both roots are swept so legacy recordings in the default folder still age.
+    let default_root = default_meetings_dir(app).ok();
+    for dir in recording_scan_roots(app) {
+        // Peer-review M3: any-age deletion of test-*.wav is safe only in the
+        // app-private default folder. In a USER-CHOSEN folder a file that
+        // happens to be named test-*.wav must get the normal 30-day age gate,
+        // never a zero-day delete (Kōrero's own device-test files written
+        // there still age out).
+        let is_default_root = default_root.as_deref() == Some(dir.as_path());
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
-        }
-        let is_test = name.starts_with("test-");
-        let too_old = entry
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .map(|t| t < cutoff)
-            .unwrap_or(false);
-        if (too_old || is_test) && std::fs::remove_file(&path).is_ok() {
-            removed += 1;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let is_meeting_wav = name.starts_with("meeting-") && ext == "wav";
+            let is_test_wav = name.starts_with("test-") && ext == "wav";
+            let is_brief = name.starts_with("audio-brief-") && (ext == "mp3" || ext == "txt");
+            if !is_meeting_wav && !is_test_wav && !is_brief {
+                continue;
+            }
+            let too_old = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|t| t < cutoff)
+                .unwrap_or(false);
+            if (too_old || (is_test_wav && is_default_root))
+                && std::fs::remove_file(&path).is_ok()
+            {
+                removed += 1;
+            }
         }
     }
     if removed > 0 {
@@ -784,16 +841,18 @@ pub fn cleanup_old_recordings(app: &AppHandle) {
 #[tauri::command]
 #[specta::specta]
 pub async fn meeting_delete_recording(app: AppHandle, path: String) -> Result<(), String> {
-    let dir = meetings_dir(&app)?;
-    let canon_dir = dir
-        .canonicalize()
-        .map_err(|e| format!("Meetings dir: {e}"))?;
     let canon = PathBuf::from(&path)
         .canonicalize()
         .map_err(|e| format!("Not found: {e}"))?;
-    if !canon.starts_with(&canon_dir) || canon.extension().and_then(|e| e.to_str()) != Some("wav")
-    {
-        return Err("Refusing to delete a file outside the meetings folder.".to_string());
+    // v1.24.0 (paths): a recording may live in the active custom folder OR the
+    // default folder (dual roots, decision D4). Same guard per root: canonical
+    // prefix + .wav only. Roots that fail to canonicalise are skipped, not fatal.
+    let in_scope = recording_scan_roots(&app)
+        .iter()
+        .filter_map(|d| d.canonicalize().ok())
+        .any(|root| canon.starts_with(&root));
+    if !in_scope || canon.extension().and_then(|e| e.to_str()) != Some("wav") {
+        return Err("Refusing to delete a file outside the meetings folders.".to_string());
     }
     std::fs::remove_file(&canon).map_err(|e| format!("Delete failed: {e}"))
 }
@@ -872,35 +931,48 @@ pub async fn meeting_transcribe_merge(
 #[tauri::command]
 #[specta::specta]
 pub async fn meeting_list_recordings(app: AppHandle) -> Result<Vec<RecordingFile>, String> {
-    let dir = meetings_dir(&app)?;
     let mut out = Vec::new();
-    let entries = std::fs::read_dir(&dir).map_err(|e| format!("Failed to read meetings dir: {e}"))?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("wav") {
-            continue;
+    // v1.24.0 (paths): scan the active custom folder AND the default (D4).
+    // In a CUSTOM folder only Kōrero-named meeting-*.wav files are listed —
+    // the user's own WAVs there must never appear in a recovery list whose
+    // rows carry a Delete button. The default app-private folder keeps the
+    // legacy any-wav behaviour (minus transient device tests).
+    let default_dir = default_meetings_dir(&app).ok();
+    for dir in recording_scan_roots(&app) {
+        let is_default = default_dir.as_deref() == Some(dir.as_path());
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue; // unplugged/missing custom root degrades gracefully (R3)
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("wav") {
+                continue;
+            }
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            // v1.13.5: device-test WAVs are transient — keep them out of recovery.
+            if file_name.starts_with("test-") {
+                continue;
+            }
+            if !is_default && !file_name.starts_with("meeting-") {
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            out.push(RecordingFile {
+                path: path.to_string_lossy().to_string(),
+                file_name,
+                modified,
+            });
         }
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_string();
-        // v1.13.5: device-test WAVs are transient — keep them out of recovery.
-        if file_name.starts_with("test-") {
-            continue;
-        }
-        let modified = entry
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        out.push(RecordingFile {
-            path: path.to_string_lossy().to_string(),
-            file_name,
-            modified,
-        });
     }
     out.sort_by(|a, b| b.modified.cmp(&a.modified));
     Ok(out)
@@ -1094,6 +1166,178 @@ pub async fn meeting_export_transcript(
     let path = dir.join(name);
     std::fs::write(&path, content).map_err(|e| format!("Failed to write export: {e}"))?;
     Ok(path.to_string_lossy().to_string())
+}
+
+/// Kōrero (v1.24.0, paths): export a transcript to a path the user chose in a
+/// Save-As dialog (decision D2: ask each time). Forces a .md/.txt extension,
+/// then remembers the parent folder in `meeting_export_dir` so the next
+/// Save-As opens where the user last saved. The dialog is the consent for the
+/// location, so no root confinement applies (unlike recording deletes).
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_export_transcript_to(
+    app: AppHandle,
+    path: String,
+    content: String,
+) -> Result<String, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("No destination chosen.".to_string());
+    }
+    let mut p = PathBuf::from(trimmed);
+    match p.extension().and_then(|e| e.to_str()) {
+        Some("md") | Some("txt") => {}
+        _ => {
+            p.set_extension("md");
+        }
+    }
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Can't create the destination folder: {e}"))?;
+    }
+    std::fs::write(&p, content).map_err(|e| format!("Failed to write export: {e}"))?;
+    // Remember the folder for the next Save-As (best-effort — export succeeded).
+    if let Some(parent) = p.parent().map(|d| d.to_string_lossy().to_string()) {
+        let mut settings = crate::settings::get_settings(&app);
+        settings.meeting_export_dir = Some(parent);
+        crate::settings::write_settings(&app, settings);
+    }
+    Ok(p.to_string_lossy().to_string())
+}
+
+/// Kōrero (v1.24.0, paths): the effective storage folders, JSON-encoded (keeps
+/// the bindings pre-seed to a plain Result<String,String> — same pragmatic
+/// shape as meetings_store_load): { recordingDir, recordingIsCustom,
+/// defaultRecordingDir, exportSeedDir }. exportSeedDir = remembered export
+/// folder if it still exists, else OS Documents, else the default meetings dir.
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_dirs_info(app: AppHandle) -> Result<String, String> {
+    let settings = crate::settings::get_settings(&app);
+    let default_dir = default_meetings_dir(&app)?;
+    let recording_dir = meetings_dir(&app)?;
+    let recording_is_custom = recording_dir != default_dir;
+    let export_seed = settings
+        .meeting_export_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && std::path::Path::new(s).is_dir())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            use tauri::Manager;
+            app.path()
+                .document_dir()
+                .ok()
+                .map(|d| d.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| default_dir.to_string_lossy().to_string());
+    Ok(serde_json::json!({
+        "recordingDir": recording_dir.to_string_lossy(),
+        "recordingIsCustom": recording_is_custom,
+        "defaultRecordingDir": default_dir.to_string_lossy(),
+        "exportSeedDir": export_seed,
+    })
+    .to_string())
+}
+
+/// Kōrero (v1.24.0, paths, decision D4b): one-off move of existing meeting
+/// media (meeting-*.wav + audio-brief-*.mp3) from the DEFAULT folder into the
+/// active custom recording folder. Returns JSON
+/// { moved: { oldPath: newPath, ... }, failed, errors[] } — the FRONTEND
+/// rewrites micPath/systemPath in its meetings state from that map (risk R8),
+/// because the store is frontend-owned with an autosave effect: a Rust-side
+/// rewrite of meetings.json would be clobbered by the next in-memory save.
+/// Per-file best-effort: rename first, copy+verify+delete across volumes;
+/// failures are reported, never fatal. Refuses while a meeting is recording.
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_move_recordings(
+    app: AppHandle,
+    meeting: State<'_, Arc<MeetingRecorder>>,
+) -> Result<String, String> {
+    if meeting
+        .active
+        .lock()
+        .map_err(|_| "lock poisoned")?
+        .is_some()
+    {
+        return Err("A meeting is being recorded — stop it before moving recordings.".to_string());
+    }
+    let source = default_meetings_dir(&app)?;
+    let dest = meetings_dir(&app)?;
+    if source == dest {
+        return Err("No custom recording folder is set — nothing to move.".to_string());
+    }
+    let entries =
+        std::fs::read_dir(&source).map_err(|e| format!("Can't read the default folder: {e}"))?;
+    let mut moved: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut failed = 0u32;
+    let mut errors: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let is_media = (name.starts_with("meeting-") && ext == "wav")
+            || (name.starts_with("audio-brief-") && ext == "mp3");
+        if !is_media {
+            continue; // meetings.json, tmp files, user files: never touched
+        }
+        let target = dest.join(&name);
+        if target.exists() {
+            failed += 1;
+            errors.push(format!("{name}: already exists in the destination — skipped"));
+            continue;
+        }
+        // rename() is atomic on the same volume; cross-volume it fails, so
+        // fall back to copy + verify-size + delete. Peer-review M1: if the
+        // SOURCE can't be deleted after a good copy (Windows file lock — e.g.
+        // the WAV is open in playback), remove the fresh copy too; otherwise
+        // an orphan duplicate lands in the destination, shows twice in the
+        // recovery list, and blocks any retry via the target-exists guard.
+        let result = std::fs::rename(&path, &target).or_else(|_| {
+            std::fs::copy(&path, &target)
+                .map_err(|e| e.to_string())
+                .and_then(|copied| {
+                    let expected = path.metadata().map(|m| m.len()).unwrap_or(copied);
+                    if copied == expected {
+                        std::fs::remove_file(&path).map_err(|e| {
+                            let _ = std::fs::remove_file(&target);
+                            format!("file is in use ({e}) — close playback and retry")
+                        })
+                    } else {
+                        let _ = std::fs::remove_file(&target);
+                        Err("copy size mismatch".to_string())
+                    }
+                })
+                .map_err(std::io::Error::other)
+        });
+        match result {
+            Ok(()) => {
+                moved.insert(
+                    path.to_string_lossy().to_string(),
+                    target.to_string_lossy().to_string(),
+                );
+            }
+            Err(e) => {
+                failed += 1;
+                errors.push(format!("{name}: {e}"));
+            }
+        }
+    }
+    log::info!(
+        "Move recordings: {} moved, {failed} failed.",
+        moved.len()
+    );
+    Ok(serde_json::json!({
+        "moved": moved,
+        "failed": failed,
+        "errors": errors,
+    })
+    .to_string())
 }
 
 /// Ask a question about a meeting transcript using the configured post-processing
@@ -1813,7 +2057,9 @@ async fn transcribe_stream_chunked(
 #[tauri::command]
 #[specta::specta]
 pub async fn meetings_store_load(app: AppHandle) -> Result<String, String> {
-    let path = meetings_dir(&app)?.join("meetings.json");
+    // v1.24.0 (paths): the store is PINNED to the default app-private folder —
+    // it must not follow a custom recording dir onto removable/synced drives.
+    let path = default_meetings_dir(&app)?.join("meetings.json");
     match std::fs::read_to_string(&path) {
         Ok(s) => Ok(s),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
@@ -1828,7 +2074,8 @@ pub async fn meetings_store_load(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn meetings_store_save(app: AppHandle, json: String) -> Result<(), String> {
-    let dir = meetings_dir(&app)?;
+    // v1.24.0 (paths): pinned to the default folder — see meetings_store_load.
+    let dir = default_meetings_dir(&app)?;
     let tmp = dir.join("meetings.json.tmp");
     let path = dir.join("meetings.json");
     std::fs::write(&tmp, json.as_bytes())

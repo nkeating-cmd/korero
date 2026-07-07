@@ -1,4 +1,4 @@
-﻿Korero narrow patches applied 2026-07-07 21:20:52
+﻿Korero narrow patches applied 2026-07-08 10:38:13
 
 SKIP  overlay.rs: overlay window dims (fresh + v1 source forms) -- already patched
 SKIP  AccessibilityOnboarding.tsx: drop HandyTextLogo render -- already patched
@@ -128,3 +128,7 @@ OK    bindings.ts: extend SoundTheme union with aurora (pre-seed)
       Why: Korero (v1.17.1): pre-seed the aurora variant so tsc succeeds before specta regenerates. Single-line Find -- specta emits each type on one line.
 OK    bindings.ts: extend LLMPrompt type with alias (pre-seed)
       Why: Korero (v1.17.0): pre-seed the alias field so tsc succeeds before specta regenerates. Option<String> + serde(default) maps to alias?: string | null (same convention as allow_base_url_edit). Single-line Find -- specta emits each type on one line.
+OK    bindings.ts: AppSettings meeting_recording_dir + meeting_export_dir fields (pre-seed)
+      Why: Korero (v1.24.0, paths): pre-seed the two storage-folder fields so tsc accepts getSetting reads before specta regenerates. Option<String> + serde(default) maps to ?: string | null. Anchored on mute_while_recording (proven anchor used by the denoise + app-routes field patches; sequential substring rewrites keep all three).
+OK    bindings.ts: meeting paths command stubs (pre-seed)
+      Why: Korero (v1.24.0, paths): pre-seed the five storage commands (set recording dir, set export dir, dirs info, export-to-path, move recordings) so tsc succeeds before specta regenerates. meetingDirsInfo/meetingMoveRecordings return JSON strings (Result<string,string>) to avoid new type pre-seeds. Anchored on changeMuteWhileRecordingSetting (proven anchor).

@@ -33,7 +33,7 @@ import { toast } from "sonner";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { Markdown } from "../../ui/Markdown";
 import { CaptureMeters } from "./CaptureMeters";
@@ -244,6 +244,14 @@ export const MeetingsSettings: React.FC = () => {
   // v1.22.0: last exported file path — surfaced as a copyable + "Show in folder"
   // row (replaces the old ephemeral, non-selectable "Exported to <path>" toast).
   const [exportedPath, setExportedPath] = useState<string | null>(null);
+  // v1.24.0 (paths): storage folders — effective recording dir + export seed.
+  const [dirs, setDirs] = useState<{
+    recordingDir: string;
+    recordingIsCustom: boolean;
+    defaultRecordingDir: string;
+    exportSeedDir: string;
+  } | null>(null);
+  const [dirBusy, setDirBusy] = useState(false);
   // v1.22.0: meetings search query — filters the list by title + transcript + notes.
   const [search, setSearch] = useState("");
   const [editingListId, setEditingListId] = useState<string | null>(null);
@@ -1140,15 +1148,144 @@ export const MeetingsSettings: React.FC = () => {
       parts.push("", "## Processed", "", active.processed.trim());
     }
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-    const base = active.title.trim() || "meeting";
+    const base = (active.title.trim() || "meeting").replace(/[\\/:*?"<>|]/g, "_");
+    // v1.24.0 (paths, decision D2): Save-As each time, seeded with the
+    // remembered export folder (Documents by default). Cancelling the dialog
+    // cancels the export; the backend remembers the chosen folder afterwards.
     try {
-      const res = await commands.meetingExportTranscript(`${base}-${stamp}`, parts.join("\n"));
+      let seed = "";
+      try {
+        const info = await commands.meetingDirsInfo();
+        if (info.status === "ok") seed = JSON.parse(info.data).exportSeedDir ?? "";
+      } catch {
+        /* seeding is best-effort — the dialog still opens */
+      }
+      const chosen = await saveFileDialog({
+        title: "Export meeting",
+        defaultPath: seed ? `${seed}\\${base}-${stamp}.md` : `${base}-${stamp}.md`,
+        filters: [
+          { name: "Markdown", extensions: ["md"] },
+          { name: "Plain text", extensions: ["txt"] },
+        ],
+      });
+      if (!chosen) return; // user cancelled
+      const res = await commands.meetingExportTranscriptTo(chosen, parts.join("\n"));
       if (res.status === "ok") {
         setExportedPath(res.data);
         toast.success("Exported.");
       } else toast.error(`Export failed: ${res.error}`);
     } catch (e) {
       toast.error(`Export failed: ${String(e)}`);
+    }
+  };
+
+  // ---- v1.24.0 (paths): storage folder handlers -------------------------
+
+  const loadDirs = async () => {
+    try {
+      const r = await commands.meetingDirsInfo();
+      if (r.status === "ok") setDirs(JSON.parse(r.data));
+    } catch {
+      /* non-fatal — the Storage card just shows a loading state */
+    }
+  };
+
+  useEffect(() => {
+    void loadDirs();
+  }, []);
+
+  const changeRecordingDir = async () => {
+    const picked = await openFileDialog({
+      directory: true,
+      title: "Choose a folder for meeting recordings",
+    });
+    if (!picked || Array.isArray(picked)) return;
+    setDirBusy(true);
+    try {
+      const r = await commands.setMeetingRecordingDir(picked);
+      if (r.status !== "ok") throw new Error(r.error);
+      await loadDirs();
+      await loadRecordings();
+      toast.success("New recordings will be saved there.", {
+        description:
+          "Existing recordings stay where they are (still listed below) — use Move existing to relocate them.",
+      });
+    } catch (e) {
+      toast.error(
+        `Couldn't use that folder: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    } finally {
+      setDirBusy(false);
+    }
+  };
+
+  const resetRecordingDir = async () => {
+    setDirBusy(true);
+    try {
+      const r = await commands.setMeetingRecordingDir(null);
+      if (r.status !== "ok") throw new Error(r.error);
+      await loadDirs();
+      await loadRecordings();
+      toast.success("Recording folder reset to the default.");
+    } catch (e) {
+      toast.error(`Reset failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setDirBusy(false);
+    }
+  };
+
+  const moveExistingRecordings = async () => {
+    setDirBusy(true);
+    try {
+      const r = await commands.meetingMoveRecordings();
+      if (r.status !== "ok") throw new Error(r.error);
+      const rep = JSON.parse(r.data) as {
+        moved: Record<string, string>;
+        failed: number;
+        errors: string[];
+      };
+      const map = rep.moved ?? {};
+      const movedCount = Object.keys(map).length;
+      if (movedCount > 0) {
+        // R8: rewrite stored file references through the normal state->autosave
+        // path (the store is frontend-owned — a disk-side rewrite would be
+        // clobbered by the next in-memory save).
+        const next = meetings.map((m) => ({
+          ...m,
+          micPath: m.micPath && map[m.micPath] ? map[m.micPath] : m.micPath,
+          systemPath:
+            m.systemPath && map[m.systemPath]
+              ? map[m.systemPath]
+              : m.systemPath,
+        }));
+        setMeetings(next);
+        // Peer-review M2: the files have ALREADY moved on disk — persist the
+        // rewritten paths immediately rather than waiting for the autosave
+        // effect, so a crash in that window can't leave the store pointing at
+        // the emptied default folder. The autosave writing again is harmless
+        // (atomic temp+rename).
+        try {
+          await commands.meetingsStoreSave(JSON.stringify(next));
+        } catch {
+          /* autosave effect remains the fallback */
+        }
+      }
+      await loadRecordings();
+      if (rep.failed > 0) {
+        toast.warning(`Moved ${movedCount}, ${rep.failed} skipped.`, {
+          description: rep.errors.slice(0, 3).join(" · "),
+        });
+      } else {
+        toast.success(
+          movedCount > 0
+            ? `Moved ${movedCount} recording(s) to the new folder.`
+            : "Nothing to move — the default folder has no meeting recordings.",
+        );
+      }
+    } catch (e) {
+      toast.error(`Move failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setDirBusy(false);
     }
   };
 
@@ -2234,6 +2371,93 @@ export const MeetingsSettings: React.FC = () => {
                 </div>
               ))}
             </div>
+          )}
+        </div>
+      </div>
+
+      {/* v1.24.0 (paths): storage — where recordings are written */}
+      <div className="space-y-2">
+        <h2 className="px-1 text-xs font-semibold text-text-muted uppercase tracking-wider">
+          Storage
+        </h2>
+        <div className="glass-card p-4 space-y-3">
+          {dirs === null ? (
+            <p className="text-sm text-text-subtle">Loading…</p>
+          ) : (
+            <>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm text-text">Recording folder</p>
+                  <p
+                    className="mt-0.5 select-all break-all text-xs text-text-muted"
+                    title={dirs.recordingDir}
+                  >
+                    {dirs.recordingDir}
+                    {!dirs.recordingIsCustom && (
+                      <span className="text-text-subtle"> (default)</span>
+                    )}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      revealItemInDir(dirs.recordingDir).catch(() =>
+                        toast.error("Could not open the folder."),
+                      )
+                    }
+                    title="Show this folder in Explorer"
+                    className="text-text-subtle transition-colors hover:text-aurora-cyan"
+                  >
+                    <FolderOpen size={15} />
+                  </button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={changeRecordingDir}
+                    disabled={dirBusy}
+                  >
+                    Change…
+                  </Button>
+                  {dirs.recordingIsCustom && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={resetRecordingDir}
+                      disabled={dirBusy}
+                    >
+                      Reset
+                    </Button>
+                  )}
+                </div>
+              </div>
+              {dirs.recordingIsCustom && (
+                <div className="flex items-center justify-between gap-3 border-t border-glass-border pt-3">
+                  <p className="text-xs text-text-muted">
+                    Recordings made before the change are still in the default
+                    folder. Move them here so everything lives in one place.
+                  </p>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={moveExistingRecordings}
+                    disabled={dirBusy}
+                    className="flex shrink-0 items-center gap-1.5"
+                  >
+                    {dirBusy ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : null}
+                    Move existing
+                  </Button>
+                </div>
+              )}
+              <p className="text-xs text-text-subtle">
+                Tip: recordings are large — a local drive works best. Cloud-synced
+                folders (OneDrive/Dropbox) can churn while a meeting records.
+                Exports ask where to save each time and remember your last folder
+                ({dirs.exportSeedDir}).
+              </p>
+            </>
           )}
         </div>
       </div>

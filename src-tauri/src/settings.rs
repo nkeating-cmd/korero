@@ -576,6 +576,17 @@ pub struct AppSettings {
     // = routing off, so the globally-selected prompt is always used.
     #[serde(default)]
     pub post_process_app_routes: Vec<String>,
+    // Kōrero (v1.24.0, paths): custom folder for meeting RECORDINGS (WAVs +
+    // audio-brief MP3s). None = default <app-data>\meetings. The meetings.json
+    // metadata store always stays in the default folder — only bulky media
+    // routes here. Validated on set; recovery/delete/cleanup scan BOTH roots.
+    #[serde(default)]
+    pub meeting_recording_dir: Option<String>,
+    // Kōrero (v1.24.0, paths): remembered folder that SEEDS the export Save-As
+    // dialog. None = OS Documents. Updated to the chosen file's parent after
+    // each export, so the dialog reopens where the user last saved.
+    #[serde(default)]
+    pub meeting_export_dir: Option<String>,
     #[serde(default)]
     pub mute_while_recording: bool,
     #[serde(default)]
@@ -984,6 +995,72 @@ pub fn set_post_process_app_routes(app: AppHandle, routes: Vec<String>) -> Resul
     Ok(())
 }
 
+/// Kōrero (v1.24.0, paths): validate that a user-chosen folder is an absolute,
+/// creatable, writable directory. Rejects instead of persisting a bad path
+/// (risk R3 in the paths plan: missing dir, file, read-only, unplugged drive).
+fn validate_custom_dir(path: &str) -> Result<std::path::PathBuf, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Folder path is empty.".to_string());
+    }
+    let p = std::path::PathBuf::from(trimmed);
+    if !p.is_absolute() {
+        return Err("Choose an absolute folder path (e.g. D:\\Recordings).".to_string());
+    }
+    std::fs::create_dir_all(&p).map_err(|e| format!("Can't create that folder: {e}"))?;
+    if !p.is_dir() {
+        return Err("That path is a file, not a folder.".to_string());
+    }
+    let probe = p.join(".korero-write-probe.tmp");
+    std::fs::write(&probe, b"ok").map_err(|e| format!("Folder is not writable: {e}"))?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(p)
+}
+
+/// Kōrero (v1.24.0, paths): set (or reset with None) the custom meeting
+/// recording folder. Forward-only for existing files — the recovery list and
+/// delete guard scan both this dir and the default; an explicit Move action
+/// (`meeting_move_recordings`) relocates old recordings on request.
+#[tauri::command]
+#[specta::specta]
+pub fn set_meeting_recording_dir(app: AppHandle, dir: Option<String>) -> Result<(), String> {
+    let cleaned = match dir {
+        Some(d) => Some(
+            validate_custom_dir(&d)?
+                .to_string_lossy()
+                .to_string(),
+        ),
+        None => None,
+    };
+    let mut settings = get_settings(&app);
+    settings.meeting_recording_dir = cleaned;
+    write_settings(&app, settings);
+    Ok(())
+}
+
+/// Kōrero (v1.24.0, paths): remember the folder that seeds the export Save-As
+/// dialog (None = OS Documents). Light validation only — the Save-As dialog
+/// itself is what actually picks the destination file.
+#[tauri::command]
+#[specta::specta]
+pub fn set_meeting_export_dir(app: AppHandle, dir: Option<String>) -> Result<(), String> {
+    let cleaned = match dir {
+        Some(d) => {
+            let t = d.trim().to_string();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        }
+        None => None,
+    };
+    let mut settings = get_settings(&app);
+    settings.meeting_export_dir = cleaned;
+    write_settings(&app, settings);
+    Ok(())
+}
+
 fn default_post_process_prompts() -> Vec<LLMPrompt> {
     vec![
         LLMPrompt {
@@ -1317,6 +1394,8 @@ pub fn get_default_settings() -> AppSettings {
         post_process_prompts: default_post_process_prompts(),
         post_process_selected_prompt_id: Some("korero_clean_transcript".to_string()),
         post_process_app_routes: Vec::new(),
+        meeting_recording_dir: None,
+        meeting_export_dir: None,
         mute_while_recording: false,
         append_trailing_space: true,  // Kōrero: smoother inline dictation
         app_language: default_app_language(),
