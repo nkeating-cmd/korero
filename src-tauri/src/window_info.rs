@@ -50,5 +50,18 @@ pub fn get_active_window_title() -> Result<String, String> {
 /// of get_active_window_title, trimmed-non-empty) — for per-app prompt routing
 /// in the dictation post-processing path. None when unavailable.
 pub fn active_window_title() -> Option<String> {
-    get_active_window_title().ok().filter(|t| !t.trim().is_empty())
+    // Kōrero (v1.23.0, peer-review fix): log the failure instead of silently
+    // degrading — per-app routing falls back to the default prompt when the
+    // title is unavailable, and without this line that's invisible in korero.log.
+    match get_active_window_title() {
+        Ok(t) if !t.trim().is_empty() => Some(t),
+        Ok(_) => {
+            log::debug!("Per-app routing: foreground window title empty; using default prompt");
+            None
+        }
+        Err(e) => {
+            log::debug!("Per-app routing: could not read foreground window title ({e}); using default prompt");
+            None
+        }
+    }
 }

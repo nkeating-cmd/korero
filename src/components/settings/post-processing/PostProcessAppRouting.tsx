@@ -85,7 +85,13 @@ export const PostProcessAppRouting: React.FC = () => {
           const title = r.data;
           const parts = title.split(/\s[-–—|]\s/);
           setMatchText((parts[parts.length - 1] || title).trim());
-          toast.success(`Detected: ${title}`);
+          // Kōrero (v1.23.0, peer-review fix): the suggested keyword is a
+          // heuristic (last " - " segment of the title) — show the full title
+          // and tell the user to adjust if it guessed wrong.
+          toast.success(`Window title: "${title}"`, {
+            description:
+              "Suggested a keyword from it — edit the box if it doesn't look like the app's name.",
+          });
         } else {
           toast.error(`Couldn't detect the app: ${r.error}`);
         }
