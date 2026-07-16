@@ -105,6 +105,22 @@ function App() {
     initializeRTL(i18n.language);
   }, [i18n.language]);
 
+  // Kōrero (v1.25.0, upstream cherry-pick — Handy #1665): only one audio
+  // player at a time. History rows, meeting audio, and audio-brief previews
+  // each render their own <audio>; without this they play simultaneously.
+  // 'play' doesn't bubble, so listen in the capture phase at document level.
+  useEffect(() => {
+    const onPlay = (e: Event) => {
+      const started = e.target;
+      if (!(started instanceof HTMLAudioElement)) return;
+      document.querySelectorAll("audio").forEach((a) => {
+        if (a !== started && !a.paused) a.pause();
+      });
+    };
+    document.addEventListener("play", onPlay, true);
+    return () => document.removeEventListener("play", onPlay, true);
+  }, []);
+
   // Kōrero (2026-05-17 PM, T2.4a — inlined from apply-patches.ps1):
   // Surface OS-keychain write failures so the user knows their API key didn't
   // persist. Without this the failure is silent and manifests later as

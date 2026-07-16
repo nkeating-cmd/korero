@@ -8,8 +8,10 @@ import {
   ShieldCheck,
   Download,
   FolderOpen,
+  Copy,
 } from "lucide-react";
 import { toast } from "sonner";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Dropdown } from "@/components/ui/Dropdown";
@@ -277,6 +279,29 @@ export const AudioBriefSettings: React.FC = () => {
             </code>
             . Drafting scripts and everything else on this page work without it.
           </p>
+          {/* v1.25.0 (UX batch, audit #9): both paths are long and typo-prone —
+              make them one-click copyable. */}
+          <div className="flex gap-3 pt-0.5">
+            {(
+              [
+                ["Copy variable name", "KORERO_TTS_DIR"],
+                ["Copy folder path", "%APPDATA%\\com.nkeating.korero\\tts"],
+              ] as const
+            ).map(([label, value]) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() =>
+                  writeText(value)
+                    .then(() => toast.success("Copied."))
+                    .catch(() => toast.error("Couldn't copy."))
+                }
+                className="inline-flex items-center gap-1 text-aurora-cyan transition-colors hover:text-text"
+              >
+                <Copy size={12} /> {label}
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>

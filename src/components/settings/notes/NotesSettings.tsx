@@ -13,6 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { confirmDestructive } from "../../ui/confirmToast";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Button } from "../../ui/Button";
 import { Dropdown, type DropdownOption } from "../../ui/Dropdown";
@@ -480,9 +481,23 @@ export const NotesSettings: React.FC = () => {
                   <button
                     type="button"
                     title="Delete note"
+                    aria-label={`Delete note ${titleOf(n)}`}
                     onClick={(e) => {
                       e.stopPropagation();
-                      deleteNote(n.id);
+                      // v1.25.0 (UX batch): empty notes delete silently;
+                      // anything with content asks first (audit #2). Review
+                      // fix #4: a TITLE is content too — only bypass when
+                      // both title and body are blank.
+                      if (!n.content.trim() && !n.title.trim()) {
+                        deleteNote(n.id);
+                      } else {
+                        confirmDestructive(
+                          `Delete "${titleOf(n)}"?`,
+                          "The note is removed permanently.",
+                          "Delete",
+                          () => deleteNote(n.id),
+                        );
+                      }
                     }}
                     className="opacity-0 group-hover:opacity-100 text-text-subtle hover:text-pill-urgent transition-opacity"
                   >

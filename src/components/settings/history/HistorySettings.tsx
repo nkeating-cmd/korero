@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { confirmDestructive } from "../../ui/confirmToast";
 import {
   commands,
   events,
@@ -414,12 +415,20 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
   };
 
   const handleDeleteEntry = async () => {
-    try {
-      await deleteAudio(entry.id);
-    } catch (error) {
-      console.error("Failed to delete entry:", error);
-      toast.error(t("settings.history.deleteError"));
-    }
+    // v1.25.0 (UX batch): confirm before irreversible delete (audit #2).
+    confirmDestructive(
+      "Delete this dictation?",
+      "The transcript and its audio are removed permanently.",
+      "Delete",
+      async () => {
+        try {
+          await deleteAudio(entry.id);
+        } catch (error) {
+          console.error("Failed to delete entry:", error);
+          toast.error(t("settings.history.deleteError"));
+        }
+      },
+    );
   };
 
   const handleRetranscribe = async () => {

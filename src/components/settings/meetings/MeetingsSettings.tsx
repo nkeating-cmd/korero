@@ -30,6 +30,7 @@ import {
   Search,
 } from "lucide-react";
 import { toast } from "sonner";
+import { confirmDestructive } from "../../ui/confirmToast";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -231,6 +232,21 @@ export const MeetingsSettings: React.FC = () => {
   const [elapsed, setElapsed] = useState(0);
   const [systemCaptured, setSystemCaptured] = useState<boolean | null>(null);
   const [busy, setBusy] = useState<null | "transcribe" | "post" | "both">(null);
+  // v1.25.0 (UX batch, audit #5): elapsed-time feedback for long operations —
+  // a spinner alone reads as "frozen" after ~30 s on a 2-minute transcription.
+  const [busyElapsed, setBusyElapsed] = useState(0);
+  useEffect(() => {
+    if (!busy) {
+      setBusyElapsed(0);
+      return;
+    }
+    const started = Date.now();
+    const t = window.setInterval(
+      () => setBusyElapsed(Math.floor((Date.now() - started) / 1000)),
+      1000,
+    );
+    return () => window.clearInterval(t);
+  }, [busy]);
   const [models, setModels] = useState<ModelInfo[] | null>(null);
   const [customPrompt, setCustomPrompt] = useState(DEFAULT_PROMPT);
   // v1.19.0: meeting/import post-processing prompt picker selections
@@ -244,6 +260,26 @@ export const MeetingsSettings: React.FC = () => {
   // v1.22.0: last exported file path — surfaced as a copyable + "Show in folder"
   // row (replaces the old ephemeral, non-selectable "Exported to <path>" toast).
   const [exportedPath, setExportedPath] = useState<string | null>(null);
+  // v1.25.0 (UX batch, audit #1): the row previously showed the LAST export's
+  // path even after switching meetings — clear it whenever the active
+  // meeting changes.
+  useEffect(() => {
+    setExportedPath(null);
+  }, [activeId]);
+  // Review fixes (v1.25.0 #2/#3): live refs for the delete-confirm callback,
+  // which can fire seconds later — possibly after this panel unmounted or the
+  // selection moved.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  const activeIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
   // v1.24.0 (paths): storage folders — effective recording dir + export seed.
   const [dirs, setDirs] = useState<{
     recordingDir: string;
@@ -523,18 +559,26 @@ export const MeetingsSettings: React.FC = () => {
   };
 
   // v1.13.6: delete a saved WAV from disk (recovery list).
+  // v1.25.0 (UX batch): confirmed first — recordings are unrecoverable (audit #2).
   const deleteRecording = async (f: RecordingFile) => {
-    try {
-      const res = await commands.meetingDeleteRecording(f.path);
-      if (res.status === "ok") {
-        toast.success(`Deleted ${f.file_name}`);
-        loadRecordings();
-      } else {
-        toast.error(res.error);
-      }
-    } catch (e) {
-      toast.error(String(e));
-    }
+    confirmDestructive(
+      `Delete ${f.file_name}?`,
+      "The audio file is removed from disk permanently.",
+      "Delete",
+      async () => {
+        try {
+          const res = await commands.meetingDeleteRecording(f.path);
+          if (res.status === "ok") {
+            toast.success(`Deleted ${f.file_name}`);
+            loadRecordings();
+          } else {
+            toast.error(res.error);
+          }
+        } catch (e) {
+          toast.error(String(e));
+        }
+      },
+    );
   };
 
   useEffect(() => {
@@ -1290,17 +1334,36 @@ export const MeetingsSettings: React.FC = () => {
   };
 
   const deleteMeeting = (id: string) => {
-    // v1.13.6: free the disk too — once the metadata is gone the WAVs are
-    // only reachable via the recovery list, which is rarely what's wanted.
+    // v1.25.0 (UX batch): confirm first — this removes the transcript, notes
+    // AND both WAVs in one click (audit #2, the sharpest data-loss edge).
     const gone = meetings.find((m) => m.id === id);
-    [gone?.micPath, gone?.systemPath].forEach((p) => {
-      if (p) commands.meetingDeleteRecording(p).catch(() => {});
-    });
-    setMeetings((prev) => {
-      const next = prev.filter((m) => m.id !== id);
-      if (id === activeId) setActiveId(next[0]?.id ?? null);
-      return next;
-    });
+    confirmDestructive(
+      `Delete "${gone ? titleOf(gone) : "this meeting"}"?`,
+      "Transcript, notes and the meeting audio are removed permanently.",
+      "Delete",
+      () => {
+        // Review fix (v1.25.0 #2): the confirm toast outlives this panel — if
+        // the user switched sections before confirming, setMeetings would be a
+        // silent no-op while the WAVs still got deleted (metadata orphaned,
+        // pointing at missing audio). Refuse instead.
+        if (!mountedRef.current) {
+          toast.message("Meetings view was closed — open Meetings and delete again.");
+          return;
+        }
+        // v1.13.6: free the disk too — once the metadata is gone the WAVs are
+        // only reachable via the recovery list, which is rarely what's wanted.
+        [gone?.micPath, gone?.systemPath].forEach((p) => {
+          if (p) commands.meetingDeleteRecording(p).catch(() => {});
+        });
+        setMeetings((prev) => {
+          const next = prev.filter((m) => m.id !== id);
+          // Review fix (v1.25.0 #3): activeId may have changed during the
+          // toast — read the live value, not the click-time closure.
+          if (id === activeIdRef.current) setActiveId(next[0]?.id ?? null);
+          return next;
+        });
+      },
+    );
   };
 
   const transcribeRecording = async (file: RecordingFile) => {
@@ -2067,6 +2130,24 @@ export const MeetingsSettings: React.FC = () => {
                     )}
                     Transcribe + post-process
                   </Button>
+                  {busy && (
+                    <span className="self-center text-xs text-text-subtle tabular-nums">
+                      {/* Review fix (v1.25.0 #5): aria-live only on the phase
+                          word — a live region containing the ticking counter
+                          would be re-announced every second. */}
+                      <span aria-live="polite">
+                        {busy === "post"
+                          ? "Processing"
+                          : busy === "transcribe"
+                            ? "Transcribing"
+                            : "Working"}
+                      </span>
+                      … {busyElapsed}s
+                      {busy !== "post" && busyElapsed > 20
+                        ? " — long recordings take a few minutes"
+                        : ""}
+                    </span>
+                  )}
                 </div>
 
                 {/* v1.17.0: merge with another meeting (non-destructive). */}

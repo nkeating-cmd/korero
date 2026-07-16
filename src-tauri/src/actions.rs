@@ -86,6 +86,12 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
         return None;
     }
 
+    // Korero (v1.25.0, upstream cherry-pick, Handy #1537): a blank
+    // transcription has nothing to clean up -- skip the LLM round-trip.
+    if transcription.trim().is_empty() {
+        debug!("Post-processing skipped: transcription is empty");
+        return None;
+    }
     // Korero (v1.22.0, P2): per-app prompt routing. If the user configured routes
     // and the foreground window's title matches one, use that route's prompt;
     // otherwise fall back to the globally-selected prompt. Empty routes (the
