@@ -253,7 +253,10 @@ fn collapse_repeats(text: &str) -> String {
         }
     }
     if sentences.len() < 2 {
-        return text.trim().to_string();
+        // v1.24.0: a single "sentence" is exactly what a comma-run decoder
+        // loop looks like — it must still pass through the n-gram stage
+        // (this early return previously bypassed it; caught by unit test).
+        return collapse_ngram_runs(text);
     }
     let mut out: Vec<&str> = Vec::with_capacity(sentences.len());
     let mut last_norm = String::new();
@@ -272,10 +275,85 @@ fn collapse_repeats(text: &str) -> String {
     }
     // Only reflow when we genuinely removed a duplicate; an ordinary transcript
     // is returned untouched.
-    if !dropped_any {
+    let sentence_collapsed = if !dropped_any {
+        text.trim().to_string()
+    } else {
+        out.join(" ")
+    };
+    // v1.24.0 (FENZ import bug): the sentence-level pass above misses the OTHER
+    // decoder-loop shape — a sub-sentence unit repeated inside one giant
+    // comma-run ("ProjectIQ, and the ProjectIQ, and the …", "project, project,
+    // project, …" ×100s), which contains no . ! ? boundary at all. Collapse
+    // word-level n-gram runs as a second stage.
+    collapse_ngram_runs(&sentence_collapsed)
+}
+
+/// Collapse pathological word-level n-gram runs — the decoder-loop signature
+/// that has no sentence boundaries (observed on a real M4A import: a 3-gram
+/// then a 1-gram repeated hundreds of times, comma-separated, in one
+/// "sentence"). Deliberately conservative thresholds so natural speech
+/// survives: a single word must repeat ≥5 times consecutively ("no, no, no,
+/// no" stays), a phrase of 2-8 words ≥4 times ("I know, I know, I know"
+/// stays). Loops repeat tens-to-hundreds of times, so the margin is wide.
+/// Comparison is case- and punctuation-insensitive per token; the FIRST
+/// occurrence's original tokens are kept. Returns the input verbatim when
+/// nothing collapses (never reflows clean text).
+fn collapse_ngram_runs(text: &str) -> String {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    if tokens.len() < 8 {
         return text.trim().to_string();
     }
-    out.join(" ")
+    let norm_token = |t: &str| -> String {
+        t.trim_matches(|c: char| {
+            c.is_whitespace()
+                || matches!(c, '.' | '!' | '?' | ',' | ';' | ':' | '-' | '–' | '—' | '"' | '\'' | '…' | '(' | ')')
+        })
+        .to_lowercase()
+    };
+    let mut work: Vec<String> = tokens.iter().map(|t| t.to_string()).collect();
+    let mut collapsed_any = false;
+    // Shortest unit FIRST: a run always collapses at its fundamental period
+    // (a "project," ×120 run is period-1; "ProjectIQ, and the" ×40 is
+    // period-3). Longest-first would first collapse at a multiple of the
+    // period (e.g. 8 tokens of a period-1 run) and strand a sub-threshold
+    // residual pair; shortest-first leaves exactly one instance.
+    for n in 1..=8usize {
+        if work.len() < n * 2 {
+            continue;
+        }
+        let norms: Vec<String> = work.iter().map(|t| norm_token(t)).collect();
+        let threshold: usize = if n == 1 { 5 } else { 4 };
+        let mut out: Vec<String> = Vec::with_capacity(work.len());
+        let mut i = 0usize;
+        while i < work.len() {
+            if i + n <= work.len() && !norms[i..i + n].iter().all(|s| s.is_empty()) {
+                let mut reps = 1usize;
+                while i + (reps + 1) * n <= work.len()
+                    && norms[i + reps * n..i + (reps + 1) * n] == norms[i..i + n]
+                {
+                    reps += 1;
+                }
+                if reps >= threshold {
+                    out.extend_from_slice(&work[i..i + n]); // keep one instance
+                    i += reps * n;
+                    collapsed_any = true;
+                    continue;
+                }
+            }
+            out.push(work[i].clone());
+            i += 1;
+        }
+        work = out;
+    }
+    if !collapsed_any {
+        return text.trim().to_string();
+    }
+    log::debug!(
+        "collapse_ngram_runs: decoder-loop collapsed ({} -> {} tokens)",
+        tokens.len(),
+        work.len()
+    );
+    work.join(" ")
 }
 
 /// Apply the segment-level guards to one freshly transcribed segment:
@@ -2226,4 +2304,83 @@ async fn run_test_capture(app: &AppHandle, secs: u32) -> Result<MeetingTestResul
         mic_samples,
         system_samples,
     })
+}
+
+// v1.24.0: first unit tests for the meeting.rs text guards — this logic has
+// produced two real field bugs ("$3.50" reflow; the FENZ n-gram decoder loop),
+// so every collapse behaviour is pinned here.
+#[cfg(test)]
+mod text_guard_tests {
+    use super::*;
+
+    #[test]
+    fn ngram_collapses_repeated_trigram_run() {
+        // The FENZ import signature: "ProjectIQ, and the" repeated dozens of
+        // times inside one comma-run with no sentence boundary.
+        let unit = "ProjectIQ, and the ";
+        let text = format!("So the plan is {}{}done.", unit.repeat(40), "");
+        let out = collapse_repeats(&text);
+        assert!(
+            out.matches("ProjectIQ").count() <= 2,
+            "trigram run not collapsed: {out}"
+        );
+        assert!(out.contains("So the plan is"));
+        assert!(out.contains("done."));
+    }
+
+    #[test]
+    fn ngram_collapses_repeated_single_word_run() {
+        let text = format!("and the {}Code Genie builds it.", "project, ".repeat(120));
+        let out = collapse_repeats(&text);
+        assert!(
+            out.matches("project,").count() <= 1,
+            "single-word run not collapsed: {out}"
+        );
+        assert!(out.contains("Code Genie builds it."));
+    }
+
+    #[test]
+    fn natural_repetition_survives() {
+        // ≤4 single-word repeats and ≤3 phrase repeats are natural speech.
+        let a = "no, no, no, no, that's not right.";
+        assert_eq!(collapse_repeats(a), a);
+        let b = "I know, I know, I know. Let's move on. It was very very good.";
+        assert_eq!(collapse_repeats(b), b);
+    }
+
+    #[test]
+    fn clean_text_returned_verbatim() {
+        // The no-collapse contract: ordinary transcripts are never reflowed.
+        let t = "We agreed the retaining wall quote by Friday.  Two spaces kept.";
+        assert_eq!(collapse_repeats(t), t);
+    }
+
+    #[test]
+    fn decimals_still_never_split() {
+        // Regression pin for the v1.19.0 fix.
+        let t = "The quote was $3.50 per metre for v1.19 of the plan.";
+        assert_eq!(collapse_repeats(t), t);
+    }
+
+    #[test]
+    fn sentence_level_collapse_still_works() {
+        let t = "It's great. It's great. It's great. Moving on.";
+        let out = collapse_repeats(t);
+        assert_eq!(out.matches("It's great.").count(), 1, "{out}");
+        assert!(out.contains("Moving on."));
+    }
+
+    #[test]
+    fn mixed_trigram_then_word_run_both_collapse() {
+        let text = format!(
+            "Start. {}{}End.",
+            "ProjectIQ, and the ".repeat(25),
+            "project, ".repeat(60)
+        );
+        let out = collapse_repeats(&text);
+        assert!(out.matches("ProjectIQ").count() <= 2, "{out}");
+        assert!(out.matches("project,").count() <= 2, "{out}");
+        assert!(out.starts_with("Start."));
+        assert!(out.ends_with("End."));
+    }
 }
