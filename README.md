@@ -13,7 +13,7 @@ Like Handy, Kōrero is **100% offline**: your audio and transcripts never leave 
 models download once on first use; nothing is sent to the cloud. (Post-processing is opt-in and only
 contacts an LLM provider you configure.)
 
-Current version: **v1.17.0**.
+Current version: **v1.25.0**.
 
 ---
 
