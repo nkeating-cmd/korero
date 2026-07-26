@@ -33,6 +33,17 @@ ignore = [
     # Revisit only if a Linux build is ever produced.
     { id = "RUSTSEC-2024-0415", reason = "gtk: linux-only dep, not in Windows binary" },
     { id = "RUSTSEC-2024-0422", reason = "gtk-layer-shell: linux-only dep, not in Windows binary" },
+    # Korero (2026-07-25): quick-xml 0.38.4 DoS advisories (7.5 High, patched
+    # >=0.41.0). Two dependents, NEITHER in the shipped Windows binary:
+    #   1. plist 1.8.0 -> tauri / tauri-codegen, which declare plist under
+    #      [target.'cfg(target_os = "macos")'.dependencies]
+    #   2. wayland-scanner 0.31.8 -- a Linux build script
+    # Korero ships NSIS/Windows only (tauri.conf.json bundle.targets), and the
+    # app has no untrusted-XML surface (NsReader is never constructed). Same
+    # rationale as the two gtk entries above. Revisit if a macOS or Linux build
+    # ever ships, or if plist becomes cross-platform in a future Tauri.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml via macOS-only plist + Linux wayland-scanner; not in the Windows NSIS binary" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml via macOS-only plist + Linux wayland-scanner; no untrusted-XML surface" },
 ]
 
 # ----- licenses -----------------------------------------------------------

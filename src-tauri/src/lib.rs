@@ -652,6 +652,18 @@ pub fn run(cli_args: CliArgs) {
             // without blank space. Users can resize freely; the window-state
             // plugin persists their preferred size on close and restores it on
             // the next launch, so the default only applies to first run.
+            // Kōrero (2026-07-25, SEC-1): keep the main webview pinned to the
+            // local origin. Tauri <= 2.11.0 does NOT enforce ACL on IPC from
+            // remote origins when no AppManifest is configured, so a single
+            // top-level navigation away from localhost would hand any remote
+            // page the full custom-command surface (~110 commands, including
+            // file export and the external-script typing tool). We cannot take
+            // the 2.11.1 fix yet -- [patch.crates-io] pins tauri-runtime /
+            // -wry / -utils to cjpais/tauri branch handy-2.10.2, which cannot
+            // satisfy tauri 2.11.1's own version requirements. This guard
+            // removes the precondition instead of the bug, and stays correct
+            // after the eventual bump. Links in rendered markdown are routed
+            // through the opener plugin, never through navigation.
             let mut win_builder =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("/".into()))
                     .title("Kōrero")
@@ -659,6 +671,19 @@ pub fn run(cli_args: CliArgs) {
                     .min_inner_size(720.0, 560.0)
                     .resizable(true)
                     .maximizable(true)
+                    .on_navigation(|url| {
+                        let allowed = match url.scheme() {
+                            "tauri" => true,
+                            "http" | "https" => url
+                                .host_str()
+                                .is_some_and(|h| h == "localhost" || h.ends_with(".localhost")),
+                            _ => false,
+                        };
+                        if !allowed {
+                            log::warn!("blocked navigation to non-local origin: {}", url);
+                        }
+                        allowed
+                    })
                     .visible(false);
 
             if let Some(data_dir) = portable::data_dir() {

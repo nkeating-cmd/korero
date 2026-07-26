@@ -1636,9 +1636,33 @@ pub fn get_bindings(app: &AppHandle) -> HashMap<String, ShortcutBinding> {
 pub fn get_stored_binding(app: &AppHandle, id: &str) -> ShortcutBinding {
     let bindings = get_bindings(app);
 
-    let binding = bindings.get(id).unwrap().clone();
-
-    binding
+    // Kōrero (2026-07-25, PANIC-1): this was `.unwrap()`, which aborted the
+    // process whenever settings.bindings lacked the requested id -- reachable
+    // via a downgrade to an older build, a hand-edited or truncated
+    // settings_store.json, a partially-written store after a crash, or a new
+    // binding id shipped before its settings migration runs. It is called from
+    // the shortcut layer, i.e. the callback context where a panic is least
+    // recoverable and hardest to diagnose. Degrade to an inert binding and log
+    // loudly instead: an unbound shortcut is a bug report, a panic is a
+    // support ticket with no information in it.
+    match bindings.get(id) {
+        Some(binding) => binding.clone(),
+        None => {
+            log::error!(
+                "no stored binding for id '{}' ({} bindings present) -- returning an inert \
+                 placeholder. Settings may be from an older build or partially written.",
+                id,
+                bindings.len()
+            );
+            ShortcutBinding {
+                id: id.to_string(),
+                name: id.to_string(),
+                description: String::new(),
+                default_binding: String::new(),
+                current_binding: String::new(),
+            }
+        }
+    }
 }
 
 pub fn get_history_limit(app: &AppHandle) -> usize {

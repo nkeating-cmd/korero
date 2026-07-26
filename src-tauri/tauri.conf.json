@@ -18,7 +18,10 @@
         "enable": true,
         "scope": {
           "allow": [
-            "**"
+            "$APPDATA/com.nkeating.korero/**",
+            "$AUDIO/**",
+            "$DOCUMENT/**",
+            "$DOWNLOAD/**"
           ],
           "requireLiteralLeadingDot": false
         }

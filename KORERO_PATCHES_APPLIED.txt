@@ -1,4 +1,4 @@
-﻿Korero narrow patches applied 2026-07-17 12:47:43
+﻿Korero narrow patches applied 2026-07-26 20:25:34
 
 SKIP  overlay.rs: overlay window dims (fresh + v1 source forms) -- already patched
 SKIP  AccessibilityOnboarding.tsx: drop HandyTextLogo render -- already patched

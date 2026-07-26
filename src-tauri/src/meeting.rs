@@ -1079,7 +1079,11 @@ fn resolve_tts_engine() -> Result<PathBuf, String> {
             candidates.push(exe_dir.join("resources").join("tts"));
         }
     }
-    candidates.push(PathBuf::from(r"C:\Users\nkeat\Tools\qwen-tts"));
+    // Kōrero (2026-07-25, PRIV-1): the developer's own machine path used to be
+    // the last-resort candidate here. It is personal data in a public MIT fork,
+    // and worse, it is an executable-lookup path: on any machine where that
+    // directory happened to exist with a .venv, this would run it. The env var,
+    // %APPDATA% and next-to-exe candidates above cover every real case.
 
     candidates
         .iter()
