@@ -7,3 +7,7 @@ build/
 # disk only for the GitHub release upload) and build logs are never tracked.
 release-staging/
 *.log
+
+# Korero (v1.26.0): local CodeGraph index -- machine-local cache,
+# regenerated on demand, never source.
+.codegraph/

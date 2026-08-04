@@ -36,6 +36,98 @@ use crate::meeting_capture::{
 
 const TARGET_RATE: usize = 16_000;
 
+/// Kōrero (v1.26.0): turn a raw WASAPI HRESULT into something a human can act
+/// on, and say what it means for the recording in progress.
+///
+/// WHY: Nic hit `System loopback read failed: Windows returned an error:
+/// 0x88890004` mid-session (screenshot, 2026-08-04). That code is
+/// AUDCLNT_E_DEVICE_INVALIDATED and it is COMMON on a laptop — plugging in
+/// headphones, a Bluetooth headset dropping, a dock connecting, or a driver
+/// reset all invalidate the default render device. The old message named the
+/// hex code and nothing else, so it read as an unexplained crash. Worse, the
+/// consequence went unstated: the "Others" stream is dead from that moment,
+/// the mic keeps recording, and the user only discovers the other half of the
+/// call is missing once the meeting is over.
+///
+/// The raw code is retained at the end of every message — it is what makes a
+/// log searchable, and dropping it would trade one diagnostic problem for
+/// another.
+fn describe_wasapi_error(raw: &str) -> String {
+    // Match on the hex code appearing anywhere in the crate's error text
+    // rather than parsing it — the `wasapi` crate's Display format is not a
+    // stable contract, but the code within it is.
+    let hay = raw.to_ascii_uppercase();
+    let known: &[(&str, &str)] = &[
+        (
+            "88890004",
+            "Your audio output device changed or was disconnected \
+             (headphones, Bluetooth, a dock, or a driver reset)",
+        ),
+        (
+            "88890001",
+            "Windows rejected the loopback audio format",
+        ),
+        (
+            "8889000A",
+            "Another application took exclusive control of the audio device",
+        ),
+        (
+            "88890003",
+            "The audio service is not running",
+        ),
+        (
+            "88890014",
+            "Windows Audio reported the endpoint was removed",
+        ),
+    ];
+    let cause = known
+        .iter()
+        .find(|(code, _)| hay.contains(code))
+        .map(|(_, text)| *text);
+
+    match cause {
+        Some(text) => format!(
+            "{text}, so system audio (Others) stopped being captured. \
+             Your microphone kept recording, so this meeting has the You side \
+             only from that point. Stop and restart the recording to capture \
+             both sides again. [{raw}]"
+        ),
+        None => format!(
+            "System audio (Others) capture stopped. Your microphone kept \
+             recording, so this meeting has the You side only from that point. \
+             [{raw}]"
+        ),
+    }
+}
+
+#[cfg(test)]
+mod wasapi_error_tests {
+    use super::describe_wasapi_error;
+
+    #[test]
+    fn names_the_device_invalidated_cause() {
+        // The exact string Nic saw, 2026-08-04.
+        let msg = describe_wasapi_error("Windows returned an error: 0x88890004");
+        assert!(msg.contains("output device changed"), "cause not named: {msg}");
+        assert!(msg.contains("microphone kept recording"), "consequence not stated: {msg}");
+        assert!(msg.contains("0x88890004"), "raw code dropped: {msg}");
+    }
+
+    #[test]
+    fn lowercase_hex_still_matches() {
+        assert!(describe_wasapi_error("err 0x88890004").contains("output device changed"));
+        assert!(describe_wasapi_error("ERR 0X88890004").contains("output device changed"));
+    }
+
+    #[test]
+    fn unknown_codes_still_state_the_consequence() {
+        let msg = describe_wasapi_error("Windows returned an error: 0xDEADBEEF");
+        assert!(msg.contains("microphone kept recording"), "{msg}");
+        assert!(msg.contains("0xDEADBEEF"), "raw code dropped: {msg}");
+        assert!(!msg.contains("output device changed"), "false attribution: {msg}");
+    }
+}
+
 /// Native WASAPI loopback capture of the default output device to a streaming
 /// 16 kHz mono WAV. Public surface mirrors `StreamCapture`.
 pub struct WasapiLoopback {
@@ -262,7 +354,9 @@ fn capture_worker(
         // harmless when no packets are pending.
         let _ = h_event.wait_for_event(200);
         if let Err(e) = capture_client.read_from_device_to_deque(&mut deque) {
-            abort_err = Some(format!("System loopback read failed: {e}"));
+            // Kōrero (v1.26.0): was `format!("System loopback read failed: {e}")`,
+            // which surfaced a bare HRESULT to the user. See describe_wasapi_error.
+            abort_err = Some(describe_wasapi_error(&e.to_string()));
             break;
         }
         // v1.19.0: while paused, still READ from the device (so the OS buffer

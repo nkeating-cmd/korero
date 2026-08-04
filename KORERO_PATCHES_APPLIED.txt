@@ -1,4 +1,4 @@
-﻿Korero narrow patches applied 2026-07-26 20:25:34
+﻿Korero narrow patches applied 2026-08-04 18:46:00
 
 SKIP  overlay.rs: overlay window dims (fresh + v1 source forms) -- already patched
 SKIP  AccessibilityOnboarding.tsx: drop HandyTextLogo render -- already patched
@@ -133,3 +133,4 @@ OK    bindings.ts: AppSettings meeting_recording_dir + meeting_export_dir fields
 OK    bindings.ts: meeting paths command stubs (pre-seed)
       Why: Korero (v1.24.0, paths): pre-seed the five storage commands (set recording dir, set export dir, dirs info, export-to-path, move recordings) so tsc succeeds before specta regenerates. meetingDirsInfo/meetingMoveRecordings return JSON strings (Result<string,string>) to avoid new type pre-seeds. Anchored on changeMuteWhileRecordingSetting (proven anchor).
 SKIP  actions.rs: skip post-processing on empty transcription (upstream cherry-pick) -- SkipIfPresent token already in file
+SKIP  translation.json: sidebar label 'Post Process' -> 'Post-processing' -- SkipIfPresent token already in file

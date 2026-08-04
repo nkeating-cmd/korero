@@ -55,10 +55,27 @@ import { useSettings } from "../../../hooks/useSettings";
  */
 
 // v1.17.0: one chronological transcript segment (matches the Rust TranscriptSeg).
+// NOTE: this is a LOCAL interface, not a specta-generated binding — so widening
+// the Rust struct needs a matching edit HERE and no bindings.ts stub patch.
 interface TranscriptSeg {
   source: string; // "you" | "others"
   text: string;
+  // Kōrero (v1.26.0): milliseconds from the start of the source file.
+  // ABSOLUTE — never rebased to a trim window, so it can be compared directly
+  // against a trim marker and used as an audio seek target.
+  //
+  // Optional in TypeScript ONLY because meetings recorded before v1.26.0 have
+  // segments without it on disk. `normaliseMeetings` defaults those to 0, so
+  // after load it is always a number. Do NOT write a window predicate against
+  // a possibly-undefined value: `undefined >= n` and `undefined <= n` are BOTH
+  // false in JS, so a bare comparison silently excludes every legacy segment.
+  start_ms?: number;
 }
+
+/// The one place a segment's offset is read. Kept as a helper so the
+/// legacy-default rule above cannot be forgotten at a call site.
+const segMs = (s: TranscriptSeg): number =>
+  typeof s.start_ms === "number" ? s.start_ms : 0;
 
 interface Meeting {
   id: string;
@@ -108,7 +125,16 @@ const normaliseMeetings = (parsed: unknown): Meeting[] => {
     processed: m.processed ?? "",
     processPrompt: m.processPrompt ?? "",
     // v1.17.0: older meetings predate the ordered transcript — default to [].
-    transcript: Array.isArray(m.transcript) ? m.transcript : [],
+    // Kōrero (v1.26.0): also default each ELEMENT's start_ms. This used to
+    // default the container only, which is a different thing: a pre-v1.26.0
+    // meeting would keep segments with `start_ms === undefined`, and because
+    // `undefined >= n` and `undefined <= n` are both false, ANY trim window
+    // would have excluded every segment of every legacy meeting — silently,
+    // with no error and no empty-state.
+    transcript: (Array.isArray(m.transcript) ? m.transcript : []).map((s) => ({
+      ...s,
+      start_ms: typeof s?.start_ms === "number" ? s.start_ms : 0,
+    })),
     youLabel: m.youLabel?.trim() || "You",
     othersLabel: m.othersLabel?.trim() || "Others",
     // Older imported meetings predate the flag — infer from the title so

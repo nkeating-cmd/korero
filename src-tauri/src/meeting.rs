@@ -66,6 +66,22 @@ pub struct MeetingResult {
 pub struct TranscriptSeg {
     pub source: String,
     pub text: String,
+    /// Kōrero (v1.26.0): milliseconds from the START OF THE FILE this segment
+    /// was decoded from. Capture-relative, never rebased to a trim window.
+    ///
+    /// This value has existed internally since v1.17.0 — `LiveSegment.start_ms`
+    /// drives the chronological sort in both `meeting_stop_capture` and
+    /// `meeting_transcribe_merge` — but every construction site destructured it
+    /// away with `|(_, s, t)|` and the frontend never saw it. That made the
+    /// ordered transcript untimed, which is why there was no way to say "the
+    /// meeting actually starts here".
+    ///
+    /// Absolute, not window-relative: a segment 12 s into the file reports
+    /// 12000 whether or not an in-point is set at 8 s. Anything else and a
+    /// trim filter comparing against the marker double-counts the offset.
+    ///
+    /// 0 for meetings recorded before v1.26.0 (the frontend defaults it).
+    pub start_ms: u64,
 }
 
 /// A meeting WAV on disk, for the recovery list.
@@ -156,6 +172,24 @@ impl LiveTranscript {
 /// Join the segments belonging to one source into a single string — the
 /// per-speaker view (`you` / `others`) the editing/re-transcribe UI expects.
 /// `log` is assumed already chronologically ordered.
+/// Kōrero (v1.26.0): the ONE place a `(start_ms, source, text)` log becomes the
+/// `TranscriptSeg` list the frontend sees.
+///
+/// Extracted so the offset-preservation contract has a single home and a test.
+/// Before this, two call sites built the vector inline with subtly different
+/// iterators (`.iter()` + `clone()` vs `.into_iter()`), and BOTH silently
+/// dropped the timestamp. A contract enforced in two places is a contract that
+/// gets half-changed.
+fn to_transcript_segs(log: &[(u64, &'static str, String)]) -> Vec<TranscriptSeg> {
+    log.iter()
+        .map(|(ms, s, t)| TranscriptSeg {
+            source: s.to_string(),
+            text: t.clone(),
+            start_ms: *ms,
+        })
+        .collect()
+}
+
 fn join_log(log: &[(u64, &'static str, String)], source: &str) -> String {
     let mut out = String::new();
     for (_, _src, text) in log.iter().filter(|(_, s, _)| *s == source) {
@@ -585,6 +619,13 @@ pub async fn meeting_start_capture(
             struct LiveEvent {
                 source: &'static str,
                 text: String,
+                /// Kōrero (v1.26.0): the live path dropped the offset too, so
+                /// segments arriving DURING a meeting were untimed while the
+                /// same segments after a re-transcribe were timed. That
+                /// inconsistency would have made a trim window behave
+                /// differently before and after a restart. Field name matches
+                /// TranscriptSeg so the frontend can treat them alike.
+                start_ms: u64,
             }
             while let Ok(seg) = seg_rx.recv() {
                 match tm.transcribe(seg.samples) {
@@ -606,6 +647,7 @@ pub async fn meeting_start_capture(
                             LiveEvent {
                                 source: seg.source,
                                 text,
+                                start_ms: seg.start_ms,
                             },
                         );
                     }
@@ -828,13 +870,7 @@ pub async fn meeting_stop_capture(
     }
     seg_log.sort_by_key(|(ms, _, _)| *ms);
 
-    let segments: Vec<TranscriptSeg> = seg_log
-        .iter()
-        .map(|(_, s, t)| TranscriptSeg {
-            source: s.to_string(),
-            text: t.clone(),
-        })
-        .collect();
+    let segments: Vec<TranscriptSeg> = to_transcript_segs(&seg_log);
     let you = join_log(&seg_log, "you");
     let others = join_log(&seg_log, "others");
 
@@ -996,13 +1032,10 @@ pub async fn meeting_transcribe_merge(
         seg_log.extend(segment_wav_offline(&tm, p, "others").await);
     }
     seg_log.sort_by_key(|(ms, _, _)| *ms);
-    Ok(seg_log
-        .into_iter()
-        .map(|(_, s, t)| TranscriptSeg {
-            source: s.to_string(),
-            text: t,
-        })
-        .collect())
+    // Kōrero (v1.26.0): offsets survive here too. On a re-transcribe of BOTH
+    // streams they are file-relative per stream and the two files share t=0,
+    // so they stay directly comparable -- the property a trim window needs.
+    Ok(to_transcript_segs(&seg_log))
 }
 
 /// List meeting WAVs saved on disk, newest first (for recovery).
@@ -2313,6 +2346,54 @@ async fn run_test_capture(app: &AppHandle, secs: u32) -> Result<MeetingTestResul
 // v1.24.0: first unit tests for the meeting.rs text guards — this logic has
 // produced two real field bugs ("$3.50" reflow; the FENZ n-gram decoder loop),
 // so every collapse behaviour is pinned here.
+#[cfg(test)]
+mod transcript_offset_tests {
+    use super::{to_transcript_segs, TranscriptSeg};
+
+    fn log() -> Vec<(u64, &'static str, String)> {
+        vec![
+            (0, "you", "kia ora".to_string()),
+            (4_000, "others", "morning".to_string()),
+            (61_500, "you", "right, agenda".to_string()),
+        ]
+    }
+
+    /// The regression this whole feature rests on. Both construction sites used
+    /// to destructure the offset away with `|(_, s, t)|`; if anyone does that
+    /// again, every trim window silently matches nothing.
+    #[test]
+    fn offsets_survive_conversion() {
+        let segs = to_transcript_segs(&log());
+        assert_eq!(
+            segs.iter().map(|s| s.start_ms).collect::<Vec<_>>(),
+            vec![0, 4_000, 61_500],
+            "start_ms was dropped or reordered"
+        );
+        assert_eq!(segs[2].text, "right, agenda");
+        assert_eq!(segs[1].source, "others");
+    }
+
+    /// A trim window is a half-open comparison against ABSOLUTE offsets. If a
+    /// future change ever rebases offsets to the window, this is what breaks:
+    /// the caller would subtract the in-point twice.
+    #[test]
+    fn absolute_offsets_make_a_window_selectable() {
+        let segs = to_transcript_segs(&log());
+        let (in_ms, out_ms) = (4_000u64, 60_000u64);
+        let kept: Vec<&TranscriptSeg> = segs
+            .iter()
+            .filter(|s| s.start_ms >= in_ms && s.start_ms <= out_ms)
+            .collect();
+        assert_eq!(kept.len(), 1, "expected only the 4.0s segment in [4s, 60s]");
+        assert_eq!(kept[0].text, "morning");
+    }
+
+    #[test]
+    fn empty_log_is_not_a_panic() {
+        assert!(to_transcript_segs(&[]).is_empty());
+    }
+}
+
 #[cfg(test)]
 mod text_guard_tests {
     use super::*;
