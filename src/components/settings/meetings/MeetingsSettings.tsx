@@ -28,6 +28,8 @@ import {
   Volume2,
   FolderOpen,
   Search,
+  // Kōrero (v1.27.0): trim markers UI.
+  Scissors,
 } from "lucide-react";
 import { toast } from "sonner";
 import { confirmDestructive } from "../../ui/confirmToast";
@@ -101,6 +103,27 @@ interface Meeting {
   // v1.17.0: imported/recovered files have exactly ONE audio source, so the
   // "system audio not captured" warning doesn't apply to them.
   imported: boolean;
+  // Kōrero (v1.27.0): TRIM MARKERS — a view window over `transcript`, in the
+  // same file-absolute milliseconds as `TranscriptSeg.start_ms`. `undefined`
+  // on either side means "unbounded that way"; both undefined = untrimmed.
+  //
+  // These are MARKERS, not an edit: nothing is ever removed from `transcript`
+  // and the audio on disk is untouched, so a trim is always reversible. That
+  // is the whole design — see `visibleSegs` for the single read-side filter,
+  // and the warning attached to it about never persisting a filtered array.
+  //
+  // No store migration is needed: the meetings store is opaque JSON and
+  // `normaliseMeetings` spreads `...m`, so absent keys simply stay absent.
+  trimStartMs?: number;
+  trimEndMs?: number;
+  // Kōrero (v1.27.0): the trim window that was in force when `processed` was
+  // generated, as `${trimStartMs ?? ""}:${trimEndMs ?? ""}`. `processed` is a
+  // MATERIALISED string — once written, no read-side filter can retroactively
+  // apply a trim to it — so the only honest thing to do when the window moves
+  // is to tell the user the notes are stale. Absent on meetings whose notes
+  // predate v1.27.0; those were necessarily generated untrimmed, so callers
+  // default it to the untrimmed key rather than treating it as "unknown".
+  processedTrimKey?: string;
 }
 
 interface RecordingFile {
@@ -204,6 +227,70 @@ const combine = (
     .join("\n\n");
 };
 
+// ---- trim window (Kōrero v1.27.0) ----------------------------------------
+// A trim is a VIEW, not an edit. `transcript` always holds every segment ever
+// transcribed; these helpers are the ONLY place the window is applied.
+//
+// READ-SIDE ONLY. Never feed the output of `visibleSegs` back into
+// `setMeetings`, `patchMeeting` or the debounced `meetingsStoreSave` effect.
+// The store round-trips whatever is in state, so persisting a filtered array
+// would delete the hidden text from disk and make the trim irreversible —
+// exactly the failure this marker design exists to avoid. Everything that
+// WRITES a meeting must carry the full `m.transcript`.
+
+/// The single window predicate. Shared by `visibleSegs` (which decides what
+/// leaves the app) and the renderer (which decides what is dimmed), so the two
+/// can never disagree about whether a given segment is in the window.
+const segInWindow = (m: Meeting, s: TranscriptSeg): boolean =>
+  (m.trimStartMs == null || segMs(s) >= m.trimStartMs) &&
+  (m.trimEndMs == null || segMs(s) <= m.trimEndMs);
+
+/// Every consumer that turns a transcript into text — copy, export, search,
+/// post-processing — reads through here instead of touching `m.transcript`.
+const visibleSegs = (m: Meeting): TranscriptSeg[] =>
+  (m.transcript ?? []).filter((s) => segInWindow(m, s));
+
+const isTrimmed = (m: Meeting): boolean =>
+  m.trimStartMs != null || m.trimEndMs != null;
+
+const hiddenCount = (m: Meeting): number =>
+  (m.transcript?.length ?? 0) - visibleSegs(m).length;
+
+/// Identity of the current window, used to detect notes that were generated
+/// under a DIFFERENT window. Untrimmed is ":" (not "") so a legacy meeting can
+/// be defaulted to it unambiguously.
+const trimKeyOf = (m: {
+  trimStartMs?: number;
+  trimEndMs?: number;
+}): string => `${m.trimStartMs ?? ""}:${m.trimEndMs ?? ""}`;
+
+/// `processed` is materialised text, so it cannot be filtered after the fact —
+/// it can only be invalidated. Notes with no recorded key predate v1.27.0 and
+/// were therefore generated untrimmed.
+const notesAreStale = (m: Meeting): boolean =>
+  m.processed.trim() !== "" && (m.processedTrimKey ?? ":") !== trimKeyOf(m);
+
+/// mm:ss.s. One decimal — enough to land on a segment boundary, without
+/// implying millisecond precision the user cannot actually aim at.
+const fmtTrimMs = (ms: number): string => {
+  const total = Math.max(0, ms) / 1000;
+  const mins = Math.floor(total / 60);
+  const secs = total - mins * 60;
+  return `${mins}:${secs.toFixed(1).padStart(4, "0")}`;
+};
+
+/// Parse "m:ss.s", "mm:ss" or plain seconds ("93.5"). Returns null for anything
+/// else so the caller can show ONE inline message — coercing junk to 0 would
+/// silently move the in-point to the start of the meeting.
+const parseTrimInput = (raw: string): number | null => {
+  const t = raw.trim();
+  if (!t) return null;
+  const mmss = /^(\d+):([0-5]?\d(?:\.\d+)?)$/.exec(t);
+  if (mmss) return Math.round((Number(mmss[1]) * 60 + Number(mmss[2])) * 1000);
+  if (/^\d+(?:\.\d+)?$/.test(t)) return Math.round(Number(t) * 1000);
+  return null;
+};
+
 const baseName = (p: string) => p.replace(/\\/g, "/").split("/").pop() || p;
 
 export const MeetingsSettings: React.FC = () => {
@@ -255,6 +342,12 @@ export const MeetingsSettings: React.FC = () => {
   const [feedback, setFeedback] = useState("");
   const [refining, setRefining] = useState(false);
   const [editingSegIdx, setEditingSegIdx] = useState<number | null>(null);
+  // Kōrero (v1.27.0): drafts for the mm:ss.s in/out fields. Held separately
+  // from the markers so a half-typed "1:" never becomes a live trim, and so an
+  // invalid entry can be rejected with a message instead of being coerced.
+  const [trimInDraft, setTrimInDraft] = useState("");
+  const [trimOutDraft, setTrimOutDraft] = useState("");
+  const [trimError, setTrimError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [systemCaptured, setSystemCaptured] = useState<boolean | null>(null);
   const [busy, setBusy] = useState<null | "transcribe" | "post" | "both">(null);
@@ -343,6 +436,20 @@ export const MeetingsSettings: React.FC = () => {
     setEditingSegIdx(null);
     setFeedback("");
   }, [activeId]);
+
+  // Kōrero (v1.27.0): keep the in/out fields showing the CURRENT window. They
+  // re-seed from the markers (not just on meeting change) because the segment
+  // "Start here" / "End here" buttons also move the window — without this the
+  // fields would keep showing a stale time after a one-click trim.
+  useEffect(() => {
+    setTrimInDraft(
+      active?.trimStartMs != null ? fmtTrimMs(active.trimStartMs) : "",
+    );
+    setTrimOutDraft(
+      active?.trimEndMs != null ? fmtTrimMs(active.trimEndMs) : "",
+    );
+    setTrimError(null);
+  }, [activeId, active?.trimStartMs, active?.trimEndMs]);
   const currentModel = settings?.selected_model ?? "";
 
   // v1.20.0: the active POST-PROCESSING provider/model (distinct from the
@@ -630,6 +737,80 @@ export const MeetingsSettings: React.FC = () => {
   const patchMeeting = (id: string, patch: Partial<Meeting>) =>
     setMeetings((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
 
+  // ---- trim markers (Kōrero v1.27.0) -------------------------------------
+  // All three writers patch ONLY the marker fields. `transcript` is never
+  // passed, so there is no path from the trim UI to a shortened transcript.
+
+  /// Move one edge of the window. Rejects an inverted result rather than
+  /// accepting a window that would hide the entire meeting.
+  const setTrimPoint = (which: "start" | "end", ms: number) => {
+    if (!active) return;
+    const start = which === "start" ? ms : active.trimStartMs;
+    const end = which === "end" ? ms : active.trimEndMs;
+    if (start != null && end != null && end <= start) {
+      toast.error(
+        which === "start"
+          ? "That start is at or after the current end point — set the end further down first."
+          : "That end is at or before the current start point — set the start higher up first.",
+      );
+      return;
+    }
+    patchMeeting(
+      active.id,
+      which === "start" ? { trimStartMs: ms } : { trimEndMs: ms },
+    );
+    setTrimError(null);
+  };
+
+  /// One click back to the whole meeting. Nothing to restore — the segments
+  /// never left `transcript`, only the markers did.
+  const clearTrim = () => {
+    if (!active) return;
+    patchMeeting(active.id, { trimStartMs: undefined, trimEndMs: undefined });
+    setTrimError(null);
+    toast.success("Trim cleared — showing the whole meeting.");
+  };
+
+  /// Commit both mm:ss.s fields together. Validated as a PAIR, because the
+  /// only invalid state (end at or before start) spans the two of them.
+  const commitTrimInputs = () => {
+    if (!active) return;
+    const inRaw = trimInDraft.trim();
+    const outRaw = trimOutDraft.trim();
+    // Kōrero (v1.27.0): parsed with explicit early returns rather than a
+    // ternary, so each value narrows to `number | undefined` — `undefined`
+    // means "no bound", `null` from the parser means "not a timecode", and the
+    // marker fields must never be able to hold the latter.
+    let startMs: number | undefined;
+    if (inRaw) {
+      const parsed = parseTrimInput(inRaw);
+      if (parsed == null) {
+        setTrimError(
+          "Start must be mm:ss.s (e.g. 1:05.5) or seconds (e.g. 65.5).",
+        );
+        return;
+      }
+      startMs = parsed;
+    }
+    let endMs: number | undefined;
+    if (outRaw) {
+      const parsed = parseTrimInput(outRaw);
+      if (parsed == null) {
+        setTrimError("End must be mm:ss.s (e.g. 4:30.0) or seconds (e.g. 270).");
+        return;
+      }
+      endMs = parsed;
+    }
+    if (startMs != null && endMs != null && endMs <= startMs) {
+      setTrimError(
+        "The end must come after the start — that window would hide the whole meeting.",
+      );
+      return;
+    }
+    setTrimError(null);
+    patchMeeting(active.id, { trimStartMs: startMs, trimEndMs: endMs });
+  };
+
   const titleOf = (m: Meeting) =>
     m.title.trim() || `Meeting · ${new Date(m.createdAt).toLocaleString()}`;
 
@@ -643,11 +824,14 @@ export const MeetingsSettings: React.FC = () => {
 
   // v1.22.0: case-insensitive search across title + transcript + processed notes.
   const searchQ = search.trim().toLowerCase();
+  // Kōrero (v1.27.0): search reads through `visibleSegs`, so a trimmed-away
+  // aside cannot resurface a meeting the user has deliberately narrowed. Search
+  // is a read path — the full transcript is still on the record, untouched.
   const filteredMeetings = searchQ
     ? meetings.filter((m) =>
-        `${titleOf(m)} ${m.you} ${m.others} ${
-          m.transcript?.map((s) => s.text).join(" ") ?? ""
-        } ${m.processed}`
+        `${titleOf(m)} ${m.you} ${m.others} ${visibleSegs(m)
+          .map((s) => s.text)
+          .join(" ")} ${m.processed}`
           .toLowerCase()
           .includes(searchQ),
       )
@@ -670,10 +854,20 @@ export const MeetingsSettings: React.FC = () => {
       others: joinPart(first.others, second.others),
       // v1.17.0: concatenate the two ordered transcripts (first part then
       // second) so the merged entry keeps the interleaved conversation view.
+      //
+      // Kōrero (v1.27.0): note this is the FULL transcript of both parts, not
+      // `visibleSegs` — merge is a WRITE path, and filtering here would burn
+      // the hidden text of both originals into a new record permanently.
       transcript: [
         ...(first.transcript ?? []),
         ...(second.transcript ?? []),
       ],
+      // Kōrero (v1.27.0): the merged entry is deliberately UNTRIMMED — the
+      // marker fields are omitted. `start_ms` is file-absolute, and the two
+      // parts come from two different files, so the second part's offsets
+      // restart from 0 and overlap the first's. Carrying either window across
+      // would hide arbitrary segments of the wrong part. Same reasoning for
+      // `processedTrimKey`: the joined notes belong to no single window.
       youLabel: first.youLabel,
       othersLabel: first.othersLabel,
       imported: first.imported && second.imported,
@@ -692,6 +886,14 @@ export const MeetingsSettings: React.FC = () => {
     toast.success(
       "Merged into a new meeting — both originals kept. Re-process to get one combined summary.",
     );
+    // Kōrero (v1.27.0): say it out loud when a trim was dropped. Silently
+    // losing a window would look like the merge had resurrected deleted text.
+    if (isTrimmed(first) || isTrimmed(second)) {
+      toast.message("Trim cleared on the merged meeting.", {
+        description:
+          "The two parts come from different audio files, so their timings are no longer comparable. The originals keep their own trims.",
+      });
+    }
   };
 
   // ---- live query (Phase C, v1.14.0) ---------------------------------------
@@ -911,7 +1113,15 @@ export const MeetingsSettings: React.FC = () => {
     try {
       const r = await commands.meetingPostProcess(text, customPrompt.trim());
       if (r.status !== "ok") throw new Error(r.error);
-      patchMeeting(m.id, { processed: r.data, processPrompt: customPrompt.trim() });
+      // Kōrero (v1.27.0): stamp the window these notes were generated under.
+      // `m` is the meeting as it was when the run STARTED, which is the window
+      // whose text was actually sent to the model — if the user moved the trim
+      // mid-run, the notes really are stale and should say so.
+      patchMeeting(m.id, {
+        processed: r.data,
+        processPrompt: customPrompt.trim(),
+        processedTrimKey: trimKeyOf(m),
+      });
     } finally {
       // The persisted `processed` now renders; drop the transient preview.
       setLiveProcessed("");
@@ -933,15 +1143,24 @@ export const MeetingsSettings: React.FC = () => {
 
   const onPostProcess = async () => {
     if (!active || busy) return;
+    // Kōrero (v1.27.0): `combine` is a pure formatter — it renders whatever
+    // array it is handed — so the window has to be applied HERE, at the call
+    // site, or the model would summarise segments the user has hidden.
     const text = combine(
       active.you,
       active.others,
       active.youLabel,
       active.othersLabel,
-      active.transcript,
+      visibleSegs(active),
     );
     if (!text.trim()) {
-      toast.message("Nothing to post-process — transcribe first.");
+      // Kōrero (v1.27.0): distinguish "no transcript" from "the trim hid it
+      // all" — otherwise a user who over-trimmed is told to transcribe again.
+      toast.message(
+        isTrimmed(active)
+          ? "The current trim hides every segment — widen or clear it first."
+          : "Nothing to post-process — transcribe first.",
+      );
       return;
     }
     setBusy("post");
@@ -959,12 +1178,17 @@ export const MeetingsSettings: React.FC = () => {
     setBusy("both");
     try {
       const { you, others, transcript } = await doTranscribe(active);
+      // Kōrero (v1.27.0): the freshly transcribed segments are not on `active`
+      // yet (that setState hasn't flushed), so the window is applied to a
+      // throwaway meeting-shaped value carrying the SAME markers. `start_ms`
+      // is file-absolute and the audio has not changed, so a marker set before
+      // the re-transcribe still points at the same moment afterwards.
       const text = combine(
         you,
         others,
         active.youLabel,
         active.othersLabel,
-        transcript,
+        visibleSegs({ ...active, transcript }),
       );
       if (!text.trim()) {
         toast.message("No speech found to post-process.");
@@ -1033,6 +1257,10 @@ export const MeetingsSettings: React.FC = () => {
         imported: true,
         processed,
         processPrompt,
+        // Kōrero (v1.27.0): a brand-new import is untrimmed, so its notes were
+        // generated under the untrimmed window. Stamping it here means the
+        // stale banner appears the moment the user first trims THIS meeting.
+        processedTrimKey: ":",
         createdAt: Date.now(),
         systemCaptured: false,
         micPath: importPath,
@@ -1053,9 +1281,20 @@ export const MeetingsSettings: React.FC = () => {
   // ---- copy / export / delete -------------------------------------------
   const copyActive = async () => {
     if (!active) return;
+    // Kōrero (v1.27.0): copy the WINDOW, not the record. `processed` is
+    // appended verbatim because it is materialised text — it cannot be
+    // filtered here; the stale-notes banner above it carries that warning
+    // instead, and copy is deliberately not blocked by it.
+    const body = combine(
+      active.you,
+      active.others,
+      active.youLabel,
+      active.othersLabel,
+      visibleSegs(active),
+    );
     const text = active.processed.trim()
-      ? `${combine(active.you, active.others, active.youLabel, active.othersLabel, active.transcript)}\n\n--- Processed ---\n${active.processed.trim()}`
-      : combine(active.you, active.others, active.youLabel, active.othersLabel, active.transcript);
+      ? `${body}\n\n--- Processed ---\n${active.processed.trim()}`
+      : body;
     try {
       await writeText(text);
       setCopied(true);
@@ -1206,16 +1445,39 @@ export const MeetingsSettings: React.FC = () => {
     const parts = [
       `# ${titleOf(active)}`,
       "",
+      // Kōrero (v1.27.0): export the WINDOW. An exported file leaves the app
+      // and gets shared, so this is the consumer where honouring the trim
+      // matters most.
       combine(
         active.you,
         active.others,
         active.youLabel,
         active.othersLabel,
-        active.transcript,
+        visibleSegs(active),
       ) || "(no transcript)",
     ];
+    // Kōrero (v1.27.0): record the window in the exported file so a reader
+    // knows they are holding an excerpt rather than the whole meeting.
+    if (isTrimmed(active)) {
+      parts.push(
+        "",
+        `_Trimmed excerpt: ${
+          active.trimStartMs != null ? fmtTrimMs(active.trimStartMs) : "start"
+        } – ${
+          active.trimEndMs != null ? fmtTrimMs(active.trimEndMs) : "end"
+        } · ${hiddenCount(active)} segment(s) hidden._`,
+      );
+    }
     if (active.processed.trim()) {
       parts.push("", "## Processed", "", active.processed.trim());
+      // Notes are materialised text — flag it rather than pretend the trim
+      // applied to them.
+      if (notesAreStale(active)) {
+        parts.push(
+          "",
+          "_These notes were generated before the current trim — re-process to update them._",
+        );
+      }
     }
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
     const base = (active.title.trim() || "meeting").replace(/[\\/:*?"<>|]/g, "_");
@@ -1969,6 +2231,96 @@ export const MeetingsSettings: React.FC = () => {
                 />
               )}
 
+              {/* Kōrero (v1.27.0): trim status bar. Shown ONLY when a window is
+                  set, so an untrimmed meeting carries no extra chrome — the
+                  entry point is the per-segment "Start here" / "End here"
+                  buttons below. Everything here is reversible: the bar's own
+                  headline button clears the window in one click. */}
+              {isTrimmed(active) && (
+                <div className="glass-card-thin space-y-2 border-l-2 border-aurora-cyan/50 px-3 py-2">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <button
+                      type="button"
+                      onClick={clearTrim}
+                      aria-label={`Clear trim, ${hiddenCount(active)} segments hidden`}
+                      title="Clear the trim and show the whole meeting again"
+                      className="inline-flex items-center gap-1.5 rounded-md bg-aurora-cyan/15 px-2.5 py-1 text-xs font-medium text-aurora-cyan transition-colors hover:bg-aurora-cyan/25"
+                    >
+                      <Scissors size={12} />
+                      Trimmed · {hiddenCount(active)} hidden
+                      <X size={12} />
+                    </button>
+                    <span className="font-mono text-xs text-text-muted">
+                      {active.trimStartMs != null
+                        ? fmtTrimMs(active.trimStartMs)
+                        : "0:00.0"}{" "}
+                      –{" "}
+                      {/* An unset end is an em dash, not "0:00" — the window
+                          runs to the end of the meeting. */}
+                      {active.trimEndMs != null
+                        ? fmtTrimMs(active.trimEndMs)
+                        : "—"}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="flex flex-col gap-0.5">
+                      <label
+                        htmlFor="korero-trim-in"
+                        className="text-[11px] uppercase tracking-wider text-text-subtle"
+                      >
+                        Start (mm:ss.s)
+                      </label>
+                      <input
+                        id="korero-trim-in"
+                        type="text"
+                        inputMode="decimal"
+                        value={trimInDraft}
+                        placeholder="0:00.0"
+                        onChange={(e) => setTrimInDraft(e.target.value)}
+                        onBlur={commitTrimInputs}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitTrimInputs();
+                        }}
+                        aria-invalid={trimError !== null}
+                        className="w-24 rounded border border-glass-border bg-glass-surface-thin px-2 py-1 font-mono text-xs text-text focus:outline-none"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-0.5">
+                      <label
+                        htmlFor="korero-trim-out"
+                        className="text-[11px] uppercase tracking-wider text-text-subtle"
+                      >
+                        End (mm:ss.s)
+                      </label>
+                      <input
+                        id="korero-trim-out"
+                        type="text"
+                        inputMode="decimal"
+                        value={trimOutDraft}
+                        placeholder="end"
+                        onChange={(e) => setTrimOutDraft(e.target.value)}
+                        onBlur={commitTrimInputs}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitTrimInputs();
+                        }}
+                        aria-invalid={trimError !== null}
+                        className="w-24 rounded border border-glass-border bg-glass-surface-thin px-2 py-1 font-mono text-xs text-text focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                  {trimError && (
+                    <p role="alert" className="text-xs text-pill-urgent">
+                      {trimError}
+                    </p>
+                  )}
+                  <p className="text-xs text-text-subtle">
+                    Trimming hides segments from copy, export, search and
+                    post-processing. The audio file is not changed and this is
+                    fully reversible.
+                  </p>
+                </div>
+              )}
+
               {/* Transcript — v1.14.5: speaker tags are editable (pencil), so
                   "Others" can become "Gerard" etc. Labels persist with the
                   meeting and flow into copy/export/post-processing.
@@ -2053,55 +2405,108 @@ export const MeetingsSettings: React.FC = () => {
               {/* v1.17.0: chronological, interleaved transcript — both speakers
                   in the order they actually spoke. */}
               {active.transcript && active.transcript.length > 0 && (
-                <div className="space-y-1.5">
+                <div className="space-y-0.5">
+                  {/* Kōrero (v1.27.0): map the UNFILTERED transcript. `i` is
+                      the index `saveSegment` writes back to, so a `.filter()`
+                      before this `.map()` would renumber the rows and make an
+                      inline edit land on the wrong segment. Excluded rows are
+                      marked with a class instead — they stay in the DOM,
+                      readable and in the tab order, which is also the point:
+                      you must be able to see what you have hidden. */}
                   {active.transcript.map((s, i) => {
                     if (!s.text.trim() && editingSegIdx !== i) return null;
                     const label =
                       s.source === "you" ? active.youLabel : active.othersLabel;
+                    const excluded = !segInWindow(active, s);
                     return (
-                      <p
+                      <div
                         key={i}
-                        className="group text-sm text-text-muted leading-relaxed"
+                        // Kōrero (v1.27.0): 3-column grid — speaker gutter,
+                        // text, actions. The gutter gives the speaker a stable
+                        // POSITION rather than only a hue (colour alone fails
+                        // for colour-blind readers), and the fixed actions
+                        // column means revealing the buttons no longer reflows
+                        // the line under the pointer.
+                        className={`group grid grid-cols-[7rem_minmax(0,1fr)_auto] items-start gap-x-2 rounded border-l-2 py-0.5 pl-2 text-sm leading-relaxed ${
+                          excluded
+                            ? "border-text-subtle/40 opacity-40"
+                            : "border-transparent"
+                        }`}
+                        // Excluded rows are dimmed, NOT hidden — they are still
+                        // exposed to assistive tech, because "what did I cut?"
+                        // is the question the trim UI has to keep answerable.
+                        aria-hidden="false"
+                        title={
+                          excluded
+                            ? "Outside the current trim — hidden from copy, export, search and post-processing, but still on the record."
+                            : undefined
+                        }
                       >
                         <span
-                          className={`font-semibold ${
+                          className={`truncate font-semibold ${
                             s.source === "you"
                               ? "text-aurora-cyan"
                               : "text-aurora-purple"
                           }`}
                         >
                           {label}:
-                        </span>{" "}
-                        {editingSegIdx === i ? (
-                          <input
-                            autoFocus
-                            defaultValue={s.text.trim()}
-                            onBlur={(e) => saveSegment(i, e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter")
-                                saveSegment(
-                                  i,
-                                  (e.target as HTMLInputElement).value,
-                                );
-                              else if (e.key === "Escape")
-                                setEditingSegIdx(null);
-                            }}
-                            className="w-full rounded border border-aurora-cyan/50 bg-glass-surface-thin px-1.5 py-0.5 text-sm text-text focus:outline-none"
-                          />
-                        ) : (
-                          <>
-                            {s.text.trim()}
-                            <button
-                              type="button"
-                              onClick={() => setEditingSegIdx(i)}
-                              title="Edit this line"
-                              className="ml-1 align-middle opacity-0 transition-opacity group-hover:opacity-100 text-text-subtle hover:text-aurora-cyan"
-                            >
-                              <Pencil size={11} />
-                            </button>
-                          </>
-                        )}
-                      </p>
+                        </span>
+                        <div className="min-w-0 text-text-muted">
+                          {editingSegIdx === i ? (
+                            <input
+                              autoFocus
+                              defaultValue={s.text.trim()}
+                              onBlur={(e) => saveSegment(i, e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter")
+                                  saveSegment(
+                                    i,
+                                    (e.target as HTMLInputElement).value,
+                                  );
+                                else if (e.key === "Escape")
+                                  setEditingSegIdx(null);
+                              }}
+                              className="w-full rounded border border-aurora-cyan/50 bg-glass-surface-thin px-1.5 py-0.5 text-sm text-text focus:outline-none"
+                            />
+                          ) : (
+                            <span className="whitespace-pre-wrap break-words">
+                              {s.text.trim()}
+                            </span>
+                          )}
+                        </div>
+                        {/* Kōrero (v1.27.0): revealed on hover AND on keyboard
+                            focus within the row — hover alone would make these
+                            controls unreachable without a mouse. */}
+                        <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100">
+                          <button
+                            type="button"
+                            onClick={() => setTrimPoint("start", segMs(s))}
+                            aria-label={`Start the trim at this line (${fmtTrimMs(segMs(s))})`}
+                            title={`Start here — hide everything before ${fmtTrimMs(segMs(s))}`}
+                            className="rounded px-1 text-[11px] text-text-subtle transition-colors hover:text-aurora-cyan"
+                          >
+                            Start here
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setTrimPoint("end", segMs(s))}
+                            aria-label={`End the trim at this line (${fmtTrimMs(segMs(s))})`}
+                            title={`End here — hide everything after ${fmtTrimMs(segMs(s))}`}
+                            className="rounded px-1 text-[11px] text-text-subtle transition-colors hover:text-aurora-cyan"
+                          >
+                            End here
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingSegIdx(i)}
+                            aria-label="Edit this line"
+                            title="Edit this line"
+                            className="rounded px-0.5 text-text-subtle transition-colors hover:text-aurora-cyan"
+                          >
+                            <Pencil size={11} />
+                          </button>
+                        </div>
+                      </div>
                     );
                   })}
                 </div>
@@ -2276,11 +2681,20 @@ export const MeetingsSettings: React.FC = () => {
                         {/* v1.21.0: render a spoken audio brief of the notes via
                             the local Qwen3-TTS engine. GPU-bound + slow (minutes);
                             the button shows a long rendering state. */}
+                        {/* Kōrero (v1.27.0): blocked while the notes are stale.
+                            Copy and export only cost a paste, but an audio
+                            brief is a multi-minute GPU render — spending that
+                            on text that predates the current trim is the one
+                            case worth stopping outright. */}
                         <button
                           type="button"
                           onClick={genAudioBrief}
-                          disabled={briefBusy}
-                          title="Generate a spoken audio brief (local Qwen3-TTS, on-device)"
+                          disabled={briefBusy || notesAreStale(active)}
+                          title={
+                            notesAreStale(active)
+                              ? "These notes were generated before the current trim — re-process to update them before rendering audio."
+                              : "Generate a spoken audio brief (local Qwen3-TTS, on-device)"
+                          }
                           className="flex items-center gap-1 text-text-subtle hover:text-aurora-cyan transition-colors disabled:opacity-50"
                         >
                           {briefBusy ? (
@@ -2315,6 +2729,22 @@ export const MeetingsSettings: React.FC = () => {
                         )}
                       </div>
                     </div>
+                    {/* Kōrero (v1.27.0): `processed` is a materialised string —
+                        there is no read-side filter that can retroactively
+                        apply a trim to it, so the only honest option is to say
+                        the notes are out of date. Deliberately a WARNING, not a
+                        block: copy and export still work, because a stale
+                        summary is often still the thing the user wants. */}
+                    {notesAreStale(active) && (
+                      <p
+                        role="status"
+                        className="flex items-start gap-1.5 rounded-md border border-pill-warning/40 bg-pill-warning/10 px-2.5 py-1.5 text-xs text-pill-warning"
+                      >
+                        <TriangleAlert size={13} className="mt-px shrink-0" />
+                        These notes were generated before the current trim —
+                        re-process to update them.
+                      </p>
+                    )}
                     {editingNotes ? (
                       <div className="space-y-2">
                         <textarea

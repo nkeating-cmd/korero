@@ -574,3 +574,57 @@ body::before {
 }
 .md-body th { background: rgba(255,255,255,0.06); color: var(--color-text); font-weight: 600; }
 .md-body hr { border: none; border-top: 1px solid var(--color-glass-border); margin: 0.8em 0; }
+
+
+/* ==========================================================================
+   Korero (v1.27.0): global keyboard focus ring.
+
+   WHY: the 2026-07-07 UX audit called accessibility "a blocker for public
+   distribution", and MeetingsSettings.tsx alone carried 10 occurrences of
+   `focus:outline-none` against ZERO occurrences of `focus-visible`. Every one
+   of those strips the browser's default ring and puts nothing back, so a
+   keyboard user cannot see where they are. That was tolerable while every
+   action had a hover twin; it stops being tolerable now that the trim controls
+   ("Start here" / "End here") are revealed by focus as well as hover.
+
+   THE CASCADE GOTCHA that makes this rule look over-engineered:
+   Tailwind's `outline-none` does NOT emit `outline: none`. It emits
+   `outline: 2px solid transparent; outline-offset: 2px` -- a real outline that
+   happens to be invisible. A plain `:focus-visible { outline: ... }` rule
+   therefore LOSES to it on specificity-and-order in the compiled sheet. Hence
+   `!important`. `:where()` keeps the selector at zero specificity so any
+   component that genuinely needs a bespoke ring can still override it with an
+   ordinary class.
+
+   Contrast: aurora cyan on the navy base measures ~10.7:1, well past the 3:1
+   WCAG 2.1 non-text contrast requirement (1.4.11).
+
+   Scoped to :focus-visible, never :focus, so mouse users never see it.
+   ========================================================================== */
+:where(
+  a, button, input, select, textarea, summary,
+  [tabindex]:not([tabindex="-1"]), [role="button"], [role="tab"], [role="option"]
+):focus-visible {
+  outline: 2px solid var(--color-aurora-cyan) !important;
+  outline-offset: 2px !important;
+  border-radius: 6px;
+}
+
+/* The recording overlay is a SEPARATE Vite entry that does not import this
+   file (see the font-architecture note in KORERO_STATUS.md), so the rule above
+   never reaches it. Its own ring lives in RecordingOverlay.css. Flagged here so
+   the omission reads as deliberate rather than missed. */
+
+/* Respect the platform's reduced-motion setting. Added alongside the focus ring
+   because both are the same class of defect: an assumption that everyone
+   perceives the interface the way the developer does. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

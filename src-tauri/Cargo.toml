@@ -1,6 +1,6 @@
 [package]
 name = "korero"
-version = "1.26.0"
+version = "1.27.0"
 description = "Kōrero — speech-to-text, NZ English"
 authors = ["Nic Keating <nkeating@gmail.com>", "cjpais (upstream)"]
 edition = "2021"

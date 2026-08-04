@@ -1,4 +1,4 @@
-﻿Korero narrow patches applied 2026-08-04 18:46:00
+﻿Korero narrow patches applied 2026-08-04 20:18:11
 
 SKIP  overlay.rs: overlay window dims (fresh + v1 source forms) -- already patched
 SKIP  AccessibilityOnboarding.tsx: drop HandyTextLogo render -- already patched
@@ -110,7 +110,11 @@ OK    bindings.ts: updateTranscriptCorrections / updatePostProcessPrompts stubs 
 SKIP  settingsStore.ts: persist transcript_corrections + post_process_prompts via updateSetting -- SkipIfPresent token already in file
 OK    bindings.ts: finishActiveRecording stub (pre-seed)
       Why: Korero (v1.19.3): pre-seed finishActiveRecording so the recording overlay's 'stop' button can finish a latched dictation (stop + transcribe) by command. Production = release build skips the debug specta export, so the stub must be seeded for tsc.
-SKIP  text.rs: prefix-extension guard in find_best_match -- SkipIfPresent token already in file
+SKIP  text.rs: remove superseded v1.15.1 prefix-extension guard -- already patched
+SKIP  text.rs: length-aware phonetic gate in find_best_match -- SkipIfPresent token already in file
+SKIP  text.rs: COMMON_EN vocabulary + ordinary-English predicates -- SkipIfPresent token already in file
+SKIP  text.rs: ordinary-English veto in apply_custom_words -- SkipIfPresent token already in file
+SKIP  text.rs: unit tests for the ordinary-English veto -- SkipIfPresent token already in file
 OK    bindings.ts: Ollama doctor command stubs (pre-seed)
       Why: Korero (v1.17.0): pre-seed ollamaStatus/ollamaStart/ollamaInstall so the Post-processing page can detect, start, and install Ollama (winget console launch; website fallback). Status returns a plain object (command is infallible); start/install return Results. Prepends before the setActiveModel anchor.
 SKIP  actions.rs: ignore dictation shortcut while a meeting records -- SkipIfPresent token already in file
