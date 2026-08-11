@@ -275,7 +275,7 @@ export const AudioBriefSettings: React.FC = () => {
             </code>{" "}
             environment variable to the engine folder, or place it at{" "}
             <code className="rounded bg-glass-surface px-1 py-0.5 text-text">
-              %APPDATA%\com.nkeating.korero\tts
+              %APPDATA%\com.kyt.korero\tts
             </code>
             . Drafting scripts and everything else on this page work without it.
           </p>
@@ -285,7 +285,7 @@ export const AudioBriefSettings: React.FC = () => {
             {(
               [
                 ["Copy variable name", "KORERO_TTS_DIR"],
-                ["Copy folder path", "%APPDATA%\\com.nkeating.korero\\tts"],
+                ["Copy folder path", "%APPDATA%\\com.kyt.korero\\tts"],
               ] as const
             ).map(([label, value]) => (
               <button

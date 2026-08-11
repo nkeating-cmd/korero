@@ -21,6 +21,11 @@ import { LogDirectory } from "../debug";
 
 const KORERO_REPO_URL = "https://github.com/nkeating-cmd/korero";
 
+// Korero (v1.28.0): a real support address, so someone who installs this build
+// has somewhere to write that is not a GitHub issue. Business contact by design --
+// the maintainer's personal address is deliberately not shipped in the binary.
+const SUPPORT_EMAIL = "nic@kyt.nz";
+
 export const AboutSettings: React.FC = () => {
   const { t } = useTranslation();
   const [version, setVersion] = useState("");
@@ -63,6 +68,20 @@ export const AboutSettings: React.FC = () => {
             onClick={() => openUrl(KORERO_REPO_URL)}
           >
             {t("settings.about.sourceCode.button")}
+          </Button>
+        </SettingContainer>
+
+        <SettingContainer
+          title="Support"
+          description="Questions, bug reports, or feedback"
+          grouped={true}
+        >
+          <Button
+            variant="secondary"
+            size="md"
+            onClick={() => openUrl(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(`Korero v${version} support`)}`)}
+          >
+            {SUPPORT_EMAIL}
           </Button>
         </SettingContainer>
 

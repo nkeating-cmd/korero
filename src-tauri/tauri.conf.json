@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "K\u014drero",
-  "version": "1.27.0",
-  "identifier": "com.nkeating.korero",
+  "version": "1.28.0",
+  "identifier": "com.kyt.korero",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
@@ -18,7 +18,7 @@
         "enable": true,
         "scope": {
           "allow": [
-            "$APPDATA/com.nkeating.korero/**",
+            "$APPDATA/com.kyt.korero/**",
             "$AUDIO/**",
             "$DOCUMENT/**",
             "$DOWNLOAD/**"
@@ -39,6 +39,10 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
+    "publisher": "Kyt Services Ltd",
+    "copyright": "Copyright (c) 2025 CJ Pais. Fork modifications copyright (c) 2026 Kyt Services Ltd. MIT.",
+    "homepage": "https://github.com/nkeating-cmd/korero",
+    "shortDescription": "On-device speech-to-text for NZ English and te reo Maori",
     "targets": [
       "nsis"
     ],

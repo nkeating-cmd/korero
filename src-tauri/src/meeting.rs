@@ -1091,7 +1091,7 @@ pub async fn meeting_list_recordings(app: AppHandle) -> Result<Vec<RecordingFile
 
 /// Kōrero (v1.22.0): resolve the local TTS (audio-brief) engine directory at
 /// run time. Order — first that actually contains the engine wins:
-/// KORERO_TTS_DIR env, per-user app-data (%APPDATA%\com.nkeating.korero\tts),
+/// KORERO_TTS_DIR env, per-user app-data (%APPDATA%\com.kyt.korero\tts),
 /// next-to-exe (<exe>\tts or <exe>\resources\tts), then the legacy dev path.
 /// Returns the engine dir, or an error listing where it looked. Shared by the
 /// audio-brief renderer and the Models-page status probe so they never disagree.
@@ -1104,7 +1104,7 @@ fn resolve_tts_engine() -> Result<PathBuf, String> {
         }
     }
     if let Ok(appdata) = std::env::var("APPDATA") {
-        candidates.push(PathBuf::from(appdata).join("com.nkeating.korero").join("tts"));
+        candidates.push(PathBuf::from(appdata).join("com.kyt.korero").join("tts"));
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
@@ -1131,7 +1131,7 @@ fn resolve_tts_engine() -> Result<PathBuf, String> {
                 .collect::<Vec<_>>()
                 .join("; ");
             format!(
-                "On-device voice engine not found. Set KORERO_TTS_DIR, or install it under %APPDATA%\\com.nkeating.korero\\tts. (Looked in: {looked})"
+                "On-device voice engine not found. Set KORERO_TTS_DIR, or install it under %APPDATA%\\com.kyt.korero\\tts. (Looked in: {looked})"
             )
         })
 }

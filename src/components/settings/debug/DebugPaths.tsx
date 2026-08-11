@@ -7,10 +7,10 @@ interface DebugPathsProps {
   grouped?: boolean;
 }
 
-// Kōrero fork: Tauri identifier is `com.nkeating.korero`, so AppData
-// resolves to %APPDATA%/com.nkeating.korero/ on Windows. Update the
+// Kōrero fork: Tauri identifier is `com.kyt.korero`, so AppData
+// resolves to %APPDATA%/com.kyt.korero/ on Windows. Update the
 // displayed paths to match.
-const APP_DATA_DIR = "com.nkeating.korero";
+const APP_DATA_DIR = "com.kyt.korero";
 
 export const DebugPaths: React.FC<DebugPathsProps> = ({
   descriptionMode = "inline",

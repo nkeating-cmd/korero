@@ -22,8 +22,8 @@
     {
       "identifier": "fs:scope",
       "allow": [
-        { "path": "$APPDATA/com.nkeating.korero" },
-        { "path": "$APPDATA/com.nkeating.korero/**/*" }
+        { "path": "$APPDATA/com.kyt.korero" },
+        { "path": "$APPDATA/com.kyt.korero/**/*" }
       ]
     }
   ]

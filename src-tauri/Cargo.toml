@@ -1,8 +1,8 @@
 [package]
 name = "korero"
-version = "1.27.0"
+version = "1.28.0"
 description = "Kōrero — speech-to-text, NZ English"
-authors = ["Nic Keating <nkeating@gmail.com>", "cjpais (upstream)"]
+authors = ["Kyt Services Ltd <nic@kyt.nz>", "cjpais (upstream)"]
 edition = "2021"
 license = "MIT"
 default-run = "korero"
@@ -113,7 +113,7 @@ tauri-plugin-global-shortcut = "2.3.1"
 tauri-plugin-single-instance = "2.3.2"
 # Kōrero (2026-05-17 PM): persist window size/position/maximised between
 # launches so Nic doesn't have to resize away from the default every session.
-# State file lives in $APPDATA/com.nkeating.korero/.window-state.json.
+# State file lives in $APPDATA/com.kyt.korero/.window-state.json.
 tauri-plugin-window-state = "2"
 # Kōrero fork: tauri-plugin-updater removed. We don't want auto-updates
 # pulling upstream Handy releases over our patched build.

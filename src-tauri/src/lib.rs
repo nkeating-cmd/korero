@@ -372,12 +372,65 @@ fn show_main_window_command(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Korero (v1.28.0): the bundle identifier changed from `com.nkeating.korero`
+/// to `com.kyt.korero` when the fork moved to its business identity.
+///
+/// Tauri derives the per-user app-data directory from the identifier, so with no
+/// migration every existing install would silently come up EMPTY on first launch
+/// after updating -- losing settings, taught corrections, meeting transcripts and
+/// several GB of already-downloaded speech models, with no error and no clue why.
+///
+/// A same-volume directory rename is atomic and effectively instant regardless of
+/// how much is inside, which is why this is a rename and not a copy.
+///
+/// Deliberately conservative: it runs ONLY when the new directory does not yet
+/// exist and the old one does, so it can never clobber real data, and a failure
+/// is logged and swallowed -- the old directory is left untouched, so a user who
+/// hits a locked file can retry simply by relaunching.
+#[cfg(windows)]
+fn migrate_legacy_app_data() {
+    const OLD_DIR: &str = "com.nkeating.korero";
+    const NEW_DIR: &str = "com.kyt.korero";
+
+    let Ok(appdata) = std::env::var("APPDATA") else {
+        return;
+    };
+    let base = std::path::Path::new(&appdata);
+    let old = base.join(OLD_DIR);
+    let new = base.join(NEW_DIR);
+
+    if new.exists() || !old.exists() {
+        return;
+    }
+
+    match std::fs::rename(&old, &new) {
+        Ok(()) => eprintln!(
+            "[korero] migrated app data: {} -> {}",
+            old.display(),
+            new.display()
+        ),
+        Err(e) => eprintln!(
+            "[korero] app-data migration failed ({e}); previous data remains at {}. \
+             Close any other running copy and relaunch to retry.",
+            old.display()
+        ),
+    }
+}
+
+#[cfg(not(windows))]
+fn migrate_legacy_app_data() {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(cli_args: CliArgs) {
     // Kōrero (v1.12.0): install the global panic hook before anything else so a
     // panic anywhere in startup or runtime is logged and (if enabled) written to
     // a crash report. The crash directory + on/off flag are populated in setup.
     crash::install_panic_hook();
+
+    // Korero (v1.28.0): must run BEFORE anything resolves the app-data directory,
+    // which means before portable::init() and before the Tauri builder. See the
+    // function doc comment for why this exists.
+    migrate_legacy_app_data();
 
     // Detect portable mode before anything else
     portable::init();

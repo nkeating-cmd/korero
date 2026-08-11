@@ -509,7 +509,7 @@ export const ModelsSettings: React.FC = () => {
                 <span className="font-mono text-xs">KORERO_TTS_DIR</span>{" "}
                 environment variable to its folder (or place it under{" "}
                 <span className="font-mono text-xs">
-                  %APPDATA%\com.nkeating.korero\tts
+                  %APPDATA%\com.kyt.korero\tts
                 </span>
                 ).
               </p>
