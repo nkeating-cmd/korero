@@ -2182,20 +2182,97 @@ pub async fn meetings_store_load(app: AppHandle) -> Result<String, String> {
     }
 }
 
-/// Save the meetings metadata store ATOMICALLY (temp file + rename, which
-/// replaces the destination on Windows) so a crash or sync interruption can
-/// never truncate it. Replaces the localStorage store, whose ~5 MB quota
-/// silently dropped writes once a few long transcripts accumulated.
+/// Serialise concurrent writers to the meetings store.
+///
+/// v1.29.0 (R-03): the temp filename used to be a fixed `meetings.json.tmp`
+/// with no lock, so two overlapping saves both create-and-truncate the SAME
+/// file and interleave their bytes — after which whichever renames first
+/// promotes the mixture. The frontend debounces at 500 ms, but a multi-megabyte
+/// store on a slow or synced disk can exceed that, and Tauri commands run
+/// concurrently. A unique temp name fixes the interleave; this mutex additionally
+/// makes the read-modify-write of the backup coherent.
+static MEETINGS_STORE_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Write the meetings store durably: unique temp file, fsync, rename, fsync
+/// the directory, keeping one generation of backup.
+///
+/// v1.29.0 (R-03). The previous implementation was `fs::write` + `fs::rename`
+/// and its doc comment claimed a crash "can never truncate it". That was false
+/// in three independent ways, and the consequences are severe because meeting
+/// WAVs age out after 30 days — past that window this file is the ONLY copy of
+/// the transcript.
+///
+///  1. **No fsync.** `rename` makes the *directory entry* replacement atomic.
+///     It does nothing about whether the temp file's *data* reached stable
+///     storage. On power loss the entry can point at a zero-length file.
+///  2. **Shared temp name.** See the lock above.
+///  3. **No backup.** One bad write was terminal.
+///
+/// The zero-length outcome is the dangerous one, because the frontend used to
+/// treat an unreadable store as "no meetings" and then autosave over it — so a
+/// torn write became permanent erasure. That half is fixed in
+/// MeetingsSettings.tsx; this half stops the tear happening at all.
+fn write_meetings_store_durably(dir: &std::path::Path, json: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let _guard = MEETINGS_STORE_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let path = dir.join("meetings.json");
+
+    // Unique per call: pid plus nanos. Two concurrent writers can no longer
+    // land in the same temp file.
+    let unique = format!(
+        "{}.{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let tmp = dir.join(format!("meetings.json.tmp.{unique}"));
+
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(json.as_bytes())?;
+        // The load-bearing line. Without it the bytes may still be in the page
+        // cache when the rename commits.
+        f.sync_all()?;
+    }
+
+    // Keep exactly one previous generation. Best-effort: a missing or
+    // unreadable current file must not stop the new one being written.
+    if path.exists() {
+        let backup = dir.join("meetings.json.bak");
+        let _ = std::fs::copy(&path, &backup);
+    }
+
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+
+    // Durably record the rename itself. Opening a directory for sync is not
+    // supported on Windows, so this is a no-op there and a real barrier on
+    // Unix; the rename is still atomic either way.
+    #[cfg(unix)]
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+
+    Ok(())
+}
+
+/// Save the meetings metadata store durably. See `write_meetings_store_durably`
+/// for why "atomic rename" alone was not enough.
 #[tauri::command]
 #[specta::specta]
 pub async fn meetings_store_save(app: AppHandle, json: String) -> Result<(), String> {
     // v1.24.0 (paths): pinned to the default folder — see meetings_store_load.
     let dir = default_meetings_dir(&app)?;
-    let tmp = dir.join("meetings.json.tmp");
-    let path = dir.join("meetings.json");
-    std::fs::write(&tmp, json.as_bytes())
-        .map_err(|e| format!("Failed to write meetings store: {e}"))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("Failed to commit meetings store: {e}"))
+    write_meetings_store_durably(&dir, &json)
+        .map_err(|e| format!("Failed to commit meetings store: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -2467,5 +2544,94 @@ mod text_guard_tests {
         assert!(out.matches("project,").count() <= 2, "{out}");
         assert!(out.starts_with("Start."));
         assert!(out.ends_with("End."));
+    }
+}
+
+#[cfg(test)]
+mod meetings_store_durability_tests {
+    use super::write_meetings_store_durably;
+    use std::fs;
+
+    /// R-03. Before v1.29.0 the temp filename was a fixed `meetings.json.tmp`,
+    /// so this test's second writer would have clobbered the first's temp file
+    /// mid-write. Now every call gets its own.
+    #[test]
+    fn korero_r03_temp_file_is_unique_per_call_and_cleaned_up() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..8 {
+            write_meetings_store_durably(dir.path(), &format!("[{{\"n\":{i}}}]")).unwrap();
+        }
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files must not survive a successful write: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn korero_r03_content_round_trips_exactly() {
+        let dir = tempfile::tempdir().unwrap();
+        // Macrons matter: the store carries te reo meeting titles.
+        let payload = r#"[{"id":"1","title":"Hui whakatōhea — kōrero"}]"#;
+        write_meetings_store_durably(dir.path(), payload).unwrap();
+        let back = fs::read_to_string(dir.path().join("meetings.json")).unwrap();
+        assert_eq!(back, payload);
+    }
+
+    /// A backup must appear from the SECOND save onward, and must hold the
+    /// PREVIOUS contents — not the current ones. If it held the current
+    /// contents it would be worthless as a rescue.
+    #[test]
+    fn korero_r03_backup_holds_the_previous_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let bak = dir.path().join("meetings.json.bak");
+
+        write_meetings_store_durably(dir.path(), "[1]").unwrap();
+        assert!(
+            !bak.exists(),
+            "there is nothing to back up on the very first write"
+        );
+
+        write_meetings_store_durably(dir.path(), "[1,2]").unwrap();
+        assert_eq!(fs::read_to_string(&bak).unwrap(), "[1]");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("meetings.json")).unwrap(),
+            "[1,2]"
+        );
+
+        write_meetings_store_durably(dir.path(), "[1,2,3]").unwrap();
+        assert_eq!(fs::read_to_string(&bak).unwrap(), "[1,2]");
+    }
+
+    /// The defect this replaces: two overlapping saves interleaved their bytes
+    /// into one shared temp file, and the rename promoted the mixture. Every
+    /// run must leave a file that parses, and whose content is exactly one of
+    /// the payloads written — never a splice of two.
+    #[test]
+    fn korero_r03_concurrent_saves_never_produce_a_torn_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = format!("[\"{}\"]", "a".repeat(200_000));
+        let b = format!("[\"{}\"]", "b".repeat(200_000));
+
+        for _ in 0..10 {
+            let (pa, pb) = (a.clone(), b.clone());
+            let (d1, d2) = (dir.path().to_path_buf(), dir.path().to_path_buf());
+            let h1 = std::thread::spawn(move || write_meetings_store_durably(&d1, &pa));
+            let h2 = std::thread::spawn(move || write_meetings_store_durably(&d2, &pb));
+            h1.join().unwrap().unwrap();
+            h2.join().unwrap().unwrap();
+
+            let got = fs::read_to_string(dir.path().join("meetings.json")).unwrap();
+            assert!(
+                got == a || got == b,
+                "torn write: got {} bytes, expected exactly one whole payload",
+                got.len()
+            );
+        }
     }
 }

@@ -281,24 +281,52 @@ fn initialize_core_logic(app_handle: &AppHandle) {
             }
             _ => {}
         })
-        .build(app_handle)
-        .unwrap();
-    app_handle.manage(tray);
+        .build(app_handle);
 
-    // Initialize tray menu with idle state
-    utils::update_tray_menu(app_handle, &utils::TrayIconState::Idle, None);
+    // v1.29.0 (R-14): this was `.unwrap()`. The tray ICON load a few lines above
+    // is carefully defensive — it was converted from `.expect()` in the v1.22.0
+    // hardening pass and degrades to a blank icon — but the BUILDER itself was
+    // missed, so any tray-creation failure (Explorer restarting mid-launch, a
+    // constrained or locked-down session, the notification area unavailable)
+    // took the whole application down before a window existed. Kōrero is
+    // perfectly usable without a tray icon; it is not usable if it cannot start.
+    let tray = match tray {
+        Ok(t) => Some(t),
+        Err(e) => {
+            log::error!(
+                "Could not create the system tray icon ({}). Continuing without a tray — \
+                 the main window and all shortcuts still work.",
+                e
+            );
+            None
+        }
+    };
+
+    let tray_available = tray.is_some();
+    if let Some(t) = tray {
+        app_handle.manage(t);
+    }
+
+    // Initialize tray menu with idle state. Every downstream helper resolves the
+    // tray through `app.state::<TrayIcon>()`, which PANICS when nothing was
+    // managed — so all of them must be skipped, not just this one.
+    if tray_available {
+        utils::update_tray_menu(app_handle, &utils::TrayIconState::Idle, None);
+    }
 
     // Apply show_tray_icon setting
     let settings = settings::get_settings(app_handle);
-    if !settings.show_tray_icon {
+    if tray_available && !settings.show_tray_icon {
         tray::set_tray_visibility(app_handle, false);
     }
 
     // Refresh tray menu when model state changes
-    let app_handle_for_listener = app_handle.clone();
-    app_handle.listen("model-state-changed", move |_| {
-        tray::update_tray_menu(&app_handle_for_listener, &tray::TrayIconState::Idle, None);
-    });
+    if tray_available {
+        let app_handle_for_listener = app_handle.clone();
+        app_handle.listen("model-state-changed", move |_| {
+            tray::update_tray_menu(&app_handle_for_listener, &tray::TrayIconState::Idle, None);
+        });
+    }
 
     // Get the autostart manager and configure based on user setting
     let autostart_manager = app_handle.autolaunch();

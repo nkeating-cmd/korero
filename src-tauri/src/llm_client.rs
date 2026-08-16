@@ -179,11 +179,55 @@ pub async fn send_chat_completion(
     .await
 }
 
-/// Send a chat completion request with structured output support
-/// When json_schema is provided, uses structured outputs mode
-/// system_prompt is used as the system message when provided
-/// reasoning_effort sets the OpenAI-style top-level field (e.g., "none", "low", "medium", "high")
-/// reasoning sets the OpenRouter-style nested object (effort + exclude)
+/// Kōrero (v1.13.x) egress allowlist, hoisted into one function in v1.29.0 (R-05).
+///
+/// Transcripts can be confidential, so for providers whose URL is NOT
+/// user-editable we refuse to send if `base_url` has been altered from its
+/// built-in default (e.g. a tampered `settings_store.json` pointing at an
+/// exfiltration host). User-owned providers (custom / local Ollama,
+/// `allow_base_url_edit = true`) are intentionally exempt.
+///
+/// WHY THIS IS A FUNCTION AND NOT THREE COPIES. Until v1.29.0 this block was
+/// inlined in `send_chat_completion_with_schema` and `stream_chat_completion`
+/// — and *absent* from `fetch_models`, which sends the same `Authorization` /
+/// `x-api-key` headers. A tampered `base_url` therefore leaked the API key the
+/// moment the model dropdown refreshed. That is strictly worse than the
+/// transcript leak this allowlist was written to prevent: a transcript is one
+/// conversation, a key is every future one.
+///
+/// **Every new outbound call that carries credentials must call this first.**
+/// The `llm-egress-allowlist-complete` check in `checks.json` counts the call
+/// sites and fails if a `create_client(` appears without one.
+pub(crate) fn assert_endpoint_unmodified(provider: &PostProcessProvider) -> Result<(), String> {
+    if provider.allow_base_url_edit {
+        return Ok(());
+    }
+    let defaults = crate::settings::get_default_settings();
+    let Some(def) = defaults
+        .post_process_providers
+        .iter()
+        .find(|p| p.id == provider.id)
+    else {
+        // Unknown provider id: not a built-in, so there is no default to compare
+        // against. Treat as user-owned rather than blocking a legitimate custom
+        // provider that happens to have allow_base_url_edit unset.
+        return Ok(());
+    };
+    if def.base_url.trim_end_matches('/') != provider.base_url.trim_end_matches('/') {
+        return Err(format!(
+            "Blocked: the endpoint for provider '{}' was altered to an unexpected URL. \
+             Transcripts are not sent to unverified hosts.",
+            provider.id
+        ));
+    }
+    Ok(())
+}
+
+/// Send a chat completion request with structured output support.
+/// When json_schema is provided, uses structured outputs mode.
+/// system_prompt is used as the system message when provided.
+/// reasoning_effort sets the OpenAI-style top-level field (e.g., "none", "low", "medium", "high").
+/// reasoning sets the OpenRouter-style nested object (effort + exclude).
 pub async fn send_chat_completion_with_schema(
     provider: &PostProcessProvider,
     api_key: String,
@@ -194,27 +238,7 @@ pub async fn send_chat_completion_with_schema(
     reasoning_effort: Option<String>,
     reasoning: Option<ReasoningConfig>,
 ) -> Result<Option<String>, String> {
-    // Kōrero (v1.13.x) egress allowlist: transcripts can be confidential, so for
-    // providers whose URL is NOT user-editable, refuse to send if the base_url has
-    // been altered from its built-in default (e.g. a tampered settings_store.json
-    // pointing at an exfiltration host). User-owned providers (custom / local
-    // Ollama, allow_base_url_edit = true) are intentionally exempt.
-    if !provider.allow_base_url_edit {
-        let defaults = crate::settings::get_default_settings();
-        if let Some(def) = defaults
-            .post_process_providers
-            .iter()
-            .find(|p| p.id == provider.id)
-        {
-            if def.base_url.trim_end_matches('/') != provider.base_url.trim_end_matches('/') {
-                return Err(format!(
-                    "Blocked: the endpoint for provider '{}' was altered to an unexpected URL. \
-                     Transcripts are not sent to unverified hosts.",
-                    provider.id
-                ));
-            }
-        }
-    }
+    assert_endpoint_unmodified(provider)?;
 
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
@@ -324,24 +348,7 @@ pub async fn stream_chat_completion<F: FnMut(&str)>(
 ) -> Result<String, String> {
     use futures_util::StreamExt;
 
-    // Same egress allowlist as the non-streaming path: never send a transcript
-    // to a tampered endpoint for a provider whose URL isn't user-editable.
-    if !provider.allow_base_url_edit {
-        let defaults = crate::settings::get_default_settings();
-        if let Some(def) = defaults
-            .post_process_providers
-            .iter()
-            .find(|p| p.id == provider.id)
-        {
-            if def.base_url.trim_end_matches('/') != provider.base_url.trim_end_matches('/') {
-                return Err(format!(
-                    "Blocked: the endpoint for provider '{}' was altered to an unexpected URL. \
-                     Transcripts are not sent to unverified hosts.",
-                    provider.id
-                ));
-            }
-        }
-    }
+    assert_endpoint_unmodified(provider)?;
 
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
@@ -463,6 +470,11 @@ pub async fn fetch_models(
     provider: &PostProcessProvider,
     api_key: String,
 ) -> Result<Vec<String>, String> {
+    // Kōrero v1.29.0 (R-05): this call was missing the allowlist that both
+    // completion paths enforced, and it sends the same credential headers.
+    // A tampered base_url leaked the API key on every model-dropdown refresh.
+    assert_endpoint_unmodified(provider)?;
+
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/models", base_url);
 
@@ -515,4 +527,95 @@ pub async fn fetch_models(
     }
 
     Ok(models)
+}
+#[cfg(test)]
+mod egress_allowlist_tests {
+    use super::*;
+    use crate::settings::{get_default_settings, PostProcessProvider};
+
+    /// Take a real built-in provider and optionally rewrite its base_url,
+    /// so the test exercises the same comparison the runtime does rather
+    /// than a hand-rolled fixture that could drift from the defaults.
+    fn builtin(id: &str) -> PostProcessProvider {
+        get_default_settings()
+            .post_process_providers
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap_or_else(|| panic!("no built-in provider with id '{id}' in default settings"))
+    }
+
+    #[test]
+    fn korero_r05_unmodified_builtin_is_allowed() {
+        for p in get_default_settings().post_process_providers {
+            let id = p.id.clone();
+            assert!(
+                assert_endpoint_unmodified(&p).is_ok(),
+                "a pristine built-in provider must never be blocked: {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn korero_r05_tampered_builtin_is_blocked() {
+        // Pick the first built-in whose URL is NOT user-editable; if the
+        // catalogue ever loses all of them this test must fail loudly rather
+        // than vacuously pass.
+        let locked: Vec<PostProcessProvider> = get_default_settings()
+            .post_process_providers
+            .into_iter()
+            .filter(|p| !p.allow_base_url_edit)
+            .collect();
+        assert!(
+            !locked.is_empty(),
+            "no non-editable providers left in defaults — the allowlist would be inert"
+        );
+
+        for mut p in locked {
+            let id = p.id.clone();
+            p.base_url = "https://evil.example.com/v1".to_string();
+            let err = assert_endpoint_unmodified(&p)
+                .expect_err(&format!("tampered base_url must be blocked for '{id}'"));
+            assert!(err.starts_with("Blocked:"), "unexpected error text: {err}");
+            assert!(err.contains(&id), "error should name the provider: {err}");
+        }
+    }
+
+    #[test]
+    fn korero_r05_trailing_slash_is_not_tampering() {
+        let mut p = builtin("openai");
+        p.base_url = format!("{}/", p.base_url.trim_end_matches('/'));
+        assert!(
+            assert_endpoint_unmodified(&p).is_ok(),
+            "a trailing slash must not be mistaken for tampering"
+        );
+    }
+
+    #[test]
+    fn korero_r05_user_owned_provider_is_exempt() {
+        let mut p = builtin("openai");
+        p.allow_base_url_edit = true;
+        p.base_url = "http://127.0.0.1:11434/v1".to_string();
+        assert!(
+            assert_endpoint_unmodified(&p).is_ok(),
+            "providers the user owns are intentionally exempt"
+        );
+    }
+
+    #[test]
+    fn korero_r05_unknown_provider_id_is_not_blocked() {
+        let p = PostProcessProvider {
+            id: "not-a-builtin".to_string(),
+            label: "Custom".to_string(),
+            base_url: "https://example.invalid/v1".to_string(),
+            allow_base_url_edit: false,
+            models_endpoint: None,
+            supports_structured_output: false,
+            suggested_models: Vec::new(),
+            is_local_provider: false,
+        };
+        assert!(
+            assert_endpoint_unmodified(&p).is_ok(),
+            "an id with no built-in default has nothing to compare against"
+        );
+    }
 }

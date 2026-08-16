@@ -34,20 +34,24 @@ pub fn send_paste_ctrl_v(enigo: &mut Enigo) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     let (modifier_key, v_key_code) = (Key::Control, Key::Unicode('v'));
 
-    // Press modifier + V
+    // korero-r06-ctrl-v (v1.29.0): press, capture, ALWAYS release, then report.
+    // The click used to be `?` and returned with the modifier still held.
     enigo
         .key(modifier_key, enigo::Direction::Press)
         .map_err(|e| format!("Failed to press modifier key: {}", e))?;
-    enigo
+
+    let clicked = enigo
         .key(v_key_code, enigo::Direction::Click)
-        .map_err(|e| format!("Failed to click V key: {}", e))?;
+        .map_err(|e| format!("Failed to click V key: {}", e));
 
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    enigo
+    let released = enigo
         .key(modifier_key, enigo::Direction::Release)
-        .map_err(|e| format!("Failed to release modifier key: {}", e))?;
+        .map_err(|e| format!("Failed to release modifier key: {}", e));
 
+    clicked?;
+    released?;
     Ok(())
 }
 
@@ -63,26 +67,37 @@ pub fn send_paste_ctrl_shift_v(enigo: &mut Enigo) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     let (modifier_key, v_key_code) = (Key::Control, Key::Unicode('v'));
 
-    // Press Ctrl/Cmd + Shift + V
+    // korero-r06-ctrl-shift-v (v1.29.0): both releases are attempted
+    // unconditionally, whatever the click or the Shift press did.
     enigo
         .key(modifier_key, enigo::Direction::Press)
         .map_err(|e| format!("Failed to press modifier key: {}", e))?;
-    enigo
+
+    let shifted = enigo
         .key(Key::Shift, enigo::Direction::Press)
-        .map_err(|e| format!("Failed to press Shift key: {}", e))?;
-    enigo
-        .key(v_key_code, enigo::Direction::Click)
-        .map_err(|e| format!("Failed to click V key: {}", e))?;
+        .map_err(|e| format!("Failed to press Shift key: {}", e));
+
+    let clicked = if shifted.is_ok() {
+        enigo
+            .key(v_key_code, enigo::Direction::Click)
+            .map_err(|e| format!("Failed to click V key: {}", e))
+    } else {
+        Ok(())
+    };
 
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    enigo
+    let shift_released = enigo
         .key(Key::Shift, enigo::Direction::Release)
-        .map_err(|e| format!("Failed to release Shift key: {}", e))?;
-    enigo
+        .map_err(|e| format!("Failed to release Shift key: {}", e));
+    let mod_released = enigo
         .key(modifier_key, enigo::Direction::Release)
-        .map_err(|e| format!("Failed to release modifier key: {}", e))?;
+        .map_err(|e| format!("Failed to release modifier key: {}", e));
 
+    shifted?;
+    clicked?;
+    shift_released?;
+    mod_released?;
     Ok(())
 }
 
@@ -95,20 +110,23 @@ pub fn send_paste_shift_insert(enigo: &mut Enigo) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
     let insert_key_code = Key::Other(0x76); // XK_Insert (keycode 118 / 0x76, also used as fallback)
 
-    // Press Shift + Insert
+    // korero-r06-shift-insert (v1.29.0): press, capture, ALWAYS release.
     enigo
         .key(Key::Shift, enigo::Direction::Press)
         .map_err(|e| format!("Failed to press Shift key: {}", e))?;
-    enigo
+
+    let clicked = enigo
         .key(insert_key_code, enigo::Direction::Click)
-        .map_err(|e| format!("Failed to click Insert key: {}", e))?;
+        .map_err(|e| format!("Failed to click Insert key: {}", e));
 
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    enigo
+    let released = enigo
         .key(Key::Shift, enigo::Direction::Release)
-        .map_err(|e| format!("Failed to release Shift key: {}", e))?;
+        .map_err(|e| format!("Failed to release Shift key: {}", e));
 
+    clicked?;
+    released?;
     Ok(())
 }
 

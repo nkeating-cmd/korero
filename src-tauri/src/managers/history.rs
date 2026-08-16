@@ -101,6 +101,18 @@ impl HistoryManager {
 
         let mut conn = Connection::open(&self.db_path)?;
 
+        // korero-r17-wal (v1.29.0): WAL is persistent in the database file, so
+        // this runs once and every later connection inherits it. Query rather
+        // than pragma_update because journal_mode returns the resulting mode.
+        match conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get::<_, String>(0)) {
+            Ok(mode) => debug!("History database journal mode: {}", mode),
+            Err(e) => log::warn!(
+                "Could not enable WAL journal mode ({}); continuing with the default journal.",
+                e
+            ),
+        }
+        conn.busy_timeout(std::time::Duration::from_millis(5_000))?;
+
         // Handle migration from tauri-plugin-sql to rusqlite_migration
         // tauri-plugin-sql used _sqlx_migrations table, rusqlite_migration uses user_version pragma
         self.migrate_from_tauri_plugin_sql(&conn)?;
@@ -117,8 +129,29 @@ impl HistoryManager {
             conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         debug!("Database version before migration: {}", version_before);
 
-        // Apply any pending migrations
-        migrations.to_latest(&mut conn)?;
+        // Apply any pending migrations.
+        //
+        // korero-r17-quarantine (v1.29.0): on failure -- overwhelmingly
+        // DatabaseTooFarAhead after a version downgrade -- do NOT propagate.
+        // The caller in lib.rs is `.expect(...)`, so propagating here kills the
+        // process before a window exists. Preserve the user's data by moving it
+        // aside, then start a clean database so the app still runs.
+        if let Err(e) = migrations.to_latest(&mut conn) {
+            log::warn!("History database migration failed: {}", e);
+            drop(conn);
+            let quarantined = self.quarantine_database()?;
+            log::warn!(
+                "Moved the unreadable history database to {:?} and started a fresh one. \
+                 Nothing was deleted.",
+                quarantined
+            );
+            let mut fresh = Connection::open(&self.db_path)?;
+            let _ = fresh.query_row("PRAGMA journal_mode=WAL", [], |r| r.get::<_, String>(0));
+            fresh.busy_timeout(std::time::Duration::from_millis(5_000))?;
+            Migrations::new(MIGRATIONS.to_vec()).to_latest(&mut fresh)?;
+            info!("History database reinitialised after quarantine.");
+            return Ok(());
+        }
 
         // Get version after migration
         let version_after: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -133,6 +166,36 @@ impl HistoryManager {
         }
 
         Ok(())
+    }
+
+    /// Move an unusable history database aside so the user (or a later build)
+    /// can still recover it. Renames -- never deletes. The timestamp means a
+    /// second failure cannot clobber the first rescue.
+    fn quarantine_database(&self) -> Result<PathBuf> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let name = self
+            .db_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("history.db");
+        let target = self
+            .db_path
+            .with_file_name(format!("{}.unreadable-{}", name, stamp));
+        fs::rename(&self.db_path, &target)?;
+        // WAL sidecars belong to the quarantined file; leaving them would let
+        // SQLite reattach them to the fresh database.
+        for suffix in ["-wal", "-shm"] {
+            let side = self
+                .db_path
+                .with_file_name(format!("{}{}", name, suffix));
+            if side.exists() {
+                let _ = fs::remove_file(&side);
+            }
+        }
+        Ok(target)
     }
 
     /// Migrate from tauri-plugin-sql's migration tracking to rusqlite_migration's.
@@ -192,8 +255,13 @@ impl HistoryManager {
         Ok(())
     }
 
+    /// korero-r17-busy-timeout (v1.29.0): five seconds is far longer than any
+    /// query in this file and far shorter than a user notices. Without it,
+    /// SQLite's default of zero meant any read/write overlap failed instantly.
     fn get_connection(&self) -> Result<Connection> {
-        Ok(Connection::open(&self.db_path)?)
+        let conn = Connection::open(&self.db_path)?;
+        conn.busy_timeout(std::time::Duration::from_millis(5_000))?;
+        Ok(conn)
     }
 
     fn map_history_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {

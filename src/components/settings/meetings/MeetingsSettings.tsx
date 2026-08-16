@@ -301,6 +301,10 @@ export const MeetingsSettings: React.FC = () => {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [storeReady, setStoreReady] = useState(false);
+  // v1.29.0 (R-02): non-null means the store could not be read this session.
+  // While it is set, `storeReady` stays false and NOTHING is written to disk,
+  // so a transient read failure can never be converted into permanent erasure.
+  const [storeLoadError, setStoreLoadError] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
   // v1.19.0: pause state for a live meeting.
   const [paused, setPaused] = useState(false);
@@ -510,14 +514,43 @@ export const MeetingsSettings: React.FC = () => {
   useEffect(() => {
     (async () => {
       let list: Meeting[] = [];
+      // v1.29.0 (R-02). THE MOST DESTRUCTIVE BUG THIS FILE HAS HAD.
+      //
+      // meetingsStoreLoad returns { status: "error" } instead of throwing, so
+      // a read failure never reached the catch below — `list` simply stayed
+      // empty. A truncated file threw, hit the catch, fell through to a
+      // localStorage store deleted back in v1.13.4, and also ended empty.
+      // Either way setStoreReady(true) fired and the autosave effect wrote
+      // `[]` over meetings.json 500 ms later. Every meeting, gone, silently,
+      // permanently. A file momentarily locked by antivirus or OneDrive was
+      // enough, and WAVs age out at 30 days so the store is often the only
+      // copy left.
+      //
+      // The rule now: we only ever save a store we successfully READ.
+      let loadFailure: string | null = null;
       try {
         const res = await commands.meetingsStoreLoad();
-        if (res.status === "ok" && res.data.trim()) {
+        if (res.status === "error") {
+          loadFailure = String(res.error ?? "could not read the meetings store");
+        } else if (res.data.trim()) {
           list = normaliseMeetings(JSON.parse(res.data));
         }
-      } catch {
-        /* fall through to legacy */
+        // An empty string is a genuinely absent store (first run) — not a
+        // failure. That case must still be allowed to save.
+      } catch (e) {
+        loadFailure = e instanceof Error ? e.message : String(e);
       }
+
+      if (loadFailure) {
+        console.error("Meetings store failed to load:", loadFailure);
+        setStoreLoadError(loadFailure);
+        setMeetings([]);
+        setActiveId(null);
+        // Deliberately NOT setStoreReady(true): leaving it false is what keeps
+        // the autosave effect from committing this empty list to disk.
+        return;
+      }
+
       if (list.length === 0) {
         const legacy = loadLegacyMeetings();
         if (legacy.length > 0) {
@@ -1706,6 +1739,34 @@ export const MeetingsSettings: React.FC = () => {
           never lost. Everything stays on your machine.
         </p>
       </div>
+
+      {/* v1.29.0 (R-02): the store could not be read. This is deliberately
+          NOT a toast — a toast disappears and the user carries on believing
+          their meetings are gone. While this banner is up, storeReady is
+          false and nothing is written to disk, so the file on disk is exactly
+          as it was. Reloading is safe; saving is not. */}
+      {storeLoadError && (
+        <div
+          role="alert"
+          className="glass-card p-4 flex items-start gap-3 border border-red-500/40"
+        >
+          <TriangleAlert size={18} className="text-red-400 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-text">
+              Couldn&rsquo;t read your saved meetings
+            </p>
+            <p className="text-sm text-text-subtle mt-1">
+              Your meetings are still on disk — nothing has been deleted, and
+              Kōrero will not overwrite the file while this message is showing.
+              This is usually a file briefly locked by antivirus or cloud sync.
+              Close and reopen Kōrero to try again.
+            </p>
+            <p className="text-xs text-text-subtle/80 mt-2 font-mono break-all">
+              {storeLoadError}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* v1.13.3: persistent warning if the capture worker reported a
           disk-write failure — the toast is transient, this is not. */}

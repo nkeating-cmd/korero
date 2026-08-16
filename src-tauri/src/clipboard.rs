@@ -21,7 +21,14 @@ fn paste_via_clipboard(
     paste_delay_ms: u64,
 ) -> Result<(), String> {
     let clipboard = app_handle.clipboard();
-    let clipboard_content = clipboard.read_text().unwrap_or_default();
+    // korero-r01-clipboard-option (v1.29.0): read_text() returns Err when the
+    // clipboard holds a NON-TEXT payload -- an image, a file selection, rich
+    // content. The old `.unwrap_or_default()` collapsed that Err into an empty
+    // String, and the restore at the end of this function wrote that empty
+    // String back, DESTROYING whatever the user had copied. Every dictation.
+    // `None` means "we could not read it, therefore we must not write it
+    // back". A missed restore is a nuisance; an overwrite is unrecoverable.
+    let clipboard_content: Option<String> = clipboard.read_text().ok();
 
     // Write text to clipboard first
     // On Wayland, prefer wl-copy for better compatibility (especially with umlauts)
@@ -51,31 +58,42 @@ fn paste_via_clipboard(
     #[cfg(not(target_os = "linux"))]
     let key_combo_sent = false;
 
+    // korero-r01-restore-before-propagate (v1.29.0): these were `?`, which
+    // returned from the function BEFORE the restore below ever ran -- leaving
+    // the transcript in the user's clipboard for good and the original lost.
+    // Capture the outcome, restore, then report.
     // Fall back to enigo if no native tool handled it
+    let mut paste_result: Result<(), String> = Ok(());
     if !key_combo_sent {
-        match paste_method {
-            PasteMethod::CtrlV => input::send_paste_ctrl_v(enigo)?,
-            PasteMethod::CtrlShiftV => input::send_paste_ctrl_shift_v(enigo)?,
-            PasteMethod::ShiftInsert => input::send_paste_shift_insert(enigo)?,
-            _ => return Err("Invalid paste method for clipboard paste".into()),
-        }
+        paste_result = match paste_method {
+            PasteMethod::CtrlV => input::send_paste_ctrl_v(enigo),
+            PasteMethod::CtrlShiftV => input::send_paste_ctrl_shift_v(enigo),
+            PasteMethod::ShiftInsert => input::send_paste_shift_insert(enigo),
+            _ => Err("Invalid paste method for clipboard paste".into()),
+        };
     }
 
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    // Restore original clipboard content
-    // On Wayland, prefer wl-copy for better compatibility
+    // korero-r01-guarded-restore (v1.29.0): restore the original clipboard
+    // ONLY if we actually read something. `None` means the payload was not
+    // text, and writing anything at all in that case is the data-loss bug.
+    // On Wayland, prefer wl-copy for better compatibility.
     #[cfg(target_os = "linux")]
-    if is_wayland() && is_wl_copy_available() {
-        let _ = write_clipboard_via_wl_copy(&clipboard_content);
-    } else {
-        let _ = clipboard.write_text(&clipboard_content);
+    if let Some(previous) = clipboard_content.as_deref() {
+        if is_wayland() && is_wl_copy_available() {
+            let _ = write_clipboard_via_wl_copy(previous);
+        } else {
+            let _ = clipboard.write_text(previous);
+        }
     }
 
     #[cfg(not(target_os = "linux"))]
-    let _ = clipboard.write_text(&clipboard_content);
+    if let Some(previous) = clipboard_content.as_deref() {
+        let _ = clipboard.write_text(previous);
+    }
 
-    Ok(())
+    paste_result
 }
 
 /// Attempts to send a key combination using Linux-native tools.
@@ -552,32 +570,42 @@ fn send_return_key(enigo: &mut Enigo, key_type: AutoSubmitKey) -> Result<(), Str
                 .map_err(|e| format!("Failed to release Return key: {}", e))?;
         }
         AutoSubmitKey::CtrlEnter => {
+            // korero-r06-ctrl-enter (v1.29.0): release Control unconditionally.
             enigo
                 .key(Key::Control, Direction::Press)
                 .map_err(|e| format!("Failed to press Control key: {}", e))?;
-            enigo
+            let mut inner: Result<(), String> = enigo
                 .key(Key::Return, Direction::Press)
-                .map_err(|e| format!("Failed to press Return key: {}", e))?;
-            enigo
-                .key(Key::Return, Direction::Release)
-                .map_err(|e| format!("Failed to release Return key: {}", e))?;
-            enigo
+                .map_err(|e| format!("Failed to press Return key: {}", e));
+            if inner.is_ok() {
+                inner = enigo
+                    .key(Key::Return, Direction::Release)
+                    .map_err(|e| format!("Failed to release Return key: {}", e));
+            }
+            let released = enigo
                 .key(Key::Control, Direction::Release)
-                .map_err(|e| format!("Failed to release Control key: {}", e))?;
+                .map_err(|e| format!("Failed to release Control key: {}", e));
+            inner?;
+            released?;
         }
         AutoSubmitKey::CmdEnter => {
+            // korero-r06-cmd-enter (v1.29.0): release Meta unconditionally.
             enigo
                 .key(Key::Meta, Direction::Press)
                 .map_err(|e| format!("Failed to press Meta/Cmd key: {}", e))?;
-            enigo
+            let mut inner: Result<(), String> = enigo
                 .key(Key::Return, Direction::Press)
-                .map_err(|e| format!("Failed to press Return key: {}", e))?;
-            enigo
-                .key(Key::Return, Direction::Release)
-                .map_err(|e| format!("Failed to release Return key: {}", e))?;
-            enigo
+                .map_err(|e| format!("Failed to press Return key: {}", e));
+            if inner.is_ok() {
+                inner = enigo
+                    .key(Key::Return, Direction::Release)
+                    .map_err(|e| format!("Failed to release Return key: {}", e));
+            }
+            let released = enigo
                 .key(Key::Meta, Direction::Release)
-                .map_err(|e| format!("Failed to release Meta/Cmd key: {}", e))?;
+                .map_err(|e| format!("Failed to release Meta/Cmd key: {}", e));
+            inner?;
+            released?;
         }
     }
 

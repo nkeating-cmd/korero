@@ -623,11 +623,21 @@ impl ModelManager {
             extracting_models: Arc::new(Mutex::new(HashSet::new())),
         };
 
-        // Migrate any bundled models to user directory
-        manager.migrate_bundled_models()?;
-
-        // Migrate GigaAM from single-file to directory format
-        manager.migrate_gigaam_to_directory()?;
+        // korero-r31-migration-nonfatal (v1.29.0): these two used to be `?`.
+        // ModelManager::new is `.expect(...)`ed in lib.rs, so a migration
+        // failure -- a locked file, a half-finished rename, antivirus holding a
+        // handle -- killed the process before a window existed. Degrade to a
+        // logged warning: the worst case is one model needing re-download,
+        // which the user can see and act on. A silent non-start is neither.
+        if let Err(e) = manager.migrate_bundled_models() {
+            log::warn!("Bundled-model migration failed ({}); continuing without it.", e);
+        }
+        if let Err(e) = manager.migrate_gigaam_to_directory() {
+            log::warn!(
+                "GigaAM directory migration failed ({}); that model may need re-downloading.",
+                e
+            );
+        }
 
         // Check which models are already downloaded
         manager.update_download_status()?;
