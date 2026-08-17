@@ -1,7 +1,7 @@
 # Kōrero
 
 **Kōrero is a personal fork of [Handy](https://github.com/cjpais/Handy) by CJ Pais** — a free,
-open-source, **fully-offline** speech-to-text app for Windows. All credit for the original project
+open-source, **on-device** speech-to-text app for Windows. All credit for the original project
 goes to CJ Pais and the Handy contributors. Kōrero keeps Handy's MIT licence (see [`LICENSE`](LICENSE))
 and layers on a full rebrand, several new features, reliability fixes, and security hardening.
 
@@ -9,11 +9,15 @@ and layers on a full rebrand, several new features, reliability fixes, and secur
 > For the upstream project's documentation, philosophy, and community, see
 > **[handy.computer](https://handy.computer)** and **[cjpais/Handy](https://github.com/cjpais/Handy)**.
 
-Like Handy, Kōrero is **100% offline**: your audio and transcripts never leave your machine. Speech
-models download once on first use; nothing is sent to the cloud. (Post-processing is opt-in and only
-contacts an LLM provider you configure.)
+Like Handy, Kōrero transcribes **entirely on your machine**: your audio and your transcripts never
+leave it. Speech models download once on first use. Post-processing is opt-in and only ever contacts
+an LLM provider you configure yourself.
 
-Current version: **v1.17.0**.
+Two things do reach the network, and it is worth naming them rather than rounding down to "offline":
+speech models are downloaded on first use, and the app asks GitHub once at startup whether a newer
+release exists. Neither carries audio, transcripts, or anything about you. No telemetry, ever.
+
+Current version: **v1.30.0**.
 
 ---
 
@@ -67,7 +71,7 @@ Current version: **v1.17.0**.
 ### Security & supply chain
 - **API keys stored in the OS keychain** (Windows Credential Manager), never written to disk in plaintext, with a one-time migration + pre-migration backup and clear failure surfacing.
 - **Content-Security-Policy** added to the webview; **filesystem capability narrowed** to the app's own data directory.
-- **Reproducible `--locked` builds**, a **clippy** gate, and weekly **`cargo-audit`** + **`cargo-deny`** (licence / source / advisory) checks; git dependencies pinned to commit SHAs.
+- A **clippy** gate plus **`cargo-audit`** and **`cargo-deny`** (licence / source / advisory) checks, and an evidence contract of 23 named checks that each state a claim, a command and an expected exit code. CI runs `cargo test --locked` on every push.
 - Threat model documented.
 
 ### Models & acceleration

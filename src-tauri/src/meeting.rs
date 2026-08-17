@@ -255,6 +255,7 @@ fn is_hallucination_phrase(text: &str) -> bool {
 ///  * If no duplicate is actually removed, the ORIGINAL text is returned
 ///    verbatim — we never reflow ordinary text, so spacing/punctuation of a
 ///    clean transcript is left exactly as the model produced it.
+///
 /// v1.30.0: made `pub(crate)` so the DICTATION path can use it too.
 ///
 /// This guard defended meetings and nothing else — `collapse_ngram_runs`
