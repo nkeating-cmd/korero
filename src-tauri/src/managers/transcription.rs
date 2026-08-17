@@ -718,6 +718,12 @@ impl TranscriptionManager {
             }
         };
 
+        // korero-item5-dictation-loop-guard (v1.30.0): collapse decoder loops on
+        // the DICTATION path. This ran on meetings only; a model emitting a
+        // repeated n-gram instead of speech went straight into the user's
+        // document. Deliberately first, on raw engine output.
+        let result_text = crate::meeting::collapse_repeats(&result.text);
+
         // Apply word correction if custom words are configured.
         // Skip for Whisper models since custom words are already passed as initial_prompt.
         let is_whisper = self
@@ -726,14 +732,30 @@ impl TranscriptionManager {
             .map(|info| matches!(info.engine_type, EngineType::Whisper))
             .unwrap_or(false);
 
-        let corrected_result = if !settings.custom_words.is_empty() && !is_whisper {
+        // korero-item7-whisper-exact-match (v1.30.0).
+        //
+        // find_best_match accepts on `combined_score < threshold` -- STRICTLY
+        // less than -- and an exact match after normalisation scores exactly
+        // 0.0. A threshold of 0.0 would therefore accept NOTHING. This epsilon
+        // is the smallest value that admits an exact match while excluding every
+        // near-miss: one edit on a six-character word scores 0.167, or 0.05 once
+        // the phonetic discount applies, both orders of magnitude above it.
+        const EXACT_MATCH_ONLY: f64 = 1e-9;
+
+        let corrected_result = if settings.custom_words.is_empty() {
+            result_text
+        } else if is_whisper {
+            // Whisper already gets the custom words as initial_prompt, so fuzzy
+            // correction would fight the decoder. Exact matching does not: it is
+            // a deterministic normaliser that restores the user's own spelling
+            // -- overwhelmingly macrons -- when the model emitted it bare.
+            apply_custom_words(&result_text, &settings.custom_words, EXACT_MATCH_ONLY)
+        } else {
             apply_custom_words(
-                &result.text,
+                &result_text,
                 &settings.custom_words,
                 settings.word_correction_threshold,
             )
-        } else {
-            result.text
         };
 
         // Filter out filler words and hallucinations

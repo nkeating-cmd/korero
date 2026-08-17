@@ -255,7 +255,23 @@ fn is_hallucination_phrase(text: &str) -> bool {
 ///  * If no duplicate is actually removed, the ORIGINAL text is returned
 ///    verbatim — we never reflow ordinary text, so spacing/punctuation of a
 ///    clean transcript is left exactly as the model produced it.
-fn collapse_repeats(text: &str) -> String {
+/// v1.30.0: made `pub(crate)` so the DICTATION path can use it too.
+///
+/// This guard defended meetings and nothing else — `collapse_ngram_runs`
+/// occurred 4× in this file and **0×** in `managers/transcription.rs`. The FENZ
+/// failure mode (a model emitting a repeated n-gram *instead of* speech) was
+/// therefore unmitigated on the path that types into the user's document, which
+/// is the app's core function.
+///
+/// It is safe to share: every threshold below is deliberately conservative, and
+/// the function returns its input **verbatim** when nothing collapses, so a
+/// clean transcript is never reflowed.
+///
+/// TODO(v1.31.0): this belongs in `audio_toolkit::text` alongside the other text
+/// guards. It lives here because `meeting.rs` is a whole-file overlay copy and
+/// `text.rs` is not — moving it now would cost patch re-anchors for no
+/// behavioural gain. Move it during the transcribe.cpp re-seat.
+pub(crate) fn collapse_repeats(text: &str) -> String {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     let mut sentences: Vec<&str> = Vec::new();
     let mut start = 0usize;

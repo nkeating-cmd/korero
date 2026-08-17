@@ -467,9 +467,12 @@ fn get_filler_words_for_language(lang: &str) -> &'static [&'static str] {
     let base_lang = lang.split(&['-', '_'][..]).next().unwrap_or(lang);
 
     match base_lang {
+        // korero-item8-nz-english (v1.30.0): "eh" and "ha" REMOVED.
+        // "eh" is a real tag particle in NZ/AU/CA English; "ha" collides with
+        // te reo "ha" (breath) and with laughter. Deleting a real word is a
+        // worse error than transcribing a filler, so the asymmetry decides it.
         "en" => &[
-            "uh", "um", "uhm", "umm", "uhh", "uhhh", "ah", "hmm", "hm", "mmm", "mm", "mh", "eh",
-            "ehh", "ha",
+            "uh", "um", "uhm", "umm", "uhh", "uhhh", "ah", "hmm", "hm", "mmm", "mm", "mh", "ehh",
         ],
         "es" => &["ehm", "mmm", "hmm", "hm"],
         "pt" => &["ahm", "hmm", "mmm", "hm"],
@@ -987,5 +990,79 @@ mod tests {
                 w
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod korero_v1_30_tests {
+    use super::*;
+
+    // Mirrors managers/transcription.rs. find_best_match accepts on
+    // `combined_score < threshold`, STRICTLY less than, and an exact match
+    // scores exactly 0.0 -- so 0.0 would accept nothing at all.
+    const EXACT_MATCH_ONLY: f64 = 1e-9;
+
+    #[test]
+    fn korero_item8_nz_english_eh_survives() {
+        let out = filter_transcription_output("sweet as, eh", "en", &None);
+        assert!(
+            out.to_lowercase().contains("eh"),
+            "\"eh\" is a NZ English tag particle, not a disfluency: got {out:?}"
+        );
+    }
+
+    #[test]
+    fn korero_item8_te_reo_ha_survives() {
+        let out = filter_transcription_output("take a ha", "en", &None);
+        assert!(
+            out.to_lowercase().contains("ha"),
+            "\"ha\" collides with te reo ha (breath): got {out:?}"
+        );
+    }
+
+    #[test]
+    fn korero_item8_real_fillers_are_still_removed() {
+        let out = filter_transcription_output("um the uh meeting", "en", &None);
+        let low = out.to_lowercase();
+        assert!(!low.contains("um"), "genuine filler should go: {out:?}");
+        assert!(!low.contains("uh"), "genuine filler should go: {out:?}");
+        assert!(low.contains("meeting"), "content must survive: {out:?}");
+    }
+
+    #[test]
+    fn korero_item7_exact_match_restores_macrons() {
+        let words = vec!["whanau".to_string()];
+        let out = apply_custom_words("our whanau", &words, EXACT_MATCH_ONLY);
+        assert!(out.contains("whanau"), "exact match must apply: {out:?}");
+
+        // The real shape: the user's spelling carries the macron, the model
+        // emitted it bare, and normalisation strips macrons on both sides so
+        // the distance is zero.
+        let macron = vec!["wh\u{101}nau".to_string()];
+        let out2 = apply_custom_words("our whanau", &macron, EXACT_MATCH_ONLY);
+        assert!(
+            out2.contains("wh\u{101}nau"),
+            "a macron-free model output must be restored to the user's spelling: {out2:?}"
+        );
+    }
+
+    #[test]
+    fn korero_item7_epsilon_admits_exact_and_rejects_near_miss() {
+        // A near-miss must NOT be corrected under the exact-only threshold --
+        // that is what makes it safe to run alongside Whisper's initial_prompt
+        // biasing instead of fighting it.
+        let words = vec!["ProjectIQ".to_string()];
+        let near = apply_custom_words("projectis", &words, EXACT_MATCH_ONLY);
+        assert!(
+            !near.contains("ProjectIQ"),
+            "exact-only must not fuzzy-correct a near miss: {near:?}"
+        );
+
+        // And 0.0 really would be inert -- the trap this constant exists for.
+        let inert = apply_custom_words("whanau", &vec!["wh\u{101}nau".to_string()], 0.0);
+        assert_eq!(
+            inert, "whanau",
+            "threshold 0.0 accepts nothing (strict <), which is why EXACT_MATCH_ONLY is an epsilon"
+        );
     }
 }
