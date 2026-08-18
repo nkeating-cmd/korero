@@ -17,7 +17,7 @@ Two things do reach the network, and it is worth naming them rather than roundin
 speech models are downloaded on first use, and the app asks GitHub once at startup whether a newer
 release exists. Neither carries audio, transcripts, or anything about you. No telemetry, ever.
 
-Current version: **v1.30.0**.
+Current version: **v1.30.1**.
 
 ---
 
@@ -29,7 +29,7 @@ Current version: **v1.30.0**.
 - **Dual capture**: your microphone ("You") **and system audio via WASAPI loopback ("Others")** — a free speaker split without diarization models.
 - **Failsafe by design**: audio streams straight to WAV on disk *while recording* (header flushed every ~5 s), so a crash never loses a meeting; bounded memory even on long calls; on-disk recordings can be recovered and re-transcribed any time.
 - Pick the **transcription model** per meeting; **re-transcribe**, **post-process with a custom per-meeting prompt** (rendered as markdown — tables and all), or both; rename, copy, and **export** the transcript + processed notes.
-- **Import audio files** — WAV, **M4A**, MP3, FLAC, OGG (v1.16.1) — and have them transcribed + post-processed through the same bounded-memory pipeline.
+- **Import audio files** — WAV, **M4A**, MP3, FLAC, OGG (v1.16.1), plus **CAF** and **AIFF** (v1.30.1) — and have them transcribed + post-processed through the same bounded-memory pipeline. Both common `.m4a` payloads decode: **AAC** and **ALAC (Apple Lossless)**, so a lossless Voice Memo or QuickTime recording works without converting it first.
 - Privacy guard: a warning whenever the configured LLM provider is a cloud endpoint, plus a Rust-side egress allowlist so a tampered config can't redirect transcripts to an unknown host.
 
 ### New surfaces & workflows
