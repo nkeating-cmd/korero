@@ -1726,19 +1726,19 @@ pub async fn meeting_post_process(
     // Safety net: a provider that ignores `stream: true` (i.e. doesn't emit
     // OpenAI-style SSE deltas) yields no streamed text. Rather than regress to
     // an empty result, fall back to one ordinary non-streaming request.
+    //
+    // v1.30.2: this used the DICTATION helper, which caps at 1500 tokens and
+    // 30 s. For a meeting that combination cannot succeed — it would truncate
+    // the notes if it returned at all. Now uses the meeting-shaped request.
     let answer = if answer.trim().is_empty() {
-        crate::llm_client::send_chat_completion_with_schema(
+        crate::llm_client::send_chat_completion_meeting(
             &provider,
             api_key_fallback,
             &model,
             text_fallback,
             Some(system_fallback),
-            None,
-            None,
-            None,
         )
         .await?
-        .unwrap_or_default()
     } else {
         answer
     };
