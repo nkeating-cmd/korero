@@ -1014,13 +1014,16 @@ pub async fn meeting_transcribe_file(app: AppHandle, path: String) -> Result<Str
     });
     match ext.as_str() {
         "wav" => transcribe_wav_chunked(&tm, &path, progress).await,
-        "m4a" | "aac" | "mp4" | "mp3" | "flac" | "ogg" => {
+        // v1.31.0: + caf/aiff/aif. These are CONTAINER extensions; which codecs
+        // can actually be decoded out of them is decided by the symphonia
+        // feature list in Cargo.toml, not here.
+        "m4a" | "aac" | "mp4" | "mp3" | "flac" | "ogg" | "caf" | "aiff" | "aif" => {
             let (rate, channels, samples) = open_rodio_stream(&path)?;
             // Compressed length isn't cheaply known → indeterminate bar.
             transcribe_stream_chunked(&tm, rate, channels, samples, progress, None).await
         }
         other => Err(format!(
-            "Unsupported audio format '.{other}' — use WAV, M4A, MP3, FLAC, or OGG."
+            "Unsupported audio format '.{other}' — use WAV, M4A, MP3, FLAC, OGG, CAF or AIFF."
         )),
     }
 }
@@ -2090,8 +2093,25 @@ fn open_rodio_stream(
     // its index (moov atom) at the END of the file, so symphonia's container
     // probe needs seek+len; without them it reports "Unrecognized format".
     // try_from(File) is the fork's own documented canonical constructor.
-    let decoder = rodio::Decoder::try_from(file)
-        .map_err(|e| format!("Could not decode {path}: {e}"))?;
+    let decoder = rodio::Decoder::try_from(file).map_err(|e| {
+        // v1.31.0: "Unrecognized format" is symphonia's message for BOTH "I do
+        // not know this container" and "I know the container but have no
+        // decoder for the codec inside it". Those are different problems with
+        // different fixes, and the bare string sent a real diagnosis down the
+        // wrong path for a while. Name the distinction and give the user the
+        // one action that always works.
+        let name = std::path::Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(path);
+        format!(
+            "Could not decode {name}: {e}.\n\n\
+             The file extension only names the container — the audio inside it \
+             can be any of several codecs. Kōrero decodes AAC, ALAC, MP3, FLAC, \
+             Vorbis and PCM. If this file uses something else, converting it to \
+             WAV will always work."
+        )
+    })?;
     let rate = decoder.sample_rate() as usize;
     let channels = (decoder.channels() as usize).max(1);
     // The rodio fork is the 0.21-era architecture: `Sample` is universally
@@ -2650,5 +2670,58 @@ mod meetings_store_durability_tests {
                 got.len()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod korero_v1_31_decode_tests {
+    use super::open_rodio_stream;
+
+    /// v1.31.0. Opt-in decode test: point `KORERO_TEST_AUDIO` at a real audio
+    /// file and this asserts the decoder actually produces audio from it.
+    ///
+    /// It is a no-op without the variable, deliberately. The file that exposed
+    /// this bug is a 45-minute, 202 MB client recording — it cannot become a
+    /// fixture, for size and for confidentiality. But "it compiles" was never
+    /// the question: v1.16.1 compiled fine and still could not read ALAC. The
+    /// question is whether SAMPLES come out, so that is what this checks.
+    ///
+    ///   $env:KORERO_TEST_AUDIO = "C:\path\to\file.m4a"
+    ///   cargo test --locked korero_v1_31 -- --nocapture
+    #[test]
+    fn korero_v1_31_decodes_a_supplied_audio_file() {
+        let Ok(path) = std::env::var("KORERO_TEST_AUDIO") else {
+            eprintln!("KORERO_TEST_AUDIO not set — skipping decode test");
+            return;
+        };
+
+        let (rate, channels, mut samples) =
+            open_rodio_stream(&path).unwrap_or_else(|e| panic!("decode failed: {e}"));
+
+        assert!(
+            (8_000..=192_000).contains(&rate),
+            "implausible sample rate {rate}"
+        );
+        assert!((1..=8).contains(&channels), "implausible channels {channels}");
+
+        // One second of audio is plenty to prove the codec is wired up.
+        let want = rate * channels;
+        let got: Vec<f32> = samples.by_ref().take(want).filter_map(|r| r.ok()).collect();
+        assert!(
+            got.len() > want / 2,
+            "decoder yielded only {} of {want} samples",
+            got.len()
+        );
+
+        // A decoder that is present but wrong returns silence rather than
+        // failing. Require actual signal, and require it to be in range.
+        let peak = got.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.0001, "decoded {} samples but all silent", got.len());
+        assert!(peak <= 1.5, "samples out of range (peak {peak}) — not normalised f32");
+
+        eprintln!(
+            "decoded {} samples @ {rate} Hz x{channels}, peak {peak:.4}",
+            got.len()
+        );
     }
 }

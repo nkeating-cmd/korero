@@ -1243,7 +1243,7 @@ export const MeetingsSettings: React.FC = () => {
       filters: [
         {
           name: "Audio files",
-          extensions: ["wav", "m4a", "mp3", "aac", "flac", "ogg"],
+          extensions: ["wav", "m4a", "mp3", "aac", "flac", "ogg", "caf", "aiff", "aif"],
         },
       ],
       });
@@ -1856,7 +1856,7 @@ export const MeetingsSettings: React.FC = () => {
           onClick={pickImportFile}
           disabled={recording || recProcessing}
           className="flex items-center gap-1.5"
-          title="Import an audio file (WAV, M4A, MP3, FLAC, OGG) to transcribe and process"
+          title="Import an audio file (WAV, M4A, MP3, AAC, ALAC, FLAC, OGG, CAF, AIFF) to transcribe and process"
         >
           <Upload size={15} /> Import audio
         </Button>

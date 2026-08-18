@@ -76,9 +76,30 @@ vad-rs = { git = "https://github.com/cjpais/vad-rs", default-features = false }
 enigo = "0.6.1"
 # Kōrero (v1.16.1): + AAC/M4A decode for meeting audio import (symphonia
 # backends; additive to default features, which keep wav/mp3/flac/vorbis).
+#
+# v1.31.0 — ALAC, CAF and AIFF added. A real 45-minute client recording named
+# `.m4a` failed with "Could not decode … Unrecognized format". The container
+# was fine: `ftyp M4A `, brands `isom mp42`. The CODEC inside it was ALAC
+# (Apple Lossless), confirmed by the `alac` fourcc in the stsd box and
+# independently by ffprobe. v1.16.1 enabled the isomp4 DEMUXER and the AAC
+# DECODER, so symphonia opened the container, found a codec it had no decoder
+# for, and reported the failure as though the whole format were unreadable.
+#
+# ".m4a" is a container extension, not a codec. Anything Apple writes can be
+# inside it, and Apple's own tools produce ALAC routinely — Voice Memos
+# lossless, QuickTime, Music exports. Supporting the extension but only one of
+# its two common codecs is the worst of both worlds: the file is accepted by
+# the picker and then fails at decode.
+#
+# CAF and AIFF come along for the same reason: they are the rest of the Apple
+# recording family, they are demuxers rather than codecs so they are cheap, and
+# a client handing over a recording is exactly where they turn up.
 rodio = { git = "https://github.com/cjpais/rodio.git", features = [
-  "symphonia-aac",
-  "symphonia-isomp4",
+  "symphonia-aac",     # codec: AAC, the other common .m4a payload
+  "symphonia-alac",    # codec: Apple Lossless — v1.31.0, the actual bug
+  "symphonia-isomp4",  # container: .m4a / .mp4
+  "symphonia-caf",     # container: Core Audio Format
+  "symphonia-aiff",    # container: AIFF / AIFC
 ] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 futures-util = "0.3"
