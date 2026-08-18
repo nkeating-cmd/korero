@@ -96,6 +96,104 @@
   --reading-measure: 74ch;
 }
 
+/* ===========================================================================
+   v1.32.0 M1 — the 2026 token layer.  ADDITIVE. Nothing consumes these yet.
+   ---------------------------------------------------------------------------
+   Why a second, parallel set instead of editing the aurora tokens in place:
+   the aurora tokens have ~550 consumers. Redefining them would repaint the
+   whole app in one commit with no way to bisect a regression. This set lands
+   inert, consumers migrate surface by surface, and the aurora set is deleted
+   only when its consumer count reaches zero.
+
+   PROBED before writing (docs/design-2026/PROBES.md, 2026-08-19, Edge 152 /
+   WebView2 151 on legion-26):
+     · corner-shape: superellipse()  SUPPORTED
+     · color-mix(in lab, …)          SUPPORTED  <- the form Tailwind gates
+                                        opacity-modified utilities on. The
+                                        obvious probe, `in srgb`, would have
+                                        passed while proving nothing.
+     · Aptos weight axis             ABSENT — 300/400/500 all render Regular,
+                                        600/700/800 all render Bold. TWO faces.
+                                        So --weight-* below names only weights
+                                        that exist. Anything else is a lie the
+                                        renderer silently rounds, and
+                                        `font-synthesis: none` (set above)
+                                        correctly refuses to fake it.
+   =========================================================================== */
+:root {
+  /* -- Neutral ladder. True neutral, no hue cast, four steps. -------------- */
+  --k-bg:            #000000;
+  --k-surface:       #141416;
+  --k-surface-2:     #1c1c1e;
+  --k-surface-3:     #252528;
+  --k-hairline:      rgba(235, 235, 245, 0.10);
+  --k-hairline-2:    rgba(235, 235, 245, 0.17);
+
+  /* -- Ink. ---------------------------------------------------------------- */
+  --k-ink:           #ffffff;
+  --k-ink-2:         rgba(235, 235, 245, 0.62);
+  --k-ink-3:         rgba(235, 235, 245, 0.34);
+  --k-read-ink:      rgba(255, 255, 255, 0.90);
+
+  /* -- ONE accent. The aurora set had three, so colour meant nothing. ------
+     --k-accent is for FILLS; --k-accent-ink is the same hue lifted to pass
+     AA as text on the dark surfaces. Using the fill colour as text is the
+     defect this split exists to prevent. */
+  --k-accent:        #0a84ff;
+  --k-accent-ink:    #5ab0ff;
+  --k-accent-quiet:  rgba(10, 132, 255, 0.16);
+
+  /* -- Semantic. Meaning only, never decoration, always with an icon. ------ */
+  --k-ok:            #30d158;  --k-ok-quiet:   rgba(48, 209, 88, 0.14);
+  --k-warn:          #ff9f0a;  --k-warn-quiet: rgba(255, 159, 10, 0.12);
+  --k-bad:           #ff453a;  --k-bad-quiet:  rgba(255, 69, 58, 0.14);
+  --k-fill:          rgba(120, 120, 128, 0.24);
+
+  /* -- Weights that actually exist on this platform. See the probe note. --- */
+  --k-weight-body:   400;   /* renders Regular */
+  --k-weight-strong: 600;   /* renders Bold — there is nothing between */
+
+  /* -- color-scheme as a TOKEN. It was hard-coded `dark` at :root, which is
+     invisible to a token-parity check and drives native controls, the default
+     scrollbar and the text-selection colour. -------------------------------- */
+  --k-color-scheme:  dark;
+}
+
+/* Light values. Inert until something sets [data-theme="light"] on <html> —
+   deliberately NOT wired in this milestone. Landing them now means the parity
+   check below has both halves to compare, and the next milestone is a switch
+   rather than a colour exercise.
+
+   VERIFIED: a plain [data-theme] block DOES beat Tailwind v4 `@theme`, because
+   `@theme` compiles into `@layer theme` and an unlayered author rule outranks
+   every cascade layer. Do NOT convert the @theme block above to `@theme inline`
+   — that resolves var() at build time and kills the swap silently. */
+[data-theme="light"] {
+  --k-bg:            #f2f2f7;
+  --k-surface:       #ffffff;
+  --k-surface-2:     #fafafc;
+  --k-surface-3:     #ffffff;
+  --k-hairline:      rgba(60, 60, 67, 0.13);
+  --k-hairline-2:    rgba(60, 60, 67, 0.22);
+  --k-ink:           #1c1c1e;
+  --k-ink-2:         rgba(60, 60, 67, 0.62);
+  --k-ink-3:         rgba(60, 60, 67, 0.38);
+  --k-read-ink:      #26262a;
+  /* Darkened from #007aff: the iOS blue fails AA as text on white. */
+  --k-accent:        #0b5cd5;
+  --k-accent-ink:    #0b5cd5;
+  --k-accent-quiet:  rgba(11, 92, 213, 0.10);
+  --k-ok:            #167a36;  --k-ok-quiet:   rgba(22, 122, 54, 0.10);
+  --k-warn:          #8a5a00;  --k-warn-quiet: rgba(138, 90, 0, 0.10);
+  --k-bad:           #b3261e;  --k-bad-quiet:  rgba(179, 38, 30, 0.09);
+  --k-fill:          rgba(120, 120, 128, 0.10);
+  --k-weight-body:   400;
+  --k-weight-strong: 600;
+  --k-color-scheme:  light;
+  --scrollbar-thumb:       rgba(60, 60, 67, 0.22);
+  --scrollbar-thumb-hover: rgba(60, 60, 67, 0.38);
+}
+
 :root {
   font-size: 15px;
   line-height: 24px;
@@ -122,7 +220,11 @@
 
   color: var(--color-text);
   background-color: var(--color-background);
-  color-scheme: dark;
+  /* v1.32.0 M1: was hard-coded `dark`. Now driven by a token so it cannot be
+     missed by the theme swap — it controls native form controls, the default
+     scrollbar and the text-selection colour, none of which any Tailwind
+     utility reaches. Resolves to `dark` until [data-theme="light"] is set. */
+  color-scheme: var(--k-color-scheme);
 }
 
 body {
@@ -730,4 +832,45 @@ body::before {
   line-height: 1.3;
   color: var(--color-text-subtle);
   font-variant-numeric: tabular-nums;
+}
+
+/* ===========================================================================
+   v1.32.0 M3 — typography on the weight ladder that actually exists.
+   ---------------------------------------------------------------------------
+   The probe (docs/design-2026/PROBES.md) measured the installed Aptos as TWO
+   faces: 300/400/500 all render Regular, 600/700/800 all render Bold. So the
+   `font-medium` (500) / `font-semibold` (600) distinction used across this
+   codebase is, on this platform, Regular vs Bold and nothing else.
+
+   The consequence is not "pick different numbers" — it is that WEIGHT cannot
+   carry a three-level hierarchy here. Size, colour and space have to. The
+   classes below exist so that intent is stated once rather than re-improvised
+   per component.
+   =========================================================================== */
+
+/* Numbers that change in place must not reflow. An elapsed counter, a
+   timecode or a duration set in proportional figures jitters every tick —
+   the cheapest possible tell that nobody looked closely. */
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* The one display face. `Aptos Display` is a real separate family (probe
+   confirmed it resolves) and is the correct cut above ~28px. */
+.type-display {
+  font-family: "Aptos Display", var(--font-sans);
+  font-size: 30px;
+  line-height: 1.10;
+  letter-spacing: -0.020em;
+  font-weight: var(--k-weight-strong);
+  text-wrap: balance;
+}
+
+/* Overline: the only place positive tracking is correct. Small and uppercase
+   both need air, which is why the rule is "negative as size grows, positive as
+   it shrinks" rather than one global value. */
+.type-overline {
+  font-size: 11px;
+  font-weight: var(--k-weight-strong);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-subtle);
 }

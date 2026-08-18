@@ -1933,7 +1933,11 @@ export const MeetingsSettings: React.FC = () => {
       {storeLoadError && (
         <div
           role="alert"
-          className="glass-card p-4 flex items-start gap-3 border border-pill-urgent/40"
+          /* v1.32.0 M2: opaque. This is the message that tells a user their
+             meetings failed to load — the single most important paragraph the
+             app can ever render. Putting it behind blurred glass, over an
+             animated aurora, was the clearest instance of the whole problem. */
+          className="surface-content p-4 flex items-start gap-3 border border-pill-urgent/40"
         >
           <TriangleAlert size={18} className="text-pill-urgent shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
@@ -1956,7 +1960,7 @@ export const MeetingsSettings: React.FC = () => {
       {/* v1.13.3: persistent warning if the capture worker reported a
           disk-write failure — the toast is transient, this is not. */}
       {captureError && (
-        <div className="glass-card p-3 flex items-start gap-2 border border-pill-urgent/40">
+        <div className="surface-content p-3 flex items-start gap-2 border border-pill-urgent/40">
           <TriangleAlert size={16} className="text-pill-urgent shrink-0 mt-0.5" />
           <p className="text-sm text-text flex-1">{captureError}</p>
           <button
@@ -2277,7 +2281,11 @@ export const MeetingsSettings: React.FC = () => {
               className="w-full rounded-lg border border-glass-border bg-glass-surface-thin py-1.5 pl-7 pr-2 text-xs text-text placeholder:text-text-subtle focus:outline-none"
             />
           </div>
-          <div className="glass-card flex max-h-[55vh] flex-col gap-1 overflow-y-auto p-2">
+          {/* v1.32.0 M2: was `glass-card`. This is a SCROLLING region, which is
+              the worst possible host for a backdrop-filter — every frame of the
+              scroll forces a repaint of everything behind it. It is also a list
+              of titles and dates, i.e. content you read. Opaque. */}
+          <div className="surface-content flex max-h-[55vh] flex-col gap-1 overflow-y-auto p-2">
           {filteredMeetings.length === 0 ? (
             <div className="px-3 py-6 flex flex-col items-center gap-2 text-center">
               <Users size={20} className="text-text-subtle" />
@@ -2482,8 +2490,11 @@ export const MeetingsSettings: React.FC = () => {
                   entry point is the per-segment "Start here" / "End here"
                   buttons below. Everything here is reversible: the bar's own
                   headline button clears the window in one click. */}
+              {/* v1.32.0 M2: opaque — this bar states which part of the meeting
+                  is currently hidden, which is a fact the user has to read
+                  accurately before pressing anything. */}
               {isTrimmed(active) && (
-                <div className="glass-card-thin space-y-2 border-l-2 border-aurora-cyan/50 px-3 py-2">
+                <div className="surface-content space-y-2 border-l-2 border-aurora-cyan/50 px-3 py-2">
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                     <button
                       type="button"
@@ -2826,7 +2837,9 @@ export const MeetingsSettings: React.FC = () => {
                     </span>
                   )}
                   {busy && !elsewhereJobTitle && (
-                    <span className="self-center text-xs text-text-subtle tabular-nums">
+                    /* v1.32.0 M3: `tnum` alongside the Tailwind utility — the
+                       elapsed seconds tick once a second and must not reflow. */
+                    <span className="tnum self-center text-xs text-text-subtle tabular-nums">
                       {/* Review fix (v1.25.0 #5): aria-live only on the phase
                           word — a live region containing the ticking counter
                           would be re-announced every second. */}
