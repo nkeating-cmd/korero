@@ -698,7 +698,6 @@ export const MeetingsSettings: React.FC = () => {
         /* no restore — page starts idle as usual */
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // v1.13.5: device names for the meter labels.
@@ -712,7 +711,6 @@ export const MeetingsSettings: React.FC = () => {
   };
   useEffect(() => {
     refreshDevices();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadRecordings = async () => {
@@ -1748,9 +1746,9 @@ export const MeetingsSettings: React.FC = () => {
       {storeLoadError && (
         <div
           role="alert"
-          className="glass-card p-4 flex items-start gap-3 border border-red-500/40"
+          className="glass-card p-4 flex items-start gap-3 border border-pill-urgent/40"
         >
-          <TriangleAlert size={18} className="text-red-400 shrink-0 mt-0.5" />
+          <TriangleAlert size={18} className="text-pill-urgent shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold text-text">
               Couldn&rsquo;t read your saved meetings
@@ -1771,8 +1769,8 @@ export const MeetingsSettings: React.FC = () => {
       {/* v1.13.3: persistent warning if the capture worker reported a
           disk-write failure — the toast is transient, this is not. */}
       {captureError && (
-        <div className="glass-card p-3 flex items-start gap-2 border border-red-500/40">
-          <TriangleAlert size={16} className="text-red-400 shrink-0 mt-0.5" />
+        <div className="glass-card p-3 flex items-start gap-2 border border-pill-urgent/40">
+          <TriangleAlert size={16} className="text-pill-urgent shrink-0 mt-0.5" />
           <p className="text-sm text-text flex-1">{captureError}</p>
           <button
             onClick={() => setCaptureError(null)}
@@ -1880,8 +1878,8 @@ export const MeetingsSettings: React.FC = () => {
           </span>
         )}
         {recording && paused && (
-          <span className="flex items-center gap-2 text-sm font-medium text-amber-400">
-            <span className="inline-block w-2 h-2 rounded-full bg-amber-400" />
+          <span className="flex items-center gap-2 text-sm font-medium text-pill-warning">
+            <span className="inline-block w-2 h-2 rounded-full bg-pill-warning" />
             Paused — not recording (mic still on)
           </span>
         )}
@@ -1904,7 +1902,7 @@ export const MeetingsSettings: React.FC = () => {
       {/* Phase B (v1.14.0): live transcript while the meeting records, plus
           Phase C — ask the post-processing model about the meeting so far. */}
       {(recording || recProcessing) && liveSegments.length > 0 && (
-        <div className="glass-card p-4 space-y-2">
+        <div className="surface-content p-4 space-y-2">
           <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wider">
             Live transcript
           </h3>
@@ -1948,7 +1946,7 @@ export const MeetingsSettings: React.FC = () => {
             </Button>
           </div>
           {liveAnswer && (
-            <div className="glass-card-thin md-body">
+            <div className="surface-content md-body">
               <Markdown>{liveAnswer}</Markdown>
             </div>
           )}
@@ -1957,7 +1955,7 @@ export const MeetingsSettings: React.FC = () => {
 
       {/* Import workflow card */}
       {importPath && (
-        <div className="glass-card p-4 space-y-3">
+        <div className="surface-content p-4 space-y-3">
           <div className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-2 text-sm text-text min-w-0">
               <FileAudio size={16} className="text-aurora-cyan shrink-0" />
@@ -2165,7 +2163,7 @@ export const MeetingsSettings: React.FC = () => {
         </div>
 
         {/* Detail */}
-        <div className="flex-1 min-w-0 glass-card p-4">
+        <div className="flex-1 min-w-0 surface-content p-4">
           {!active ? (
             <div className="py-16 flex flex-col items-center gap-2 text-center">
               <Plus size={22} className="text-text-subtle" />
@@ -2456,7 +2454,7 @@ export const MeetingsSettings: React.FC = () => {
                       suppressed (the header + rename pencil stay). The two-block
                       body only shows for older meetings / single-file imports. */}
                   {!(active.transcript && active.transcript.length > 0) && (
-                    <p className="text-sm text-text-muted whitespace-pre-wrap leading-relaxed">
+                    <p className="transcript-body whitespace-pre-wrap">
                       {row.text.trim() || "—"}
                     </p>
                   )}
@@ -2504,7 +2502,13 @@ export const MeetingsSettings: React.FC = () => {
                         }
                       >
                         <span
-                          className={`truncate font-semibold ${
+                          // v1.31.0: the gutter DEMOTES so the transcript can
+                          // lead. It keeps its hue and its weight -- position
+                          // and weight still carry the speaker without colour
+                          // alone -- but it stops competing with the words on
+                          // size. The transcript is the product; the label is
+                          // metadata about it.
+                          className={`truncate font-semibold transcript-meta ${
                             s.source === "you"
                               ? "text-aurora-cyan"
                               : "text-aurora-purple"
@@ -2512,7 +2516,7 @@ export const MeetingsSettings: React.FC = () => {
                         >
                           {label}:
                         </span>
-                        <div className="min-w-0 text-text-muted">
+                        <div className="min-w-0 transcript-body">
                           {editingSegIdx === i ? (
                             <input
                               autoFocus
@@ -2723,7 +2727,7 @@ export const MeetingsSettings: React.FC = () => {
                       <Loader2 size={12} className="animate-spin" /> Generating
                       notes…
                     </h3>
-                    <div className="glass-card-thin md-body">
+                    <div className="surface-content md-body">
                       <Markdown>{liveProcessed}</Markdown>
                     </div>
                   </div>
@@ -2833,7 +2837,7 @@ export const MeetingsSettings: React.FC = () => {
                         </div>
                       </div>
                     ) : (
-                      <div className="glass-card-thin md-body">
+                      <div className="surface-content md-body">
                         <Markdown>{active.processed.trim()}</Markdown>
                       </div>
                     )}
@@ -2978,7 +2982,7 @@ export const MeetingsSettings: React.FC = () => {
         <h2 className="px-1 text-xs font-semibold text-text-muted uppercase tracking-wider">
           Storage
         </h2>
-        <div className="glass-card p-4 space-y-3">
+        <div className="surface-content p-4 space-y-3">
           {dirs === null ? (
             <p className="text-sm text-text-subtle">Loading…</p>
           ) : (

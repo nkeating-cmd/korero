@@ -184,7 +184,6 @@ export const NotesSettings: React.FC = () => {
     if (!promptId && settings?.post_process_selected_prompt_id) {
       setPromptId(settings.post_process_selected_prompt_id);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings?.post_process_selected_prompt_id]);
 
   // Recording timer.

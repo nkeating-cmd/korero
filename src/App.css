@@ -66,6 +66,36 @@
   --font-sans: "Aptos", "Aptos Display", "Segoe UI Variable Text", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Inter", sans-serif;
 }
 
+/* ===========================================================================
+   v1.31.0 design tokens — elevation, motion, reading measure.
+   Three closed sets, replacing per-component ad-hoc values. The reference is
+   Linear's redesign: depth as a small set of NAMED elevations rather than a
+   shadow per component, and hierarchy from spacing, weight and alignment
+   rather than from putting every region in a floating card.
+   =========================================================================== */
+:root {
+  /* Elevation. Chromatically tinted with the navy base rather than neutral
+     black — a pure-black shadow over #0a0d1a reads as grey sludge, because the
+     shadow and the surface disagree about hue. Three steps, no more:
+     e1 resting surface · e2 raised/hover · e3 dialogs and popovers. */
+  --shadow-e1: 0 1px 2px rgba(4, 6, 18, 0.42), 0 2px 8px rgba(4, 6, 18, 0.26);
+  --shadow-e2: 0 2px 6px rgba(4, 6, 18, 0.46), 0 10px 26px rgba(4, 6, 18, 0.34);
+  --shadow-e3: 0 8px 24px rgba(4, 6, 18, 0.52), 0 24px 56px rgba(4, 6, 18, 0.44);
+
+  /* Motion budget. The 2026 craft signal is restraint: Apple's answer to
+     complaints about its own signature motion was per-effect opt-out switches.
+     Interaction feedback belongs at 120ms; anything a user waits on repeatedly
+     should not exceed 180ms. Decorative motion above that is a 2022 gesture. */
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* Reading measure. ~74 characters is the long-standing legibility range for
+     continuous prose, and the transcript IS continuous prose — it is the
+     product. Deliberately expressed in ch so it tracks the font. */
+  --reading-measure: 74ch;
+}
+
 :root {
   font-size: 15px;
   line-height: 24px;
@@ -497,15 +527,14 @@ body::before {
   transform: translateX(120%);
 }
 
-/* Aurora focus ring — for keyboard accessibility, glows on focus-visible */
-*:focus-visible {
-  outline: none;
-  box-shadow:
-    0 0 0 2px var(--color-background),
-    0 0 0 4px var(--color-aurora-cyan),
-    0 0 12px 4px rgba(93, 216, 255, 0.35);
-  border-radius: 6px;
-}
+/* v1.31.0: the box-shadow focus ring that used to live here has been REMOVED.
+   It matched the same elements as the `:where(...)` outline rule further down,
+   so every focused control got TWO indicators — a 2px outline plus a 4px halo.
+   Worse, on a `.glass-card` the box-shadow REPLACED the card's own inset glass
+   shadows, and inside `.glass-card-interactive` (which sets `overflow: hidden`)
+   the halo was clipped flat. One ring, expressed as an outline, is correct:
+   outlines are not part of the box model, so they cannot be clipped and cannot
+   displace a shadow. See the rule below. */
 
 /* Kōrero (v1.11.0): honour reduced-motion for the interactive-glass effects.
    Motion is removed (no lift, no light-sweep, instant transitions); the static
@@ -627,4 +656,78 @@ body::before {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+
+  /* v1.31.0 — PROGRESS INDICATORS ARE EXEMPT.
+     The blanket rule above is the standard reduced-motion reset, and for
+     decorative motion it is right. But it also matched all 43 `animate-spin`
+     and `animate-pulse` sites in this app: the model-download verify bar, the
+     meeting post-processing spinner, the Ollama pull button, and eleven more.
+     Freezing those does not reduce motion, it removes INFORMATION — and it
+     removes it from exactly the users least able to guess that a four-minute
+     transcription is still running rather than wedged.
+
+     "Reduce motion" means reduce, not remove. Slowed to 1.6s these read as a
+     calm heartbeat rather than a spin, which is the same answer the recording
+     overlay already reached independently (RecordingOverlay.css: a 2s
+     `korero-spin` under the same media query). Use `data-loading` on any future
+     indicator that is not a Tailwind animate-* utility. */
+  .animate-spin,
+  .animate-pulse,
+  [data-loading] {
+    animation-duration: 1.6s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
+/* ===========================================================================
+   v1.31.0 — THE READING SURFACE.
+
+   Glass is a chrome material. It is not a reading surface.
+
+   Both platform vendors have now said this in their own way. Microsoft has
+   said it for years: Acrylic — the semi-transparent frosted material — is for
+   "transient, light-dismiss surfaces only" (flyouts, context menus), while
+   Mica, the opaque one, is for app backgrounds. Apple learned it the hard way
+   across 2025-26: after the Liquid Glass backlash it shipped a "Tinted"
+   control, raised the default opacity floor, added wallpaper-adaptive blur,
+   and at WWDC 2026 moved toward adaptive opacity so content stays readable.
+   Nielsen Norman's verdict on the original was blunt — it "obscures content
+   instead of letting it take the spotlight".
+
+   Kōrero had the transcript — the entire point of the product — set in the
+   smallest, lowest-contrast type on its page, on a blurred glass card, on a
+   page carrying thirteen glass surfaces. Nothing receded, so nothing led.
+
+   `.surface-content` is the opaque counterpart to `.glass-card`. Use it for
+   anything a person READS. Keep `.glass-card` for chrome: sidebar, toolbar,
+   dropdowns, toasts, the recording overlay.
+   =========================================================================== */
+.surface-content {
+  background: var(--color-background-elev);
+  border: 1px solid var(--color-glass-border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-e1);
+  /* Deliberately NO backdrop-filter. Besides the legibility argument, a
+     backdrop-filter under a scrolling region forces a repaint of everything
+     behind it on every frame of the scroll. */
+}
+
+/* The transcript itself. Full-strength ink, a real reading size, generous
+   leading, and a bounded measure. Previously `text-sm text-text-muted`, i.e.
+   13px at ~70% opacity — quieter than the labels around it. */
+.transcript-body {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--color-text);
+  max-width: var(--reading-measure);
+  text-wrap: pretty;
+}
+
+/* Speaker labels and timestamps demote so the transcript can lead. They keep
+   their colour coding; they lose the competition for size. */
+.transcript-meta {
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--color-text-subtle);
+  font-variant-numeric: tabular-nums;
 }
