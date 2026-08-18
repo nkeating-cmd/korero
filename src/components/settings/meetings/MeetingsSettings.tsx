@@ -47,6 +47,8 @@ import { commands, type ModelInfo } from "../../../bindings";
 import { useSettings } from "../../../hooks/useSettings";
 import {
   useMeetingJobs,
+  persistMeetingPatch,
+  persistNewMeeting,
   type MeetingJobKind,
 } from "../../../stores/meetingJobsStore";
 
@@ -375,6 +377,9 @@ export const MeetingsSettings: React.FC = () => {
   const [localBusy, setLocalBusy] = useState<null | "transcribe" | "both">(
     null,
   );
+  // Declared here (not with the rest of the import workflow) because the
+  // derived `busy` below needs it.
+  const [importBusy, setImportBusy] = useState(false);
   const jobRunningHere =
     job?.status === "running" && job.meetingId === activeId ? job : null;
   // Deliberately keyed off ANY running job, not just one for the meeting on
@@ -382,11 +387,25 @@ export const MeetingsSettings: React.FC = () => {
   // one is in flight would silently orphan the first (its result would arrive
   // to a slot that no longer belongs to it). Disabling the controls everywhere
   // makes "one job at a time" visible instead of a latent data-loss path.
+  //
+  // Review follow-up: `importBusy` and `refining` are folded in. They were
+  // separate flags, so an import or a Refine could be started while a store job
+  // was running — and the store, correctly, refused the second run. The user
+  // got no notes and no message. Two flags for one mutually-exclusive resource
+  // is the bug; one derived answer is the fix.
   const busy: null | "transcribe" | "post" | "both" =
-    localBusy ?? (job?.status === "running" ? job.kind : null);
+    localBusy ??
+    (job?.status === "running" ? job.kind : null) ??
+    (importBusy || refining ? "post" : null);
   // The streamed preview belongs to the meeting being generated, never to
   // whichever meeting happens to be selected.
   const liveProcessed = jobRunningHere ? jobRunningHere.live : "";
+  // Title of the meeting a job is running for, when that is NOT the one on
+  // screen — so the disabled controls can say whose work is blocking them.
+  const elsewhereJobTitle =
+    job?.status === "running" && job.meetingId !== activeId
+      ? (meetings.find((m) => m.id === job.meetingId)?.title ?? "another meeting")
+      : null;
   // v1.25.0 (UX batch, audit #5): elapsed-time feedback for long operations —
   // a spinner alone reads as "frozen" after ~30 s on a 2-minute transcription.
   const [busyElapsed, setBusyElapsed] = useState(0);
@@ -462,7 +481,6 @@ export const MeetingsSettings: React.FC = () => {
   // Import workflow
   const [importPath, setImportPath] = useState<string | null>(null);
   const [importPrompt, setImportPrompt] = useState(DEFAULT_PROMPT);
-  const [importBusy, setImportBusy] = useState(false);
 
   const timerRef = useRef<number | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
@@ -748,14 +766,17 @@ export const MeetingsSettings: React.FC = () => {
   }, [job, activeId, consumeJob, clearJob, storeReady]);
 
   // v1.30.2: surface a failure that landed while the tab was closed, once.
-  const reportedJobErrorRef = useRef<string | null>(null);
+  //
+  // Review follow-up: the previous guard was a `useRef`, which dies with the
+  // component while the store's job does not — so every return to Meetings
+  // re-fired the same failure toast, forever. The job is now CLEARED after
+  // reporting, which both makes the report once-only for real and releases the
+  // single job slot so the next run is not refused.
   useEffect(() => {
     if (!job || job.status !== "error" || !job.error) return;
-    const key = `${job.meetingId}:${job.startedAt}`;
-    if (reportedJobErrorRef.current === key) return;
-    reportedJobErrorRef.current = key;
     toast.error(`Post-processing failed: ${job.error}`);
-  }, [job]);
+    clearJob();
+  }, [job, clearJob]);
 
   // v1.19.0: chunked-transcription progress (imports + re-transcribes).
   useEffect(() => {
@@ -1219,7 +1240,7 @@ export const MeetingsSettings: React.FC = () => {
           .join(" ");
       const you = join("you");
       const others = join("others");
-      patchMeeting(m.id, { you, others, transcript });
+      applyTranscription(m.id, { you, others, transcript });
       return { you, others, transcript };
     }
     const tx = async (path: string | null) => {
@@ -1230,8 +1251,26 @@ export const MeetingsSettings: React.FC = () => {
     };
     const you = await tx(m.micPath);
     const others = await tx(m.systemPath);
-    patchMeeting(m.id, { you, others, transcript: [] });
+    applyTranscription(m.id, { you, others, transcript: [] });
     return { you, others, transcript: [] };
+  };
+
+  // Review follow-up: transcription is minutes of GPU on a long recording, and
+  // `patchMeeting` is a `setMeetings` that does nothing once this panel has
+  // unmounted. The v1.30.2 post-process fix did not cover this half, so leaving
+  // the tab during a re-transcribe still threw the result away. When the view
+  // is gone, write straight to the store instead.
+  const applyTranscription = (
+    id: string,
+    patch: { you: string; others: string; transcript: TranscriptSeg[] },
+  ) => {
+    if (mountedRef.current) {
+      patchMeeting(id, patch);
+      return;
+    }
+    void persistMeetingPatch(id, patch).then((ok) => {
+      if (ok) toast.success("Transcription finished and was saved.");
+    });
   };
 
   // Kōrero (v1.30.2): hands the run to the store and returns. The store owns
@@ -1387,21 +1426,41 @@ export const MeetingsSettings: React.FC = () => {
         micPath: importPath,
         systemPath: null,
       };
-      setMeetings((prev) => [m, ...prev]);
-      setActiveId(m.id);
-      setImportPath(null);
-      toast.success("Imported audio transcribed.");
+      // Review follow-up: the transcription itself takes minutes, so the view
+      // may already be gone by the time we get here. `setMeetings` would then
+      // discard the whole import — the exact loss the reorder above was meant
+      // to prevent. Write it to the store directly in that case.
+      if (mountedRef.current) {
+        setMeetings((prev) => [m, ...prev]);
+        setActiveId(m.id);
+        setImportPath(null);
+        toast.success("Imported audio transcribed.");
+      } else {
+        const ok = await persistNewMeeting(m as unknown as Record<string, unknown>);
+        toast[ok ? "success" : "error"](
+          ok
+            ? "Imported audio transcribed — open Meetings to see it."
+            : "Transcription finished but the meetings store could not be written. The audio file is untouched; try importing again.",
+        );
+        if (!ok) return;
+      }
 
       if (alsoProcess && transcript.trim()) {
         // Handed to the store like every other post-process run, so it keeps
         // going — and lands — if you leave the tab while the model works.
-        void startJob({
+        const started = await startJob({
           meetingId: m.id,
           kind: "post",
           text: transcript,
           prompt: importPrompt.trim(),
           trimKey: ":",
         });
+        // A refusal here used to be swallowed: no notes, no message, ever.
+        if (!started) {
+          toast.message(
+            "Transcript saved. Notes were skipped because another post-process run is in progress — press Post-process when it finishes.",
+          );
+        }
       }
     } catch (e) {
       toast.error(`Import failed: ${String(e)}`);
@@ -1483,7 +1542,13 @@ export const MeetingsSettings: React.FC = () => {
   // v1.22.0: refine the processed notes with free-text feedback to the model
   // (constrained to revise, not rewrite or invent). Undo restores the previous.
   const refineNotes = async () => {
-    if (!active || refining) return;
+    // Review follow-up: `refining` alone was not enough. Refine calls the SAME
+    // Rust command as the store's job and it emits on the SAME global
+    // `meeting-postprocess-delta` channel, so running one during a job produced
+    // an interleaved live preview and two writers racing for `processed`.
+    // `busy` now includes both, so this is unreachable from the UI; the guard
+    // stays because "unreachable" is a claim about today's JSX.
+    if (!active || refining || busy) return;
     const fb = feedback.trim();
     if (!fb) {
       toast.message("Tell the AI what to improve.");
@@ -1507,12 +1572,32 @@ export const MeetingsSettings: React.FC = () => {
         '".';
       const r = await commands.meetingPostProcess(current, prompt);
       if (r.status !== "ok") throw new Error(r.error);
-      patchMeeting(id, { processed: r.data });
-      setFeedback("");
+      // Same unmount rule as everything else on this page.
+      if (mountedRef.current) {
+        patchMeeting(id, { processed: r.data });
+        setFeedback("");
+      } else {
+        const ok = await persistMeetingPatch(id, { processed: r.data });
+        if (!ok) {
+          toast.error("Notes were refined but could not be saved.");
+          return;
+        }
+      }
       toast.success("Notes refined.", {
         action: {
           label: "Undo",
-          onClick: () => patchMeeting(id, { processed: prev }),
+          // The toast outlives this panel — `deleteMeeting` guards the same
+          // hazard at the confirm callback. Without this the user clicks Undo,
+          // is told nothing, and the refined notes stay.
+          onClick: () => {
+            if (mountedRef.current) {
+              patchMeeting(id, { processed: prev });
+            } else {
+              void persistMeetingPatch(id, { processed: prev }).then((ok) => {
+                if (!ok) toast.error("Could not undo — the store did not save.");
+              });
+            }
+          },
         },
       });
     } catch (e) {
@@ -2728,7 +2813,19 @@ export const MeetingsSettings: React.FC = () => {
                     )}
                     Transcribe + post-process
                   </Button>
-                  {busy && (
+                  {busy && elsewhereJobTitle && (
+                    /* Review follow-up: a job running for ANOTHER meeting used
+                       to render here as "Processing… 41s" with that meeting's
+                       clock, on a page showing no output — indistinguishable
+                       from this meeting being stuck. Name the real one. */
+                    <span
+                      className="self-center text-xs text-text-subtle"
+                      aria-live="polite"
+                    >
+                      Busy with “{elsewhereJobTitle}” — one at a time
+                    </span>
+                  )}
+                  {busy && !elsewhereJobTitle && (
                     <span className="self-center text-xs text-text-subtle tabular-nums">
                       {/* Review fix (v1.25.0 #5): aria-live only on the phase
                           word — a live region containing the ticking counter

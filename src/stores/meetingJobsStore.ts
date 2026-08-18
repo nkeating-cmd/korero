@@ -57,14 +57,19 @@ export interface MeetingJob {
 
 interface MeetingJobsState {
   job: MeetingJob | null;
-  /** Start a run. Returns immediately; progress lands in the store. */
+  /**
+   * Start a run. Resolves to false if one was already in flight and this start
+   * was REFUSED — callers must surface that, or the user gets no notes and no
+   * explanation. (Review finding: `runImport` fired and ignored the result, so
+   * an import started during a meeting run silently produced nothing.)
+   */
   start: (args: {
     meetingId: string;
     kind: MeetingJobKind;
     text: string;
     prompt: string;
     trimKey: string;
-  }) => Promise<void>;
+  }) => Promise<boolean>;
   /** A mounted view claims the finished result so it can patch its own state. */
   consume: (meetingId: string) => MeetingJobResult | null;
   /** Dismiss a finished/failed job so the banner goes away. */
@@ -82,40 +87,70 @@ interface MeetingJobsState {
 // the view IS mounted it consumes the result, patches its own array and its
 // debounce saves the whole document; doing our own write as well would race
 // that save with a copy of the array we read BEFORE the patch, and could put
-// the notes back over a newer edit. Waiting until after that window means the
-// two paths are mutually exclusive: exactly one of them writes.
+// the notes back over a newer edit. Waiting until after that window, AND
+// claiming the job synchronously before the first await (see `start`), makes
+// the two paths mutually exclusive: exactly one of them writes.
 const ADOPTION_GRACE_MS = 1200;
 
-async function persistUnclaimedResult(
+/**
+ * Read-modify-write a patch into the meetings store on disk.
+ *
+ * Used whenever the result of long-running work arrives with no mounted view to
+ * receive it. Obeys the v1.29.0 R-02 rule without exception: only ever save a
+ * store that was successfully READ, so a file momentarily locked by OneDrive or
+ * antivirus can never be replaced with a truncated or empty document.
+ */
+export async function persistMeetingPatch(
   meetingId: string,
-  result: MeetingJobResult,
-): Promise<void> {
+  patch: Record<string, unknown>,
+): Promise<boolean> {
   try {
     const res = await commands.meetingsStoreLoad();
-    // Same rule the view enforces (v1.29.0, R-02): only ever save a store we
-    // successfully READ. A read failure here must not write anything, or a
-    // momentarily locked file becomes an empty meetings.json.
-    if (res.status !== "ok" || !res.data.trim()) return;
-
+    if (res.status !== "ok" || !res.data.trim()) return false;
     const list = JSON.parse(res.data) as Array<Record<string, unknown>>;
-    if (!Array.isArray(list)) return;
-
+    if (!Array.isArray(list)) return false;
     let found = false;
     const next = list.map((m) => {
       if (m && m.id === meetingId) {
         found = true;
-        return { ...m, ...result };
+        return { ...m, ...patch };
       }
       return m;
     });
-    if (!found) return; // meeting deleted while the model was working
-
+    if (!found) return false; // meeting deleted while the work was running
     const saved = await commands.meetingsStoreSave(JSON.stringify(next));
-    if (saved.status !== "ok") {
-      console.error("Post-process result could not be saved:", saved.error);
-    }
+    return saved.status === "ok";
   } catch (e) {
-    console.error("Post-process result could not be saved:", e);
+    console.error("Could not persist meeting patch:", e);
+    return false;
+  }
+}
+
+/**
+ * Prepend a brand-new meeting to the store on disk.
+ *
+ * The import path needs this: transcription of a 45-minute file takes minutes,
+ * and if the view is gone when it finishes there is no React state to add the
+ * meeting to. Without this the entire import — transcript included — evaporated.
+ */
+export async function persistNewMeeting(
+  meeting: Record<string, unknown>,
+): Promise<boolean> {
+  try {
+    const res = await commands.meetingsStoreLoad();
+    if (res.status !== "ok") return false;
+    const list = res.data.trim()
+      ? (JSON.parse(res.data) as Array<Record<string, unknown>>)
+      : [];
+    if (!Array.isArray(list)) return false;
+    if (list.some((m) => m && m.id === meeting.id)) return true; // already there
+    const saved = await commands.meetingsStoreSave(
+      JSON.stringify([meeting, ...list]),
+    );
+    return saved.status === "ok";
+  } catch (e) {
+    console.error("Could not persist imported meeting:", e);
+    return false;
   }
 }
 
@@ -125,15 +160,24 @@ async function persistUnclaimedResult(
 // coming back shows the text generated in the meantime instead of a blank box.
 let deltaListenerAttached = false;
 
-function attachDeltaListener(set: (fn: (s: MeetingJobsState) => Partial<MeetingJobsState>) => void) {
+function attachDeltaListener(
+  set: (fn: (s: MeetingJobsState) => Partial<MeetingJobsState>) => void,
+) {
   if (deltaListenerAttached) return;
   deltaListenerAttached = true;
-  void listen<string>("meeting-postprocess-delta", (e) => {
+  // Review finding: the flag was set before the async registration resolved and
+  // there was no catch, so a rejected `listen()` killed the live preview for the
+  // whole session AND produced an unhandled rejection. Reset on failure so the
+  // next run retries; the preview is cosmetic, the run itself is unaffected.
+  listen<string>("meeting-postprocess-delta", (e) => {
     set((s) =>
       s.job && s.job.status === "running"
         ? { job: { ...s.job, live: s.job.live + e.payload } }
         : {},
     );
+  }).catch((err) => {
+    deltaListenerAttached = false;
+    console.error("Could not attach the post-process delta listener:", err);
   });
 }
 
@@ -150,7 +194,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => ({
       console.warn(
         `Refusing to start a second post-process run; ${existing.meetingId} is still generating.`,
       );
-      return;
+      return false;
     }
     attachDeltaListener(set);
     set({
@@ -180,11 +224,25 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => ({
       );
 
       // Give a mounted view its chance, then guarantee the result reaches disk.
+      //
+      // Review finding: this was a check-then-act. It read `!consumed`, then
+      // awaited a multi-megabyte store load, then wrote back the snapshot it had
+      // read. If the view committed during that await — plausible on a long
+      // transcript, where React is busy re-rendering the streamed markdown —
+      // the write reverted every edit made since the last save. Claiming the
+      // job SYNCHRONOUSLY before any await closes the window: after this `set`,
+      // `consume()` returns null and the view leaves the disk write to us.
       window.setTimeout(() => {
         const j = get().job;
-        if (j && j.meetingId === meetingId && !j.consumed && j.result) {
-          void persistUnclaimedResult(meetingId, j.result);
-        }
+        if (!j || j.meetingId !== meetingId || j.consumed || !j.result) return;
+        set({ job: { ...j, consumed: true } });
+        void persistMeetingPatch(meetingId, { ...j.result }).then((ok) => {
+          if (!ok) {
+            console.error(
+              "Post-process result could not be written to the meetings store.",
+            );
+          }
+        });
       }, ADOPTION_GRACE_MS);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -194,6 +252,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => ({
           : {},
       );
     }
+    return true;
   },
 
   consume: (meetingId) => {

@@ -495,6 +495,15 @@ pub async fn stream_chat_completion<F: FnMut(&str)>(
     let client = reqwest::Client::builder()
         .default_headers(headers)
         .connect_timeout(LLM_CONNECT_TIMEOUT)
+        // Review follow-up: removing the total timeout must not leave an
+        // UNBOUNDED wait. `read_timeout` is the per-read equivalent of the idle
+        // guard below and, unlike `timeout`, it also covers reads this function
+        // performs outside the streaming loop — notably `response.text()` on a
+        // non-success status, where a provider that sends 503 headers and then
+        // stalls the body would otherwise hang forever. A hang there is worse
+        // than a failure: the command never resolves, so the job stays
+        // "running" and every button stays disabled for the rest of the session.
+        .read_timeout(LLM_STREAM_IDLE_TIMEOUT)
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
 
@@ -566,7 +575,21 @@ pub async fn stream_chat_completion<F: FnMut(&str)>(
     // terminated by `data: [DONE]`. A frame can split across chunks, so buffer
     // bytes and only consume complete `\n\n`-delimited records.
     let mut stream = response.bytes_stream();
-    let mut buf = String::new();
+    // Review follow-up: the buffer is BYTES, not a String.
+    //
+    // `bytes_stream()` splits at arbitrary byte offsets, so a multi-byte
+    // character can straddle two chunks. Decoding each chunk with
+    // `String::from_utf8_lossy` therefore turned any such character into U+FFFD
+    // — silently, and in an app whose whole pitch is te reo Māori, where `ā`
+    // (2 bytes) and `—` (3 bytes) are everywhere. Removing the 5-minute
+    // deadline makes long generations the normal case, which means more chunks
+    // and more boundaries, so this got MORE likely, not less.
+    //
+    // Accumulating bytes and decoding only complete `\n\n`-delimited frames
+    // means a split character is simply still in the buffer when the next chunk
+    // arrives. Frame text is valid UTF-8 by then, so the lossy decode has
+    // nothing to mangle.
+    let mut bytes: Vec<u8> = Vec::new();
     let mut full = String::new();
     let started = std::time::Instant::now();
     loop {
@@ -604,40 +627,49 @@ pub async fn stream_chat_completion<F: FnMut(&str)>(
                 ),
             );
         }
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(idx) = buf.find("\n\n") {
-            let frame = buf[..idx].to_string();
-            buf.drain(..idx + 2);
-            for line in frame.lines() {
-                let line = line.trim_start();
-                let payload = match line.strip_prefix("data:") {
-                    Some(p) => p.trim(),
-                    None => continue, // comments / event: lines — ignore
-                };
-                if payload == "[DONE]" {
-                    return Ok(full);
-                }
-                if let Ok(v) = serde_json::from_str::<Value>(payload) {
-                    if let Some(piece) = v["choices"][0]["delta"]["content"].as_str() {
-                        if !piece.is_empty() {
-                            on_delta(piece);
-                            full.push_str(piece);
-                        }
-                    }
-                }
+        bytes.extend_from_slice(&chunk);
+        while let Some(idx) = find_frame_end(&bytes) {
+            // Safe to decode: a frame boundary is a character boundary, so no
+            // multi-byte sequence is split here.
+            let frame = String::from_utf8_lossy(&bytes[..idx]).into_owned();
+            bytes.drain(..idx + 2);
+            if consume_sse_frame(&frame, &mut full, &mut on_delta) {
+                return Ok(full);
             }
         }
     }
     // Stream closed. Flush any trailing frame that arrived without a final
     // blank-line terminator (some servers just close the socket after the last
     // delta), so the closing tokens aren't lost.
-    for line in buf.lines() {
+    let tail = String::from_utf8_lossy(&bytes).into_owned();
+    consume_sse_frame(&tail, &mut full, &mut on_delta);
+    Ok(full)
+}
+
+/// Offset of the next `\n\n` frame terminator in the raw byte buffer.
+///
+/// Searching BYTES rather than a decoded string is what keeps a multi-byte
+/// character split across two network chunks intact — see the comment in
+/// `stream_chat_completion`. `\n` is ASCII and can never appear inside a
+/// multi-byte UTF-8 sequence, so a byte search cannot produce a false match.
+fn find_frame_end(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(2).position(|w| w == b"\n\n")
+}
+
+/// Parse one SSE frame, appending any content deltas to `full` and handing each
+/// to `on_delta`. Returns true when the frame carried the `[DONE]` sentinel.
+///
+/// Extracted so the streaming loop and the end-of-stream flush share one
+/// implementation — they had drifted into two near-copies, and only one of them
+/// treated `[DONE]` as a terminator.
+fn consume_sse_frame<F: FnMut(&str)>(frame: &str, full: &mut String, on_delta: &mut F) -> bool {
+    for line in frame.lines() {
         let payload = match line.trim_start().strip_prefix("data:") {
             Some(p) => p.trim(),
-            None => continue,
+            None => continue, // comments / `event:` lines — ignore
         };
         if payload == "[DONE]" {
-            break;
+            return true;
         }
         if let Ok(v) = serde_json::from_str::<Value>(payload) {
             if let Some(piece) = v["choices"][0]["delta"]["content"].as_str() {
@@ -648,7 +680,7 @@ pub async fn stream_chat_completion<F: FnMut(&str)>(
             }
         }
     }
-    Ok(full)
+    false
 }
 
 /// Fetch available models from an OpenAI-compatible API
@@ -780,6 +812,61 @@ mod korero_v1_30_2_stream_resilience_tests {
             LLM_STREAM_TOTAL_CEILING > LLM_STREAM_IDLE_TIMEOUT * 4,
             "a ceiling close to the idle guard is a total deadline wearing a hat"
         );
+    }
+
+    #[test]
+    fn korero_v1302_macron_split_across_chunks_is_not_corrupted() {
+        // The review finding this locks in: `bytes_stream()` splits at
+        // arbitrary byte offsets, so decoding each chunk on its own turned a
+        // macron straddling the boundary into U+FFFD. In a te reo app that is
+        // silent corruption of the notes.
+        let frame = "data: {\"choices\":[{\"delta\":{\"content\":\"whānau hapū — kōrero\"}}]}\n\n";
+        let raw = frame.as_bytes();
+
+        // Split at EVERY byte offset; a correct implementation survives all of them.
+        for split in 1..raw.len() {
+            let mut bytes: Vec<u8> = Vec::new();
+            let mut full = String::new();
+            let mut seen = String::new();
+            let mut on_delta = |d: &str| seen.push_str(d);
+
+            for chunk in [&raw[..split], &raw[split..]] {
+                bytes.extend_from_slice(chunk);
+                while let Some(idx) = find_frame_end(&bytes) {
+                    let f = String::from_utf8_lossy(&bytes[..idx]).into_owned();
+                    bytes.drain(..idx + 2);
+                    consume_sse_frame(&f, &mut full, &mut on_delta);
+                }
+            }
+            assert_eq!(
+                full, "whānau hapū — kōrero",
+                "a chunk boundary at byte {split} corrupted the text"
+            );
+            assert!(
+                !full.contains('\u{FFFD}'),
+                "replacement character produced at split {split}"
+            );
+            assert_eq!(seen, full, "on_delta and the accumulator disagree");
+        }
+    }
+
+    #[test]
+    fn korero_v1302_done_sentinel_terminates_the_frame() {
+        let mut full = String::new();
+        let mut on_delta = |_: &str| {};
+        assert!(
+            consume_sse_frame("data: [DONE]", &mut full, &mut on_delta),
+            "[DONE] must be reported so the loop stops"
+        );
+        assert!(
+            !consume_sse_frame(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}",
+                &mut full,
+                &mut on_delta
+            ),
+            "an ordinary delta frame is not a terminator"
+        );
+        assert_eq!(full, "x");
     }
 
     #[test]

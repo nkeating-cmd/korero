@@ -137,16 +137,37 @@ export const NotesSettings: React.FC = () => {
 
   // Persist notes + mode. v1.14.4: debounced — previously the whole notes
   // array was stringified on EVERY keystroke (main-thread jank as notes grow).
+  //
+  // v1.30.2: the debounce cleanup runs on UNMOUNT as well as on every `notes`
+  // change, and App.tsx renders only the active settings section — so typing
+  // and then leaving the Notes tab within 500 ms silently discarded the edit,
+  // because `loadNotes()` re-reads localStorage on remount. Identical to the
+  // Meetings autosave bug fixed in the same version. The flush lives in its own
+  // mount-scoped effect below; putting it in this cleanup would fire on every
+  // keystroke and defeat the debounce entirely.
+  const notesRef = useRef(notes);
+  const lastPersistedRef = useRef<string>("");
+  const writeNotes = (payload: string) => {
+    try {
+      localStorage.setItem(STORE_KEY, payload);
+      lastPersistedRef.current = payload;
+    } catch {
+      /* storage full / unavailable — keep working in memory */
+    }
+  };
   useEffect(() => {
-    const t = window.setTimeout(() => {
-      try {
-        localStorage.setItem(STORE_KEY, JSON.stringify(notes));
-      } catch {
-        /* storage full / unavailable — keep working in memory */
-      }
-    }, 500);
+    notesRef.current = notes;
+    const payload = JSON.stringify(notes);
+    const t = window.setTimeout(() => writeNotes(payload), 500);
     return () => window.clearTimeout(t);
   }, [notes]);
+  useEffect(
+    () => () => {
+      const payload = JSON.stringify(notesRef.current);
+      if (payload !== lastPersistedRef.current) writeNotes(payload);
+    },
+    [],
+  );
 
   useEffect(() => {
     localStorage.setItem(MODE_KEY, postProcess ? "1" : "0");

@@ -17,7 +17,7 @@ Two things do reach the network, and it is worth naming them rather than roundin
 speech models are downloaded on first use, and the app asks GitHub once at startup whether a newer
 release exists. Neither carries audio, transcripts, or anything about you. No telemetry, ever.
 
-Current version: **v1.30.2**.
+Current version: **v1.30.3**.
 
 ---
 
@@ -41,8 +41,9 @@ Current version: **v1.30.2**.
 - **Latch / hands-free mode** — double-tap a shortcut to lock recording on for long dictation; tap once to stop.
 
 ### Reliability
-- **Meeting notes finish even if you leave the tab** (v1.30.2). Post-processing now runs in a store that outlives the Meetings view, so navigating away no longer discards the result — it lands whether or not you are watching, and returning mid-run shows the spinner and the text generated while you were gone. An import is saved as soon as it has a transcript, so an interrupted import costs you the notes, never the transcription.
-- **Long generations are no longer cut off at five minutes** (v1.30.2). The stream is bounded by silence between tokens rather than a total deadline, and output that stops early is kept and labelled as incomplete instead of being thrown away.
+- **Work finishes even if you leave the tab** (v1.30.3). Meeting post-processing runs in a store that outlives the view, so navigating away no longer discards the result — it lands whether or not you are watching, and returning mid-run shows the spinner and the text generated while you were gone. Transcriptions, imports and note refinements write straight to disk when no view is mounted, and both the Meetings and Notes autosaves now flush on the way out instead of cancelling, so an edit made in the last half-second before you switch tabs survives.
+- **Long generations are no longer cut off at five minutes** (v1.30.3). The stream is bounded by silence between tokens rather than a total deadline, and output that stops early is kept and labelled as incomplete instead of being thrown away.
+- **Macrons survive the stream** (v1.30.3). Generated notes are decoded at SSE frame boundaries rather than per network chunk, so a *whānau* split across two packets no longer arrives as a replacement character.
 - **Fixed: shortcuts going dead after the model auto-unloads.** Model (re)loading is now panic-safe, so an idle unload can no longer wedge transcription until an app restart.
 - **Model pre-warm** at startup and **early global-shortcut init** for a faster, more dependable first dictation.
 - **Window size & position persistence** across launches.
