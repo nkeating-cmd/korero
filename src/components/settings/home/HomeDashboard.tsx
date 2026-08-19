@@ -49,14 +49,17 @@ const QuickAction: React.FC<{
   subtitle: string;
   onClick: () => void;
 }> = ({ icon, title, subtitle, onClick }) => (
+  /* v1.32.1: opaque card on the token ladder, with a real hover/active pair.
+     Was glass over an animated aurora — four blurred cards competing with the
+     background and with each other, none of them leading. */
   <button
     type="button"
     onClick={onClick}
-    className="glass-card glass-card-interactive flex items-start gap-3 p-4 text-left"
+    className="k-card-action flex items-start gap-3.5 p-4 text-left"
   >
-    <span className="text-aurora-cyan shrink-0 mt-0.5">{icon}</span>
-    <span className="flex flex-col">
-      <span className="text-sm font-medium text-text">{title}</span>
+    <span className="k-accent-text shrink-0 mt-0.5">{icon}</span>
+    <span className="flex flex-col gap-0.5">
+      <span className="text-sm font-semibold text-text">{title}</span>
       <span className="text-xs text-text-subtle">{subtitle}</span>
     </span>
   </button>
@@ -97,12 +100,13 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({ onNavigate }) => {
   };
 
   return (
-    <div className="max-w-3xl w-full mx-auto space-y-6">
+    <div className="max-w-3xl w-full mx-auto space-y-7">
+      {/* v1.32.1: the greeting is the one focal point on this screen, so it
+          gets the display face and a real size step. It was 24px semibold —
+          barely above the card titles it was supposed to lead. */}
       <div className="px-1 pt-1">
-        <h1 className="text-2xl font-semibold text-text tracking-tight">
-          {greeting()}
-        </h1>
-        <p className="text-sm text-text-subtle mt-1">
+        <h1 className="type-display text-text">{greeting()}</h1>
+        <p className="text-sm text-text-subtle mt-1.5 max-w-[54ch]">
           Press your dictate shortcut anywhere to turn speech into text — or
           start below.
         </p>
@@ -135,21 +139,21 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({ onNavigate }) => {
         />
       </div>
 
-      <div className="space-y-2">
+      <div className="space-y-2.5">
         <div className="flex items-center justify-between px-1">
-          <h2 className="text-xs font-semibold text-text-muted uppercase tracking-wider">
-            Recent dictations
-          </h2>
+          <h2 className="type-overline">Recent dictations</h2>
           <button
             type="button"
             onClick={() => go("history")}
-            className="text-xs text-aurora-cyan hover:underline"
+            className="k-accent-text text-xs font-semibold hover:underline"
           >
             View all
           </button>
         </div>
 
-        <div className="glass-card p-1.5">
+        {/* v1.32.1: opaque. This is a list of transcript text — the thing the
+            product exists to produce — and it was set behind a blur. */}
+        <div className="k-card p-1.5">
           {recent === null ? (
             <div className="px-4 py-6 text-sm text-text-subtle text-center">
               Loading…
@@ -164,17 +168,18 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({ onNavigate }) => {
               </p>
             </div>
           ) : (
-            <div className="divide-y divide-glass-border">
+            <div>
               {recent.map((e) => (
                 <div
                   key={e.id}
-                  className="group flex items-center gap-3 px-4 py-2.5"
+                  className="k-row group flex items-center gap-3 px-4 py-3"
                 >
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-text truncate">
                       {e.post_processed_text || e.transcription_text}
                     </p>
-                    <p className="text-xs text-text-subtle">
+                    {/* tnum: these are relative times that tick. */}
+                    <p className="tnum text-xs text-text-subtle mt-0.5">
                       {relativeTime(e.timestamp)}
                       {e.post_process_requested ? " · cleaned up" : ""}
                     </p>
@@ -183,7 +188,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({ onNavigate }) => {
                     type="button"
                     title="Copy"
                     onClick={() => copyEntry(e)}
-                    className="opacity-0 group-hover:opacity-100 text-text-subtle hover:text-aurora-cyan transition-opacity shrink-0"
+                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-text-subtle hover:text-[var(--k-accent-ink)] transition-opacity shrink-0"
                   >
                     {copiedId === e.id ? (
                       <Check size={16} />

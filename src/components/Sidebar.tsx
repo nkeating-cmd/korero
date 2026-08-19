@@ -120,21 +120,19 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeSection, onSectionChange
               key={section.id}
               type="button"
               onClick={() => onSectionChange(section.id)}
-              className={`group flex gap-2.5 items-center px-3 py-2 w-full rounded-lg text-left transition-all duration-200 ${
+              /* v1.32.1: the active row now carries the ONE accent, tinted, and
+                 the label goes accent-coloured with it. The previous treatment
+                 was a neutral white lift plus a separate aurora-gradient icon
+                 tile — two competing active signals, neither of which read as
+                 "selected" at a glance. Min-height meets the 44px target. */
+              className={`group flex gap-2.5 items-center px-3 py-2 w-full min-h-[40px] rounded-[10px] text-left transition-colors duration-200 ${
                 isActive
-                  ? "text-text font-semibold"
+                  ? "k-accent-text font-semibold"
                   : "text-text-muted hover:bg-white/8 hover:text-text"
               }`}
               style={
                 isActive
-                  ? {
-                      // Kōrero (v1.22.0): the active SIGNAL now lives in the icon
-                      // tile (aurora-gradient fill), so the row itself only needs a
-                      // quiet neutral lift — avoids a double-cyan, over-saturated row.
-                      backgroundColor: "rgba(255, 255, 255, 0.06)",
-                      boxShadow:
-                        "inset 0 1px 0 0 rgba(255, 255, 255, 0.12), 0 1px 3px 0 rgba(0, 0, 0, 0.2)",
-                    }
+                  ? { backgroundColor: "var(--k-accent-quiet)" }
                   : undefined
               }
             >

@@ -489,18 +489,16 @@ svg.lucide {
   background: rgba(255, 255, 255, 0.1);
   transform: translateY(-1px);
 }
+/* v1.32.1: the active tile was a cyan→purple gradient with a coloured glow —
+   two hues plus a halo, competing with the row's own active treatment. The row
+   now carries the tint and the label; the tile just fills with the one accent.
+   One signal, stated once. */
 .korero-nav-tile-active,
 .group:hover .korero-nav-tile-active {
   color: #ffffff;
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--color-aurora-cyan) 88%, transparent),
-    color-mix(in srgb, var(--color-aurora-purple) 72%, transparent)
-  );
-  box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.4),
-    0 2px 10px 0 color-mix(in srgb, var(--color-aurora-cyan) 38%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--color-aurora-cyan) 34%, transparent);
+  background: var(--k-accent);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.22);
+  transform: none;
 }
 
 /* Unified button system — one premium, on-brand control reused app-wide so
@@ -874,3 +872,65 @@ body::before {
   text-transform: uppercase;
   color: var(--color-text-subtle);
 }
+
+/* ===========================================================================
+   v1.32.1 — the components that CONSUME the token layer.
+   ---------------------------------------------------------------------------
+   v1.32.0 landed 23 tokens and wired none of them, on the reasoning that an
+   inert layer cannot regress anything. That was true and it was also useless:
+   the app shipped looking byte-for-byte identical on every screen except four
+   surfaces in Meetings. "Safe" had quietly become "invisible".
+
+   These classes are the migration path the token comment promised — surface by
+   surface, each one a visible change with a check behind it, rather than one
+   commit that repaints 550 aurora consumers at once.
+   =========================================================================== */
+
+/* Opaque card on the neutral ladder. The counterpart to .glass-card for
+   anything that is content rather than chrome. Concentric: the 16px radius
+   pairs with the 16px padding its consumers use. */
+.k-card {
+  background: var(--k-surface);
+  border: 1px solid var(--k-hairline);
+  border-radius: 16px;
+  corner-shape: superellipse(2);
+  box-shadow: var(--shadow-e1);
+}
+
+/* The interactive variant. Lift on hover, accent hairline to say "this is a
+   target", and a real pressed state — the three-state trio the old
+   .glass-card-interactive only half had. */
+.k-card-action {
+  background: var(--k-surface);
+  border: 1px solid var(--k-hairline);
+  border-radius: 16px;
+  corner-shape: superellipse(2);
+  box-shadow: var(--shadow-e1);
+  transition:
+    transform var(--motion-base) var(--ease-out),
+    border-color var(--motion-base) var(--ease-out),
+    background-color var(--motion-base) var(--ease-out),
+    box-shadow var(--motion-base) var(--ease-out);
+}
+.k-card-action:hover {
+  background: var(--k-surface-2);
+  border-color: color-mix(in srgb, var(--k-accent) 42%, transparent);
+  box-shadow: var(--shadow-e2);
+  transform: translateY(-2px);
+}
+.k-card-action:active {
+  transform: translateY(0) scale(0.995);
+  box-shadow: var(--shadow-e1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .k-card-action:hover,
+  .k-card-action:active { transform: none; }
+}
+
+/* The one accent, as text. Never --k-accent for type: that is the FILL value
+   and it does not clear AA on these surfaces. */
+.k-accent-text { color: var(--k-accent-ink); }
+
+/* Row inside an opaque list. Hairlines from the token ladder, not from the
+   glass border, so the list reads as one object rather than stacked cards. */
+.k-row + .k-row { border-top: 1px solid var(--k-hairline); }
