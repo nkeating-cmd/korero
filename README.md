@@ -17,7 +17,7 @@ Two things do reach the network, and it is worth naming them rather than roundin
 speech models are downloaded on first use, and the app asks GitHub once at startup whether a newer
 release exists. Neither carries audio, transcripts, or anything about you. No telemetry, ever.
 
-Current version: **v1.32.1**.
+Current version: **v1.33.0**.
 
 ---
 

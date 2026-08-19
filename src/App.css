@@ -1,42 +1,62 @@
 @import "tailwindcss";
 
-/* Korero - dark liquid-glass theme (iOS 18 / Sequoia, aurora-on-navy palette) */
+/* Kōrero — v1.33.0 "Quiet Instrument".
+   ---------------------------------------------------------------------------
+   Was: aurora-on-navy — a #0a0d1a blue-cast base, three animated cyan/purple/
+   pink radial gradients, and glass on nearly every surface.
+
+   Two releases of surface-level work (v1.32.0, v1.32.1) changed real things and
+   the app still read as identical, because the thing that DEFINES how it reads
+   was never touched: the base hue and the animated background. Those are two
+   declarations that ~550 consumers inherit. Retuning them here repaints every
+   screen at once and consistently, which is what editing ten component files
+   one at a time could never do.
+
+   The palette is now a true neutral ladder with ONE accent. The aurora token
+   NAMES are kept — 551 consumers reference them — but they now resolve to the
+   new palette, so no component needs to know the brand changed. */
 
 @theme {
-  --color-background:           #0a0d1a;
-  --color-background-elev:      #0f1326;
+  --color-background:           #0b0b0d;   /* was #0a0d1a — true neutral, no hue */
+  --color-background-elev:      #151517;   /* was #0f1326 */
 
-  --color-glass-surface-thin:    rgba(255, 255, 255, 0.06);
-  --color-glass-surface:         rgba(255, 255, 255, 0.10);
-  --color-glass-surface-thick:   rgba(255, 255, 255, 0.14);
-  --color-glass-surface-hover:   rgba(255, 255, 255, 0.13);
-  --color-glass-surface-active:  rgba(255, 255, 255, 0.17);
+  /* Glass is now a thin neutral film rather than a milky white veil. Chrome
+     still reads as glass; content surfaces below are opaque. */
+  --color-glass-surface-thin:    rgba(255, 255, 255, 0.035);
+  --color-glass-surface:         rgba(255, 255, 255, 0.055);
+  --color-glass-surface-thick:   rgba(255, 255, 255, 0.075);
+  --color-glass-surface-hover:   rgba(255, 255, 255, 0.085);
+  --color-glass-surface-active:  rgba(255, 255, 255, 0.11);
 
-  --color-glass-border:          rgba(255, 255, 255, 0.09);
-  --color-glass-border-strong:   rgba(255, 255, 255, 0.16);
+  --color-glass-border:          rgba(235, 235, 245, 0.10);
+  --color-glass-border-strong:   rgba(235, 235, 245, 0.17);
 
-  --color-glass-hero-tint:       rgba(80, 90, 200, 0.18);
+  --color-glass-hero-tint:       rgba(10, 132, 255, 0.10);
 
-  /* ---- AURORA brand palette (replaces yellow brand) ---- */
-  --color-aurora-cyan:           #5DD8FF;
-  --color-aurora-purple:         #9B7FE8;
-  --color-aurora-pink:           #E87AC5;
-  --color-aurora-magenta:        #FF7AB3;
+  /* ---- The one accent, wearing the old aurora names ----
+     Renaming these would mean touching 551 call sites. Repointing them means
+     touching four lines. `cyan` is the accent; the other three collapse onto
+     it so a gradient built from two of them renders as one flat colour rather
+     than a cyan→purple sweep. */
+  --color-aurora-cyan:           #0A84FF;
+  --color-aurora-purple:         #0A84FF;
+  --color-aurora-pink:           #0A84FF;
+  --color-aurora-magenta:        #0A84FF;
 
   /* Tints used for "selected / active" glass surfaces */
-  --color-glass-accent-tint:     rgba( 93, 216, 255, 0.12);   /* cyan-tinted */
-  --color-glass-accent-strong:   rgba( 93, 216, 255, 0.22);   /* cyan selected */
+  --color-glass-accent-tint:     rgba( 10, 132, 255, 0.14);
+  --color-glass-accent-strong:   rgba( 10, 132, 255, 0.24);
 
   --color-text:           #ffffff;
-  --color-text-muted:     #b5bcd0;
-  /* Kōrero (v1.12.0): lifted from #7a8198 for better legibility over glass
-     (the old value sat near the AA floor for small text on the dark backdrop). */
-  --color-text-subtle:    #8b93a9;
+  /* Neutral greys. The old values (#b5bcd0 / #8b93a9) were blue-tinted to sit
+     on navy; on a neutral base they read as a second, competing hue. */
+  --color-text-muted:     rgba(235, 235, 245, 0.62);
+  --color-text-subtle:    rgba(235, 235, 245, 0.40);
   --color-text-stroke:    rgba(255, 255, 255, 0.08);
 
   /* Brand logo colour — used by SVG paths via Tailwind class .logo-primary */
-  --color-logo-primary:   #5DD8FF;
-  --color-logo-stroke:    #0f1326;
+  --color-logo-primary:   #0A84FF;
+  --color-logo-stroke:    #151517;
 
   --color-accent-purple:  var(--color-aurora-purple);
   --color-accent-blue:    var(--color-aurora-cyan);
@@ -74,13 +94,16 @@
    rather than from putting every region in a floating card.
    =========================================================================== */
 :root {
-  /* Elevation. Chromatically tinted with the navy base rather than neutral
-     black — a pure-black shadow over #0a0d1a reads as grey sludge, because the
-     shadow and the surface disagree about hue. Three steps, no more:
-     e1 resting surface · e2 raised/hover · e3 dialogs and popovers. */
-  --shadow-e1: 0 1px 2px rgba(4, 6, 18, 0.42), 0 2px 8px rgba(4, 6, 18, 0.26);
-  --shadow-e2: 0 2px 6px rgba(4, 6, 18, 0.46), 0 10px 26px rgba(4, 6, 18, 0.34);
-  --shadow-e3: 0 8px 24px rgba(4, 6, 18, 0.52), 0 24px 56px rgba(4, 6, 18, 0.44);
+  /* Elevation. Three steps, no more: e1 resting · e2 raised/hover · e3 dialogs.
+     v1.33.0: these were tinted rgba(4, 6, 18) — navy — on the stated reasoning
+     that "a pure-black shadow over #0a0d1a reads as grey sludge, because the
+     shadow and the surface disagree about hue". That reasoning was correct and
+     it now points the other way: the base is neutral, so a navy shadow is the
+     one that disagrees. Neutralised, and deepened slightly because a true-black
+     base gives shadows less room to read. */
+  --shadow-e1: 0 1px 2px rgba(0, 0, 0, 0.50), 0 2px 8px rgba(0, 0, 0, 0.34);
+  --shadow-e2: 0 2px 6px rgba(0, 0, 0, 0.54), 0 10px 26px rgba(0, 0, 0, 0.42);
+  --shadow-e3: 0 8px 24px rgba(0, 0, 0, 0.60), 0 24px 56px rgba(0, 0, 0, 0.50);
 
   /* Motion budget. The 2026 craft signal is restraint: Apple's answer to
      complaints about its own signature motion was per-effect opt-out switches.
@@ -234,16 +257,10 @@ body {
   background-color: var(--color-background);
 }
 
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: -1;
-  background:
-    radial-gradient(ellipse 75% 55% at 100% 0%, rgba(93, 216, 255, 0.10), transparent 60%),
-    radial-gradient(ellipse 60% 50% at 0% 100%, rgba(155, 127, 232, 0.10), transparent 60%);
-}
+/* v1.33.0: DEAD CODE, removed. This rule was overridden in full by a second
+   `body::before` further down the file (the animated aurora), so it had no
+   effect at all — ten lines of authoritative-looking CSS that never rendered.
+   Both are now gone; see the note at the animated one. */
 
 .container {
   margin: 0;
@@ -577,22 +594,40 @@ svg.lucide {
   100% { transform: rotate(360deg) scale(1.00); opacity: 1; }
 }
 
+/* ===========================================================================
+   v1.33.0 — the animated aurora is GONE.
+   ---------------------------------------------------------------------------
+   Three drifting radial gradients in cyan, purple and pink, at inset:-25%, on a
+   60-second loop, with `will-change: transform, opacity` — a permanently
+   promoted compositing layer the size of the window, animating forever, behind
+   every screen in the app.
+
+   Three reasons, in order of weight:
+
+   1. It WAS the app's visual identity, and that identity was the thing that
+      made two rounds of surface work read as "no change". Nothing else on
+      screen could out-shout it.
+   2. It is three hues. The design rule is one accent; a background that
+      contributes two more means colour cannot signal anything.
+   3. It costs. A full-window, always-animating promoted layer under a WebView2
+      renderer that already composites every backdrop-filter surface above it.
+
+   What replaces it: a single, static, barely-there lift at the top of the
+   window. Enough to stop a flat #0b0b0d field feeling like a void, not enough
+   to compete with content. No animation, so no reduced-motion exemption needed.
+   =========================================================================== */
 body::before {
   content: "";
   position: fixed;
-  inset: -25%;
+  inset: 0 0 auto 0;
+  height: 42vh;
   pointer-events: none;
   z-index: -1;
-  background:
-    radial-gradient(ellipse 60% 50% at 30% 20%, rgba( 93, 216, 255, 0.16), transparent 65%),
-    radial-gradient(ellipse 60% 50% at 70% 80%, rgba(155, 127, 232, 0.14), transparent 65%),
-    radial-gradient(ellipse 50% 40% at 80% 30%, rgba(216, 111, 212, 0.10), transparent 65%);
-  animation: korero-aurora-drift 60s ease-in-out infinite;
-  will-change: transform, opacity;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  body::before { animation: none; }
+  background: radial-gradient(
+    ellipse 70% 100% at 50% 0%,
+    rgba(10, 132, 255, 0.055),
+    transparent 72%
+  );
 }
 
 /* Light-sweep hover effect on interactive glass — a thin diagonal highlight
