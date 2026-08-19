@@ -17,7 +17,7 @@ Two things do reach the network, and it is worth naming them rather than roundin
 speech models are downloaded on first use, and the app asks GitHub once at startup whether a newer
 release exists. Neither carries audio, transcripts, or anything about you. No telemetry, ever.
 
-Current version: **v1.33.0**.
+Current version: **v1.33.1**.
 
 ---
 
@@ -67,9 +67,11 @@ Current version: **v1.33.0**.
 - Sensible defaults: trailing space on insert, 15-minute model unload timeout.
 
 ### Look & feel
-- **Aurora liquid-glass theme** — cyan/purple/pink luminescence on deep navy, with an animated ambient background, light-sweep hover, refraction rim, and surface sheen.
-- **Aptos-led modern font stack**, custom aurora app/tray icons, a keyboard-accessible aurora focus ring, and subtle page transitions.
-- Colour system unified on design tokens for consistency.
+- **Quiet Instrument** (v1.33.0) — a true-neutral dark ladder with **one** accent, replacing the aurora-on-navy theme. The animated cyan/purple/pink background is gone: it was three competing hues, a permanently-promoted full-window compositing layer, and the loudest thing on every screen.
+- **Glass is chrome only.** Sidebar and toolbars keep the material; anything you *read* sits on an opaque surface. Following Apple's own 2025–26 position that the material exists to bring focus to content, not to sit under it.
+- **Typography on the ladder that exists** — the installed Aptos has exactly two faces (Regular and Bold), measured, so hierarchy comes from size, colour and space rather than from weights the renderer silently rounds. Aptos Display for large titles, tabular figures everywhere numbers tick, a 74ch measure on transcripts.
+- Keyboard-accessible focus ring expressed as an outline so it can never be clipped; subtle page transitions that honour `prefers-reduced-motion`.
+- Colour system unified on design tokens, with a complete light palette defined and ready (not yet switchable).
 
 ### Security & supply chain
 - **API keys stored in the OS keychain** (Windows Credential Manager), never written to disk in plaintext, with a one-time migration + pre-migration backup and clear failure surfacing.
