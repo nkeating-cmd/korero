@@ -128,8 +128,8 @@
    inert, consumers migrate surface by surface, and the aurora set is deleted
    only when its consumer count reaches zero.
 
-   PROBED before writing (docs/design-2026/PROBES.md, 2026-08-19, Edge 152 /
-   WebView2 151 on legion-26):
+   PROBED before writing (2026-08-19, Edge 152 / WebView2 Evergreen 151 on the
+   maintainer's Windows 11 dev machine):
      · corner-shape: superellipse()  SUPPORTED
      · color-mix(in lab, …)          SUPPORTED  <- the form Tailwind gates
                                         opacity-modified utilities on. The

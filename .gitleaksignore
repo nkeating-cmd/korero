@@ -1,0 +1,25 @@
+# gitleaks allowlist — every entry needs a reason, or this file becomes the
+# place findings go to be forgotten.
+#
+# A gate that always fires is worse than no gate: people learn to skim past it,
+# and the one real hit is invisible in the noise. So: exempt known-benign hits
+# explicitly, here, with the evidence — never by loosening the rule.
+#
+# Format: <commit>:<path>:<rule-id>:<line>
+
+# ---------------------------------------------------------------------------
+# 5228ca88f5bafb57556b331d393d30b85b827d02
+#   src/components/settings/meetings/MeetingsSettings.tsx:70  generic-api-key
+#
+# Assessed 2026-08-19 with gitleaks 8.30.1. Not a credential:
+#   · the flagged token is 8 characters, entropy 3.57
+#   · the SHORTEST credential this app can accept is a GitHub PAT at 36 chars;
+#     OpenAI keys are 48+, AWS 40. Nothing 8 characters long can authenticate
+#     to any provider in settings.rs's provider list.
+#   · the line is inside a TypeScript `interface TranscriptSeg` declaration
+#     (v1.16.0), i.e. a type, not an assignment of a literal.
+#   · the same file at HEAD carries ordinary type declarations at that line.
+#
+# The secret material was never printed during triage — the assessment used
+# gitleaks' --redact metadata (length, entropy) plus the line's syntactic shape.
+5228ca88f5bafb57556b331d393d30b85b827d02:src/components/settings/meetings/MeetingsSettings.tsx:generic-api-key:70
