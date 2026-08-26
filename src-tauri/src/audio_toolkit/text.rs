@@ -196,6 +196,70 @@ fn is_common_en(key: &str) -> bool {
     COMMON_EN.binary_search(&key).is_ok()
 }
 
+/// Korero (backlog T1, 2026-08-26): te reo Maori forms whose MACRON-FREE
+/// spelling is ITSELF a valid, distinct word -- overwhelmingly the singular of
+/// a pair whose plural is marked by lengthening the first vowel.
+///
+/// `strip_macrons` in `apply_custom_words` normalises only the CUSTOM-WORD
+/// side, so a custom word carrying a macron has a macron-free key, a spoken
+/// macron-free token matches it at distance 0, and the ordinary-English veto
+/// exempts exact matches unconditionally. Result: every singular becomes a
+/// plural. The macron-free form is not a mis-spelling here; it is a different
+/// word.
+///
+/// Sorted, ASCII-lowercase, MACRON-FREE keys, queried with `binary_search`.
+///
+/// FAIL-SAFE BY CONSTRUCTION: a listed word is simply not auto-macronised, and
+/// a taught correction still repairs it deterministically. An omission costs a
+/// convenience, never correctness -- so additions are cheap and deletions need
+/// a reason.
+///
+/// NOT REVIEWED BY A TE REO SPEAKER. Deliberately conservative. See
+/// docs/KORERO_REO_REVIEW_2026-08-26.md.
+static REO_MACRON_AMBIGUOUS: &[&str] = &[
+    "ana", "keke", "maku", "mana", "matua", "naku", "nana", "tangata", "taua", "teina", "tipuna",
+    "tuahine", "tuakana", "tupuna", "wahine",
+];
+
+/// Macron folding for the T1 guard.
+///
+/// Deliberately a SECOND copy of the v1.3.0 nested `strip_macrons` rather than
+/// a promotion of it: that one lives inside `apply_custom_words`, and its patch
+/// entry is kept idempotent by a plain "is my Replace already in the file"
+/// substring test, so moving it would break that entry on every future run.
+fn strip_macrons_key(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\u{101}' | '\u{100}' => 'a',
+            '\u{113}' | '\u{112}' => 'e',
+            '\u{12b}' | '\u{12a}' => 'i',
+            '\u{14d}' | '\u{14c}' => 'o',
+            '\u{16b}' | '\u{16a}' => 'u',
+            _ => c,
+        })
+        .collect()
+}
+
+/// True when the ONLY difference between what was spoken and the custom word is
+/// macron placement AND the spoken form is on the ambiguity list above.
+///
+/// Note the direction, as everywhere else in this file: the test is on the
+/// SPOKEN side. The custom word is never second-guessed.
+fn is_ambiguous_macron_rewrite(spoken_key: &str, replacement: &str) -> bool {
+    if spoken_key.is_empty() {
+        return false;
+    }
+    let repl_key = build_match_key(replacement);
+    if spoken_key == repl_key {
+        return false; // identical -- nothing is being rewritten
+    }
+    let bare = strip_macrons_key(spoken_key);
+    if bare != strip_macrons_key(&repl_key) {
+        return false; // more than a macron differs -- not this guard to decide
+    }
+    REO_MACRON_AMBIGUOUS.binary_search(&bare.as_str()).is_ok()
+}
+
 /// True when EVERY token of the n-gram is an ordinary English word -- i.e. what
 /// the speaker said is already valid English and needs no "correction".
 ///
@@ -394,6 +458,16 @@ pub fn apply_custom_words(text: &str, custom_words: &[String], threshold: f64) -
                     if n >= 2 && is_common_en(&build_match_key(ngram_words[n - 1])) {
                         continue;
                     }
+                } else if is_ambiguous_macron_rewrite(&ngram, replacement) {
+                    // Korero (backlog T1, 2026-08-26): an EXACT match differing
+                    // only in macrons is normally the whole point of this layer
+                    // -- it restores the user's own spelling. But in te reo the
+                    // macron IS the plural marker on a class of common nouns, so
+                    // the same mechanism turns a singular into a plural whenever
+                    // the plural is the custom word. Skip restoration for those
+                    // forms only; a taught correction remains the scoped,
+                    // deterministic tool for them.
+                    continue;
                 }
 
                 // Extract punctuation from first and last words of the n-gram
@@ -1027,6 +1101,78 @@ mod korero_v1_30_tests {
         assert!(!low.contains("um"), "genuine filler should go: {out:?}");
         assert!(!low.contains("uh"), "genuine filler should go: {out:?}");
         assert!(low.contains("meeting"), "content must survive: {out:?}");
+    }
+
+    /// Backlog T1. In te reo Maori the macron is the plural marker on a whole
+    /// class of nouns, so exact-match restoration must not turn a singular into
+    /// a plural. Fails on every build before 2026-08-26.
+    #[test]
+    fn korero_t1_a_singular_is_not_pluralised_by_macron_restoration() {
+        let words = vec!["w\u{101}hine".to_string()];
+        let out = apply_custom_words("one wahine spoke", &words, EXACT_MATCH_ONLY);
+        assert!(
+            !out.contains("w\u{101}hine"),
+            "a singular must not be pluralised by macron restoration: {out:?}"
+        );
+        assert!(
+            out.contains("wahine"),
+            "and the word itself must survive: {out:?}"
+        );
+    }
+
+    #[test]
+    fn korero_t1_unambiguous_macron_restoration_still_works() {
+        for (spoken, custom, expected) in [
+            ("our whanau", "wh\u{101}nau", "wh\u{101}nau"),
+            ("the hapu", "hap\u{16b}", "hap\u{16b}"),
+            ("a good korero", "k\u{14d}rero", "k\u{14d}rero"),
+        ] {
+            let words = vec![custom.to_string()];
+            let out = apply_custom_words(spoken, &words, EXACT_MATCH_ONLY);
+            assert!(
+                out.contains(expected),
+                "unambiguous restoration must not regress: {spoken} -> {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn korero_t1_ambiguity_list_is_sorted_lowercase_and_macron_free() {
+        for pair in REO_MACRON_AMBIGUOUS.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "REO_MACRON_AMBIGUOUS must be sorted for binary_search: {pair:?}"
+            );
+        }
+        for w in REO_MACRON_AMBIGUOUS {
+            assert!(!w.is_empty(), "empty entry in REO_MACRON_AMBIGUOUS");
+            assert_eq!(*w, w.to_lowercase(), "entries must be lowercase: {w}");
+            assert_eq!(
+                strip_macrons_key(w),
+                *w,
+                "entries are lookup keys and must be stored macron-free: {w}"
+            );
+        }
+    }
+
+    #[test]
+    fn korero_t1_guard_fires_only_on_macron_only_differences() {
+        assert!(
+            is_ambiguous_macron_rewrite("wahine", "w\u{101}hine"),
+            "the whole point of the guard"
+        );
+        assert!(
+            !is_ambiguous_macron_rewrite("wahine", "wahine"),
+            "identical strings rewrite nothing"
+        );
+        assert!(
+            !is_ambiguous_macron_rewrite("whanau", "wh\u{101}nau"),
+            "whanau is not a word without its macron -- restoration must apply"
+        );
+        assert!(
+            !is_ambiguous_macron_rewrite("wahine", "wahines"),
+            "a non-macron difference is not this guard to decide"
+        );
     }
 
     #[test]

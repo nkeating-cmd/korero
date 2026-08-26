@@ -157,6 +157,24 @@ pub fn glossary_block(corrections: &[TranscriptCorrection]) -> Option<String> {
 const BIAS_MAX_TERMS: usize = 64;
 const BIAS_MAX_CHARS: usize = 700;
 
+/// True when a term carries a te reo Māori macron.
+///
+/// Used only to prioritise the bias prompt (backlog T5): a macron-bearing term
+/// is one the decoder cannot produce without help, so it is worth more of the
+/// bounded prompt budget than an ASCII product name.
+fn has_macron(s: &str) -> bool {
+    s.chars().any(|c| {
+        matches!(
+            c,
+            '\u{101}' | '\u{100}'
+                | '\u{113}' | '\u{112}'
+                | '\u{12b}' | '\u{12a}'
+                | '\u{14d}' | '\u{14c}'
+                | '\u{16b}' | '\u{16a}'
+        )
+    })
+}
+
 /// v1.19.1: build the decode-time CONTEXT-BIASING prompt for the Whisper engine
 /// — the local equivalent of Deepgram/AssemblyAI "keyterm prompting". Seeds the
 /// decoder with the vocabulary the user actually cares about so the RIGHT
@@ -184,8 +202,20 @@ pub fn build_bias_prompt(
             terms.push(right.to_string());
         }
     }
-    // 2. Then the custom-words list.
-    for w in custom_words {
+    // 2. Then the custom-words list, macron-bearing terms FIRST.
+    //
+    // Kōrero (backlog T5, 2026-08-26): the cap below drops from the TAIL, and
+    // `default_custom_words()` historically listed ten tooling terms
+    // (Monday.com, Copilot, M365, ...) before every te reo entry — so for a user
+    // with many taught corrections, te reo was the first thing to fall off the
+    // end of the budget. A term carrying a macron is by definition one the
+    // decoder cannot produce unaided; an ASCII product name usually survives
+    // without biasing. Priority follows that asymmetry rather than whatever
+    // order the list happens to be in. Relative order is stable within each
+    // group, so a user's own ordering is otherwise respected.
+    let (macron_terms, plain_terms): (Vec<&String>, Vec<&String>) =
+        custom_words.iter().partition(|w| has_macron(w));
+    for w in macron_terms.into_iter().chain(plain_terms) {
         let w = w.trim();
         if !w.is_empty() && seen.insert(w.to_lowercase()) {
             terms.push(w.to_string());
@@ -228,6 +258,29 @@ mod tests {
     fn bias_prompt_none_when_empty() {
         assert!(build_bias_prompt(&[], &[]).is_none());
         assert!(build_bias_prompt(&["   ".to_string()], &[corr("", "")]).is_none());
+    }
+
+    #[test]
+    fn bias_prompt_puts_macron_terms_before_ascii_ones() {
+        // Backlog T5: the budget is spent from the front, so the terms the
+        // decoder cannot produce unaided must not sit behind product names.
+        let custom = vec![
+            "Monday.com".to_string(),
+            "Copilot".to_string(),
+            "wh\u{101}nau".to_string(),
+            "GST".to_string(),
+            "hap\u{16b}".to_string(),
+        ];
+        let p = build_bias_prompt(&custom, &[]).unwrap();
+        let macron_at = p.find("wh\u{101}nau").expect("macron term present");
+        let ascii_at = p.find("Monday.com").expect("ascii term present");
+        assert!(
+            macron_at < ascii_at,
+            "macron-bearing terms must lead the prompt: {p}"
+        );
+        // Relative order WITHIN each group is preserved.
+        assert!(p.find("wh\u{101}nau").unwrap() < p.find("hap\u{16b}").unwrap(), "{p}");
+        assert!(p.find("Monday.com").unwrap() < p.find("Copilot").unwrap(), "{p}");
     }
 
     #[test]

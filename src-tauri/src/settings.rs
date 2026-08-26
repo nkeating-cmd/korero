@@ -1261,15 +1261,24 @@ fn default_custom_words() -> Vec<String> {
         // Kōrero (2026-05-30): personal People + Companies/clients entries were
         // removed from this shipped default so the public build / installer never
         // discloses the maintainer's contacts. Add your own via Settings -> Custom Words.
-        // Generic tooling / product terms (no personal data)
-        "Monday.com", "Copilot", "M365", "OneDrive", "Replit",
-        "Cowork", "Fireflies", "Tauri", "MCP", "Anthropic", "Kōrero",
+        //
+        // Kōrero (backlog T5, 2026-08-26): ORDER IS LOAD-BEARING. This list is
+        // also the Whisper bias prompt, which is capped at 64 terms / 700 chars
+        // and drops from the TAIL — so whatever sits last is what falls off the
+        // budget once a user has taught a few corrections. Te reo and macron-
+        // bearing terms therefore lead: they are the ones the decoder cannot
+        // produce unaided. `build_bias_prompt` also sorts macron-bearing terms
+        // ahead of ASCII ones at runtime, so this ordering and that rule agree
+        // rather than one silently undoing the other.
         // Te reo Māori
         "whānau", "mihi", "kōrero", "mahi", "Aotearoa",
-        "Tāmaki", "iwi", "hapū", "tangata",
+        "Tāmaki", "iwi", "hapū", "tangata", "Kōrero",
         // NZ-isms / acronyms
         "GST", "IRD", "ACC", "EPA", "FY26", "FY27",
         "KiwiSaver", "Plunket", "Te Whatu Ora",
+        // Generic tooling / product terms (no personal data)
+        "Monday.com", "Copilot", "M365", "OneDrive", "Replit",
+        "Cowork", "Fireflies", "Tauri", "MCP", "Anthropic",
     ]
     .into_iter()
     .map(String::from)

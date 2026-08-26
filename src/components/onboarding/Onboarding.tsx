@@ -62,7 +62,7 @@ const FEATURES: {
   {
     icon: Download,
     title: "First step: pick a transcription model",
-    body: "On the next screen, choose a speech model. It downloads once and then everything runs on-device — your voice never leaves this computer. Parakeet V3 is the recommended pick for NZ English.",
+    body: "On the next screen, choose a speech model. It downloads once and then everything runs on-device — your voice never leaves this computer. Parakeet V3 is the fastest. If you dictate te reo Māori, pick a Whisper model instead — Parakeet has no te reo support and cannot use your custom words while it listens.",
   },
 ];
 
