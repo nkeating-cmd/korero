@@ -19,6 +19,24 @@
      The overlay is a separate Vite entry and never loads App.css, so the stack
      must be defined here; referenced by html/body and .shimmer-text via var(). */
   --font-sans: "Aptos", "Aptos Display", "Segoe UI Variable Text", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Inter", sans-serif;
+
+  /* Kōrero (2026-08-26): THE GEOMETRY CONTRACT. These three numbers and the two
+     constants in src-tauri/src/overlay.rs are one design, and they had drifted:
+     the window was 320x64 while the transcribing pill actually PAINTED 222x84,
+     so 6px of halo was sliced off the top and 14px off the bottom — a hard
+     horizontal cut through a glow that is meant to be a rounded halo. Measured,
+     not guessed: docs/design-2026/overlay/ renders the real markup at the real
+     window size and reports the painted alpha bounding box.
+
+        --pill-h   the pill itself
+        --halo     the space every side of the pill needs for shadow + glow
+        window     = (pill max-width + 2*halo) x (--pill-h + 2*halo), rounded up
+
+     overlay.rs must therefore be OVERLAY_WIDTH 336 / OVERLAY_HEIGHT 96.
+     The static check `overlay-window-fits-the-halo` pins both ends. If you make
+     a shadow or glow bigger, raise --halo AND the Rust constants together. */
+  --pill-h: 40px;
+  --halo: 28px;
 }
 
 html, body {
@@ -38,6 +56,12 @@ html, body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+
+  /* Kōrero (2026-08-26): the overlay window is transparent but was still fully
+     hit-testable, so a 320x64 invisible rectangle sat on top of the desktop
+     swallowing clicks — and growing the window to fit the halo would have made
+     that worse. Only the pill itself takes input now. */
+  pointer-events: none;
 }
 
 /* Centre the pill within the Tauri overlay window.
@@ -54,9 +78,9 @@ body {
    Overlay pill — liquid glass, state-distinct ambient hue.
    ============================================================ */
 .korero-overlay {
-  /* Auto-size between sensible bounds. Tauri window is 320×64 (see overlay.rs
-     patch) so we have 40px of horizontal room each side. */
-  height: 40px;
+  /* Auto-size between sensible bounds. The Tauri window is 336×96 (overlay.rs),
+     which is exactly max-width + 2*--halo by --pill-h + 2*--halo. */
+  height: var(--pill-h);
   min-width: 180px;
   max-width: 280px;
   width: max-content;
@@ -78,21 +102,29 @@ body {
   );
 
   border: 1px solid var(--overlay-border);
-  border-radius: 20px;
+  /* A pill, not a rounded box: 999px stays fully rounded whatever --pill-h
+     becomes. The old fixed 20px was exactly half of a hard-coded 40px height —
+     one edit away from square corners. */
+  border-radius: 999px;
 
   /* Kōrero (v1.9.0): five-layer shadow — top/bottom/side edge highlights
      simulate glass refraction; the two outer shadows give depth and a close
-     ambient shadow. Shadow blur capped at 16px: the Tauri window is 64px tall,
-     leaving only 12px of vertical slack; deeper blurs clip at the boundary. */
+     ambient shadow.
+     Kōrero (2026-08-26): the old note here said the blur was "capped at 16px"
+     because the window left 12px of vertical slack — which is an admission that
+     it did not fit, written as though it did. Blurs are now sized so the PAINTED
+     extent lands inside the halo, and `overlay-window-fits-the-halo` measures
+     that rather than trusting the arithmetic. */
   box-shadow:
     inset 0   1px 0 0 rgba(255, 255, 255, 0.18),
     inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
     inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
     inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
-    0 4px 16px 0 rgba(0, 0, 0, 0.52),
+    0 3px 12px 0 rgba(0, 0, 0, 0.52),
     0 1px  3px 0 rgba(0, 0, 0, 0.28);
 
   color: #ffffff;
+  pointer-events: auto;
   opacity: 0;
   transform: translateY(6px) scale(0.96);
   transition:
@@ -121,9 +153,9 @@ body {
       inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
       inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
       inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
-      0 4px 16px 0 rgba(0, 0, 0, 0.52),
+      0 3px 12px 0 rgba(0, 0, 0, 0.52),
       0 1px  3px 0 rgba(0, 0, 0, 0.28),
-      0 0   8px 0 rgba(93, 216, 255, 0.28);
+      0 0   7px 0 rgba(93, 216, 255, 0.28);
   }
   50% {
     box-shadow:
@@ -131,28 +163,44 @@ body {
       inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
       inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
       inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
-      0 4px 16px 0 rgba(0, 0, 0, 0.52),
+      0 3px 12px 0 rgba(0, 0, 0, 0.52),
       0 1px  3px 0 rgba(0, 0, 0, 0.28),
-      0 0  14px 2px rgba(93, 216, 255, 0.52);
+      0 0  12px 1px rgba(93, 216, 255, 0.52);
   }
 }
 
-/* ── States: transcribing / processing — drop-shadow for border-radius glow ─
-   Static box-shadow renders rectangular on WebView2 transparent windows
-   (shadow clips to border-box before border-radius). filter:drop-shadow()
-   composites after border-radius so the glow follows the pill shape.
-   Recording/latch use animated box-shadow (GPU compositor layer sidesteps
-   the artefact for animated shadows). */
+/* ── States: transcribing / processing — the halo follows the pill ──────────
+   Static box-shadow renders RECTANGULAR on WebView2 transparent windows: the
+   shadow is clipped to the border-box before border-radius is applied. That is
+   why filter:drop-shadow() was introduced here — it composites AFTER the
+   rounding, so the glow takes the pill's shape.
+
+   Kōrero (2026-08-26): the two OUTER box-shadows were left in place alongside
+   it, so every transcribing pill carried the exact rectangle the drop-shadow
+   was added to avoid — a square dark band around a round pill, which is what
+   "it isn't completely rounded" looks like. They are gone. Depth is now a
+   second drop-shadow, so both layers round with the pill. The INSET shadows
+   stay: insets paint inside the border-radius and have never had the artefact.
+
+   Recording/latch keep their animated box-shadow — an animated shadow gets its
+   own GPU compositor layer, which sidesteps the artefact. Do not "tidy" the two
+   into one form; they are different for a reason. */
 .korero-overlay[data-state="transcribing"] {
   box-shadow:
     inset 0   1px 0 0 rgba(255, 255, 255, 0.18),
     inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
     inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
-    inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
-    0 4px 16px 0 rgba(0, 0, 0, 0.52),
-    0 1px  3px 0 rgba(0, 0, 0, 0.28);
+    inset -1px 0 0 0 rgba(255, 255, 255, 0.05);
   border-color: rgba(0, 245, 255, 0.38);
-  filter: drop-shadow(0 0 7px rgba(0, 245, 255, 0.45));
+  /* Chromium paints a drop-shadow to roughly 1.5x its blur radius, and chained
+     filters compound: (0 3px 8px) + (0 0 9px) measured 91px tall inside the 96px
+     window — flush against the bottom edge, i.e. the same clipping again with
+     different numbers. Sized from the measurement, not the arithmetic, and
+     re-measured after each change: the downward offset costs slack at the bottom
+     twice over (once as offset, once as blur), so it is 1px, not 3px. */
+  filter:
+    drop-shadow(0 1px 5px rgba(0, 0, 0, 0.58))
+    drop-shadow(0 0  8px rgba(0, 245, 255, 0.45));
 }
 
 .korero-overlay[data-state="processing"] {
@@ -160,11 +208,11 @@ body {
     inset 0   1px 0 0 rgba(255, 255, 255, 0.18),
     inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
     inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
-    inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
-    0 4px 16px 0 rgba(0, 0, 0, 0.52),
-    0 1px  3px 0 rgba(0, 0, 0, 0.28);
+    inset -1px 0 0 0 rgba(255, 255, 255, 0.05);
   border-color: rgba(255, 0, 204, 0.35);
-  filter: drop-shadow(0 0 7px rgba(255, 0, 204, 0.40));
+  filter:
+    drop-shadow(0 1px 5px rgba(0, 0, 0, 0.58))
+    drop-shadow(0 0  8px rgba(255, 0, 204, 0.42));
 }
 
 /* ============================================================
@@ -244,20 +292,23 @@ body {
   100% { transform: scale(2.0);  opacity: 0.0; }
 }
 
-/* ── Transcribing: Cpu icon — neon green strobe ──────────────────────────── */
+/* ── Transcribing: Cpu icon — a slow breath, in step with the label ────────
+   Kōrero (2026-08-26): `cyber-strobe` dropped the icon to 10% opacity twice in
+   40ms once every 2.5s. Read honestly that is a flicker, not progress: it says
+   "something is wrong" rather than "this is working", and for anyone sensitive
+   to flashing it is the one motion in the app worth avoiding. Replaced with a
+   breath on the SAME 2.6s period as the label sweep, so the pill reads as one
+   object doing one thing instead of two effects on different clocks. */
 .transcribe-icon {
   color: var(--cyber-green);
-  filter: drop-shadow(0 0 5px rgba(0, 255, 65, 0.70));
-  animation: cyber-strobe 2.5s linear infinite;
+  filter: drop-shadow(0 0 5px rgba(0, 255, 65, 0.55));
+  animation: korero-icon-breathe 2.6s ease-in-out infinite;
   will-change: opacity, filter;
 }
 
-@keyframes cyber-strobe {
-  0%,  76%, 100% { opacity: 1;   filter: drop-shadow(0 0 5px rgba(0, 255, 65, 0.70)); }
-  78%            { opacity: 0.1; filter: drop-shadow(0 0 2px rgba(0, 255, 65, 0.20)); }
-  80%            { opacity: 1;   filter: drop-shadow(0 0 8px rgba(0, 255, 65, 1.00)); }
-  82%            { opacity: 0.2; filter: drop-shadow(0 0 2px rgba(0, 255, 65, 0.25)); }
-  84%            { opacity: 1;   filter: drop-shadow(0 0 5px rgba(0, 255, 65, 0.70)); }
+@keyframes korero-icon-breathe {
+  0%, 100% { opacity: 0.74; filter: drop-shadow(0 0 4px rgba(0, 255, 65, 0.42)); }
+  50%      { opacity: 1.00; filter: drop-shadow(0 0 8px rgba(0, 255, 65, 0.78)); }
 }
 
 /* ── Processing: Loader spinner — magenta ────────────────────────────────── */
@@ -326,24 +377,53 @@ body {
   text-shadow:
     0 0  6px rgba(0, 245, 255, 0.70),
     0 0 12px rgba(0, 245, 255, 0.30);
-  animation: shimmer-fade 2.4s ease-in-out infinite;
-  will-change: opacity;
+  /* Kōrero (2026-08-26): the class has been called `shimmer-text` since v1.5.0
+     and never shimmered — it faded the whole label in and out together, which
+     reads as a pulse, and a pulse carries no direction. A sweep does: a single
+     highlight crosses the word left to right and leaves, which is the standard
+     indeterminate-progress idiom and the reason the word "shimmer" is here.
+
+     ⚠ THE TRAP, hit and measured on the first attempt at this: with
+     `background-repeat: no-repeat` the gradient is a finite band, and any part
+     of the label it does not cover has NO background — which, with the text fill
+     transparent, means those glyphs are INVISIBLE. Rendered at
+     background-position 120% the label read "Transcribin": the trailing "g..."
+     had simply vanished. That is the user's original complaint reproduced by the
+     fix for it. `repeat` makes coverage total at every position, so the sweep can
+     run edge to edge and beyond without ever hiding a letter. Do not "optimise"
+     it back to no-repeat. */
+  background-image: linear-gradient(
+    100deg,
+    /* A NARROW band. Measured: a 40-60% stop pair spans 80% of the label at
+       this tile size, and the luminance centroid then moves only ~7px across a
+       whole cycle — which reads as the word brightening, not as anything
+       travelling. That is the pulse this replaced, in a more expensive form.
+       44-56% is ~30px on "Transcribing...", which reads as a highlight. */
+    var(--cyber-cyan)          0%,
+    var(--cyber-cyan)         44%,
+    rgba(236, 254, 255, 1.00) 50%,
+    var(--cyber-cyan)         56%,
+    var(--cyber-cyan)        100%
+  );
+  background-size: 200% 100%;
+  background-repeat: repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  /* The glow must be a filter, not text-shadow: with the fill transparent, a
+     text-shadow paints from the glyph geometry and reads as a second, offset
+     copy of the word. drop-shadow works on what is actually painted. */
+  text-shadow: none;
+  filter: drop-shadow(0 0 5px rgba(0, 245, 255, 0.55));
+  animation: korero-shimmer-sweep 2.6s linear infinite;
+  will-change: background-position;
 }
 
-/* Gentle breathing fade — suggests "working" without the terminal-glitch feel. */
-@keyframes shimmer-fade {
-  0%, 100% {
-    opacity: 1;
-    text-shadow:
-      0 0  6px rgba(0, 245, 255, 0.70),
-      0 0 12px rgba(0, 245, 255, 0.30);
-  }
-  50% {
-    opacity: 0.78;
-    text-shadow:
-      0 0  8px rgba(0, 245, 255, 0.90),
-      0 0 16px rgba(0, 245, 255, 0.50);
-  }
+/* One full tile of travel per cycle: the highlight crosses the label exactly
+   once, and the next one enters as it leaves, so the motion never stalls. */
+@keyframes korero-shimmer-sweep {
+  from { background-position: 200% 0; }
+  to   { background-position: 0% 0; }
 }
 
 /* ============================================================
@@ -433,9 +513,9 @@ body {
       inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
       inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
       inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
-      0 4px 16px 0 rgba(0, 0, 0, 0.52),
+      0 3px 12px 0 rgba(0, 0, 0, 0.52),
       0 1px  3px 0 rgba(0, 0, 0, 0.28),
-      0 0   8px 0 rgba(255, 171, 0, 0.28);
+      0 0   7px 0 rgba(255, 171, 0, 0.28);
   }
   50% {
     box-shadow:
@@ -443,9 +523,9 @@ body {
       inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
       inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
       inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
-      0 4px 16px 0 rgba(0, 0, 0, 0.52),
+      0 3px 12px 0 rgba(0, 0, 0, 0.52),
       0 1px  3px 0 rgba(0, 0, 0, 0.28),
-      0 0  14px 2px rgba(255, 171, 0, 0.55);
+      0 0  12px 1px rgba(255, 171, 0, 0.55);
   }
 }
 
@@ -482,8 +562,17 @@ body {
   .korero-overlay[data-state="transcribing"],
   .korero-overlay[data-state="processing"]        { filter: none; }
   .mic-pulse       { animation: none; opacity: 0.4; transform: scale(1); }
-  .transcribe-icon { animation: none; will-change: auto; }
+  .transcribe-icon { animation: none; will-change: auto; opacity: 1; }
   .spin-icon       { animation: korero-spin 2s linear infinite; }
-  .shimmer-text    { animation: none; }
+  /* Kōrero (2026-08-26): `animation: none` alone would freeze the sweep MID-PASS
+     and leave a permanent white smear across part of the word. The gradient and
+     the transparent fill have to be undone too, or reduced motion produces a
+     worse-looking label than the animation it replaced. */
+  .shimmer-text {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: var(--cyber-cyan);
+    will-change: auto;
+  }
   .bar             { transition: none; }
 }
