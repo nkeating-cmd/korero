@@ -720,7 +720,30 @@ pub fn run(cli_args: CliArgs) {
         // restore_state call after window build below is required because
         // Kōrero builds its main window programmatically (not via tauri.conf
         // declarative windows), so the plugin's auto-restore hook doesn't fire.
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        //
+        // ⚠ Kōrero (v1.34.1, 2026-08-27): THE RECORDING OVERLAY IS DENY-LISTED,
+        // and the comment above is why this took three months to find. It says
+        // the auto-restore hook "doesn't fire" for programmatic windows. That is
+        // true of the MAIN window. It is NOT true of the overlay: measured on a
+        // running v1.34.0 build, the `Recording` window was 142x29 — byte-for-byte
+        // the geometry saved in .window-state.json — while overlay.rs asked for
+        // 336x96. The persisted state was silently overriding inner_size() on
+        // every launch, so a 180x40 pill was being drawn into a 142x29 viewport
+        // and the user saw a clipped sliver.
+        //
+        // That also means the 172x36 -> 240x60 -> 320x64 -> 336x96 window bumps
+        // were ALL inert for anyone who had ever run the app before. Four rounds
+        // of "fixing" a geometry the app was not using. 142x29 is 172x36 at 125%
+        // scaling, i.e. the saved entry predates 2026-05-17.
+        //
+        // The overlay's size and position are COMPUTED, never user-chosen — there
+        // is nothing about it worth persisting. Deny-listing stops both the save
+        // and the restore, so inner_size() is authoritative again.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_denylist(&["recording_overlay"])
+                .build(),
+        )
         .manage(cli_args.clone())
         .setup(move |app| {
             specta_builder.mount_events(app);
