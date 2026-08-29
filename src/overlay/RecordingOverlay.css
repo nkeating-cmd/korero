@@ -170,49 +170,89 @@ body {
 }
 
 /* ── States: transcribing / processing — the halo follows the pill ──────────
-   Static box-shadow renders RECTANGULAR on WebView2 transparent windows: the
-   shadow is clipped to the border-box before border-radius is applied. That is
-   why filter:drop-shadow() was introduced here — it composites AFTER the
-   rounding, so the glow takes the pill's shape.
+   ⚠ READ THIS BEFORE REACHING FOR `filter:` ON THIS ELEMENT AGAIN.
 
-   Kōrero (2026-08-26): the two OUTER box-shadows were left in place alongside
-   it, so every transcribing pill carried the exact rectangle the drop-shadow
-   was added to avoid — a square dark band around a round pill, which is what
-   "it isn't completely rounded" looks like. They are gone. Depth is now a
-   second drop-shadow, so both layers round with the pill. The INSET shadows
-   stay: insets paint inside the border-radius and have never had the artefact.
+   Three rounds have now tried to give this pill a glow, and two of them left a
+   visible RECTANGLE around a rounded pill:
 
-   Recording/latch keep their animated box-shadow — an animated shadow gets its
-   own GPU compositor layer, which sidesteps the artefact. Do not "tidy" the two
-   into one form; they are different for a reason. */
+     1. Static outer box-shadow  → rectangle. (Removed 2026-08-26.)
+     2. filter: drop-shadow()    → rectangle. (Removed 2026-08-27, this change.)
+     3. ANIMATED box-shadow      → correct, and what recording/latch have always
+                                   used without a single complaint.
+
+   The mechanism behind 1 and 2 is the same: on a TRANSPARENT WebView2 window,
+   an element that needs its own compositing layer gets a RECTANGULAR backing,
+   and the edge of that backing is visible against the desktop. `filter` forces
+   exactly such a layer. Swapping the box-shadow for a filter in v1.34.0 traded
+   one rectangle for another, which is why the artefact survived a fix that was
+   specifically aimed at it.
+
+   An ANIMATED box-shadow is promoted differently and does not show it — that is
+   not a theory, it is the observed behaviour of the recording and latch states
+   for the life of this file. So transcribing and processing now use the same
+   mechanism as their siblings, on the same 2.6s clock as the label sweep and the
+   icon breath. Everything on this pill now moves to one beat.
+
+   The INSET shadows stay: insets paint inside the border-radius, meet no
+   transparent surface, and have never had the artefact.
+
+   ⚠ The headless probe in docs/design-2026/overlay/ CANNOT see this class of
+   bug. It renders to a PNG, not to a transparent OS window, so it will happily
+   show a perfect rounded glow for a build that draws a box on the desktop.
+   Acceptance for anything in this block is a screenshot of the running app. */
 .korero-overlay[data-state="transcribing"] {
-  box-shadow:
-    inset 0   1px 0 0 rgba(255, 255, 255, 0.18),
-    inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
-    inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
-    inset -1px 0 0 0 rgba(255, 255, 255, 0.05);
   border-color: rgba(0, 245, 255, 0.38);
-  /* Chromium paints a drop-shadow to roughly 1.5x its blur radius, and chained
-     filters compound: (0 3px 8px) + (0 0 9px) measured 91px tall inside the 96px
-     window — flush against the bottom edge, i.e. the same clipping again with
-     different numbers. Sized from the measurement, not the arithmetic, and
-     re-measured after each change: the downward offset costs slack at the bottom
-     twice over (once as offset, once as blur), so it is 1px, not 3px. */
-  filter:
-    drop-shadow(0 1px 5px rgba(0, 0, 0, 0.58))
-    drop-shadow(0 0  8px rgba(0, 245, 255, 0.45));
+  animation: korero-transcribing-glow 2.6s ease-in-out infinite;
+}
+
+/* Same shape as korero-recording-glow, same 2.6s period as the label sweep and
+   the icon breath. Blur radii stay inside the 28px halo budget: 3+12 depth and
+   16+1 glow is 17px down and 17px up, so 40 + 34 = 74px inside a 96px window. */
+@keyframes korero-transcribing-glow {
+  0%, 100% {
+    box-shadow:
+      inset 0   1px 0 0 rgba(255, 255, 255, 0.18),
+      inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
+      inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
+      inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
+      0 3px 12px 0 rgba(0, 0, 0, 0.52),
+      0 0  10px 0 rgba(0, 245, 255, 0.34);
+  }
+  50% {
+    box-shadow:
+      inset 0   1px 0 0 rgba(255, 255, 255, 0.18),
+      inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
+      inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
+      inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
+      0 3px 12px 0 rgba(0, 0, 0, 0.52),
+      0 0  16px 1px rgba(0, 245, 255, 0.62);
+  }
 }
 
 .korero-overlay[data-state="processing"] {
-  box-shadow:
-    inset 0   1px 0 0 rgba(255, 255, 255, 0.18),
-    inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
-    inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
-    inset -1px 0 0 0 rgba(255, 255, 255, 0.05);
   border-color: rgba(255, 0, 204, 0.35);
-  filter:
-    drop-shadow(0 1px 5px rgba(0, 0, 0, 0.58))
-    drop-shadow(0 0  8px rgba(255, 0, 204, 0.42));
+  animation: korero-processing-glow 2.6s ease-in-out infinite;
+}
+
+@keyframes korero-processing-glow {
+  0%, 100% {
+    box-shadow:
+      inset 0   1px 0 0 rgba(255, 255, 255, 0.18),
+      inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
+      inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
+      inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
+      0 3px 12px 0 rgba(0, 0, 0, 0.52),
+      0 0  10px 0 rgba(255, 0, 204, 0.30);
+  }
+  50% {
+    box-shadow:
+      inset 0   1px 0 0 rgba(255, 255, 255, 0.18),
+      inset 0  -1px 0 0 rgba(255, 255, 255, 0.05),
+      inset  1px 0 0 0 rgba(255, 255, 255, 0.05),
+      inset -1px 0 0 0 rgba(255, 255, 255, 0.05),
+      0 3px 12px 0 rgba(0, 0, 0, 0.52),
+      0 0  16px 1px rgba(255, 0, 204, 0.58);
+  }
 }
 
 /* ============================================================
@@ -558,9 +598,11 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .korero-overlay[data-state="recording"]         { animation: none; }
   .korero-overlay[data-state="recording-latched"] { animation: none; }
-  /* Remove drop-shadow glow; retain box-shadow depth only */
+  /* Kōrero (v1.34.2): these states no longer use `filter` — the glow is an
+     animated box-shadow, so reduced motion stops the animation and the base
+     rule's rounded resting shadow shows through. */
   .korero-overlay[data-state="transcribing"],
-  .korero-overlay[data-state="processing"]        { filter: none; }
+  .korero-overlay[data-state="processing"]        { animation: none; }
   .mic-pulse       { animation: none; opacity: 0.4; transform: scale(1); }
   .transcribe-icon { animation: none; will-change: auto; opacity: 1; }
   .spin-icon       { animation: korero-spin 2s linear infinite; }
