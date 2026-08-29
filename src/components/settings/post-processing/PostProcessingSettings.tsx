@@ -5,6 +5,11 @@
 //   v1.3.0: import OllamaPullButton; add "Local" badge next to the provider
 //           dropdown when is_local_provider; add OllamaPullButton below the
 //           model select when is_local_provider.
+//   v1.35.0: the model dropdown now lists what is INSTALLED on a local
+//           provider, not the static suggestion catalogue.  Suggestions that
+//           are not installed become pull chips in the "Pull model" block --
+//           click one to target it, then Pull.  See the header of
+//           usePostProcessProviderState.ts for the three faults this fixes.
 //
 // NOTE: this file is in the overlay (Handy-changes) NOT patched by
 // apply-patches.ps1.  The three earlier patches for this file were removed
@@ -165,13 +170,29 @@ const PostProcessingSettingsApiComponent: React.FC = () => {
               />
             </ResetButton>
           </div>
+
+          {/* Korero (v1.35.0): say where this list came from, so an empty or
+              surprising dropdown is self-explaining rather than a mystery. */}
+          {state.isLocalProvider && !state.isFetchingModels && (
+            <p className="text-xs text-mid-gray/60 mt-1.5">
+              {state.hasFetchedModels
+                ? `Installed locally: ${state.installedModels.length} model${
+                    state.installedModels.length === 1 ? "" : "s"
+                  }. Only installed models can run.`
+                : "No installed models found -- Ollama may not be running. Pull one below, or type a tag to use it."}
+            </p>
+          )}
         </SettingContainer>
       )}
 
       {/* Korero (v1.3.0): in-app model pull for local providers (Ollama).
           Shows connection status, model storage path, and a pull button.
-          Rendered only when is_local_provider is true. */}
-      {!state.isAppleProvider && state.selectedProvider?.is_local_provider && (
+          Rendered only when is_local_provider is true.
+          Korero (v1.35.0): the suggestion catalogue lives here now -- these are
+          things you could have, which is a different question from the model
+          dropdown's "what do I have". Clicking a chip selects it so the Pull
+          button below targets it. */}
+      {state.isLocalProvider && (
         <SettingContainer
           title="Pull model"
           description={`Download ${state.model || "the selected model"} from Ollama's registry so it is available locally.`}
@@ -179,11 +200,36 @@ const PostProcessingSettingsApiComponent: React.FC = () => {
           layout="stacked"
           grouped={true}
         >
-          <OllamaPullButton
-            baseUrl={state.baseUrl}
-            modelName={state.model}
-            onModelPulled={state.handleRefreshModels}
-          />
+          <div className="flex flex-col gap-2">
+            {state.pullCandidates.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs text-mid-gray/60 mr-0.5">
+                  Not installed:
+                </span>
+                {state.pullCandidates.map((candidate) => (
+                  <button
+                    key={candidate}
+                    type="button"
+                    onClick={() => state.handleModelSelect(candidate)}
+                    disabled={state.isModelUpdating}
+                    className={`text-xs font-mono rounded-full border px-2 py-0.5 transition-colors ${
+                      state.model === candidate
+                        ? "border-cyan-400/60 text-cyan-300 bg-cyan-400/10"
+                        : "border-mid-gray/25 text-mid-gray/70 hover:text-mid-gray/95 hover:border-mid-gray/45"
+                    }`}
+                  >
+                    {candidate}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <OllamaPullButton
+              baseUrl={state.baseUrl}
+              modelName={state.model}
+              onModelPulled={state.handleRefreshModels}
+            />
+          </div>
         </SettingContainer>
       )}
     </>

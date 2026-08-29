@@ -1,4 +1,47 @@
-import { useCallback, useMemo, useState } from "react";
+/**
+ * Korero -- usePostProcessProviderState
+ *
+ * Promoted into the Handy-changes overlay at v1.35.0. It was previously an
+ * upstream file carrying two surgical patches (the suggested_models loop and
+ * its deps-array re-anchor). The v1.35.0 change touches four separate places
+ * in the file, which is past the point where single-line Find/Replace patches
+ * stay readable -- the same reasoning that moved PostProcessingSettings.tsx
+ * into the overlay at v1.3.1.
+ *
+ * v1.35.0 -- the model dropdown tells the truth about local providers
+ * -------------------------------------------------------------------
+ * Reported: the Ollama model dropdown listed models that are NOT installed
+ * (gemma3:4b, gemma3:27b, llama3.2:3b, ...) and omitted the ones that ARE.
+ *
+ * Three faults, all real, found in order:
+ *
+ *   1. BACKEND. fetch_post_process_models() refused to fetch whenever the
+ *      provider's API key was empty and the id was not "custom". Ollama has
+ *      no API key, so the refresh button returned
+ *      "API key is required for Ollama (local)" and the installed list could
+ *      never be obtained -- not by refresh, not by anything. Fixed by a
+ *      patch on shortcut/mod.rs that exempts is_local_provider.
+ *
+ *   2. NO AUTO-FETCH. handleProviderSelect() only fetches when the provider
+ *      has an API key (or is "custom"), so selecting Ollama fetched nothing,
+ *      and there was no mount-time fetch at all. The dropdown therefore had
+ *      only the static list to show. Fixed by the local-provider auto-fetch
+ *      effect below.
+ *
+ *   3. SUGGESTIONS PRESENTED AS INSTALLED. suggested_models was merged into
+ *      modelOptions for every provider. For a remote provider that is
+ *      correct -- every catalogue model is usable the moment you have a key.
+ *      For a LOCAL provider it is a lie: a model you have not pulled is not
+ *      runnable, and picking it 404s at inference time. Fixed by excluding
+ *      suggested_models from modelOptions for local providers and exposing
+ *      them separately as pullCandidates, which the UI offers through the
+ *      existing OllamaPullButton flow.
+ *
+ * The dropdown is still creatable, so a user can type any tag they like and
+ * pull it -- nothing that was reachable before became unreachable.
+ */
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSettings } from "../../../hooks/useSettings";
 import { commands, type PostProcessProvider } from "@/bindings";
 import type { ModelOption } from "./types";
@@ -10,6 +53,7 @@ type PostProcessProviderState = {
   selectedProvider: PostProcessProvider | undefined;
   isCustomProvider: boolean;
   isAppleProvider: boolean;
+  isLocalProvider: boolean;
   appleIntelligenceUnavailable: boolean;
   baseUrl: string;
   handleBaseUrlChange: (value: string) => void;
@@ -20,6 +64,14 @@ type PostProcessProviderState = {
   model: string;
   handleModelChange: (value: string) => void;
   modelOptions: ModelOption[];
+  /** Models the local runtime actually reports as installed. Empty for remote
+   *  providers and for a local provider that has not been reached yet. */
+  installedModels: string[];
+  /** True once a fetch for this provider has returned at least one model. */
+  hasFetchedModels: boolean;
+  /** Suggested models that are NOT installed -- pull candidates, not picks.
+   *  Only populated for local providers. */
+  pullCandidates: string[];
   isModelUpdating: boolean;
   isFetchingModels: boolean;
   handleProviderSelect: (providerId: string) => void;
@@ -57,6 +109,12 @@ export const usePostProcessProviderState = (): PostProcessProviderState => {
   }, [providers, selectedProviderId]);
 
   const isAppleProvider = selectedProvider?.id === APPLE_PROVIDER_ID;
+  // Korero (v1.35.0): Apple Intelligence is flagged is_local_provider too, but
+  // it has no model catalogue and no fetchable list -- it is excluded here so
+  // "local" in this hook means "a local server we can enumerate", i.e. Ollama.
+  const isLocalProvider =
+    selectedProvider?.is_local_provider === true && !isAppleProvider;
+
   const [appleIntelligenceUnavailable, setAppleIntelligenceUnavailable] =
     useState(false);
 
@@ -101,8 +159,15 @@ export const usePostProcessProviderState = (): PostProcessProviderState => {
         const apiKey = settings?.post_process_api_keys?.[providerId] ?? "";
         const hasBaseUrl = (provider?.base_url ?? "").trim() !== "";
         const hasApiKey = apiKey.trim() !== "";
+        // Korero (v1.35.0): a local provider needs no API key -- a base URL is
+        // the whole configuration. This clause is why selecting Ollama used to
+        // fetch nothing.
+        const isLocal = provider?.is_local_provider === true;
 
-        if (provider?.id === "custom" ? hasBaseUrl : hasApiKey) {
+        const configured =
+          provider?.id === "custom" || isLocal ? hasBaseUrl : hasApiKey;
+
+        if (configured) {
           void fetchPostProcessModels(providerId);
         }
       }
@@ -163,22 +228,68 @@ export const usePostProcessProviderState = (): PostProcessProviderState => {
     [selectedProviderId, updatePostProcessModel],
   );
 
+  // Korero (v1.35.0): keyed record of auto-fetch attempts. fetchPostProcessModels
+  // deliberately does NOT cache an empty result on failure, so "no models yet"
+  // is indistinguishable from "never asked" in the store. Without this guard an
+  // unreachable Ollama would re-trigger the effect on every render for as long
+  // as the pane stayed open. One attempt per (provider, base URL); the refresh
+  // button clears the key so a manual retry is always honoured.
+  const autoFetchAttempted = useRef<Set<string>>(new Set());
+  const autoFetchKey = `${selectedProviderId}|${baseUrl}`;
+
   const handleRefreshModels = useCallback(() => {
     if (isAppleProvider) return;
+    // Mark this (provider, base URL) as attempted so the auto-fetch effect
+    // does not fire a second, redundant request behind this one.
+    autoFetchAttempted.current.add(autoFetchKey);
     void fetchPostProcessModels(selectedProviderId);
-  }, [fetchPostProcessModels, isAppleProvider, selectedProviderId]);
+  }, [
+    autoFetchKey,
+    fetchPostProcessModels,
+    isAppleProvider,
+    selectedProviderId,
+  ]);
 
   const availableModelsRaw = postProcessModelOptions[selectedProviderId] || [];
+  const hasFetchedModels = availableModelsRaw.length > 0;
+
+  // Korero (v1.35.0): the local-provider auto-fetch. A local runtime is
+  // enumerable the moment it is running -- there is no key to wait for and no
+  // per-request cost -- so the installed list is fetched on mount and whenever
+  // the provider or base URL changes, rather than waiting for a refresh click
+  // the user has no reason to suspect they need.
+  useEffect(() => {
+    if (!isLocalProvider) return;
+    if (!baseUrl.trim()) return;
+    if (autoFetchAttempted.current.has(autoFetchKey)) return;
+    autoFetchAttempted.current.add(autoFetchKey);
+    void fetchPostProcessModels(selectedProviderId);
+  }, [
+    autoFetchKey,
+    baseUrl,
+    fetchPostProcessModels,
+    isLocalProvider,
+    selectedProviderId,
+  ]);
+
+  const installedSet = useMemo(() => {
+    const s = new Set<string>();
+    for (const m of availableModelsRaw) {
+      const trimmed = m?.trim();
+      if (trimmed) s.add(trimmed);
+    }
+    return s;
+  }, [availableModelsRaw]);
 
   const modelOptions = useMemo<ModelOption[]>(() => {
     const seen = new Set<string>();
     const options: ModelOption[] = [];
 
-    const upsert = (value: string | null | undefined) => {
+    const upsert = (value: string | null | undefined, label?: string) => {
       const trimmed = value?.trim();
       if (!trimmed || seen.has(trimmed)) return;
       seen.add(trimmed);
-      options.push({ value: trimmed, label: trimmed });
+      options.push({ value: trimmed, label: label ?? trimmed });
     };
 
     // Add available models from API
@@ -189,15 +300,46 @@ export const usePostProcessProviderState = (): PostProcessProviderState => {
     // Korero (v1.3.0): add suggested models from the provider's static list.
     // These ensure the dropdown is useful before the user clicks "Fetch models".
     // Deduplicated against API results by the seen Set above.
-    for (const candidate of selectedProvider?.suggested_models ?? []) {
-      upsert(candidate);
+    //
+    // Korero (v1.35.0): NOT for local providers. A suggested model that has not
+    // been pulled cannot run, so offering it as a pick is offering a failure.
+    // Local suggestions go out through pullCandidates instead.
+    if (!isLocalProvider) {
+      for (const candidate of selectedProvider?.suggested_models ?? []) {
+        upsert(candidate);
+      }
     }
 
-    // Ensure current model is in the list
-    upsert(model);
+    // Ensure current model is in the list. Korero (v1.35.0): on a local
+    // provider whose installed list we actually have, say plainly when the
+    // configured model is not among it -- this is the state Nic was in, with
+    // gemma3:4b selected and never pulled.
+    const notInstalled =
+      isLocalProvider && hasFetchedModels && !installedSet.has(model.trim());
+    upsert(model, notInstalled ? `${model.trim()} -- not installed` : undefined);
 
     return options;
-  }, [availableModelsRaw, model, selectedProvider]);
+  }, [
+    availableModelsRaw,
+    hasFetchedModels,
+    installedSet,
+    isLocalProvider,
+    model,
+    selectedProvider,
+  ]);
+
+  const pullCandidates = useMemo<string[]>(() => {
+    if (!isLocalProvider) return [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const candidate of selectedProvider?.suggested_models ?? []) {
+      const trimmed = candidate?.trim();
+      if (!trimmed || seen.has(trimmed) || installedSet.has(trimmed)) continue;
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+    return out;
+  }, [installedSet, isLocalProvider, selectedProvider]);
 
   const isBaseUrlUpdating = isUpdating(
     `post_process_base_url:${selectedProviderId}`,
@@ -214,14 +356,13 @@ export const usePostProcessProviderState = (): PostProcessProviderState => {
 
   const isCustomProvider = selectedProvider?.id === "custom";
 
-  // No automatic fetching - user must click refresh button
-
   return {
     providerOptions,
     selectedProviderId,
     selectedProvider,
     isCustomProvider,
     isAppleProvider,
+    isLocalProvider,
     appleIntelligenceUnavailable,
     baseUrl,
     handleBaseUrlChange,
@@ -232,6 +373,9 @@ export const usePostProcessProviderState = (): PostProcessProviderState => {
     model,
     handleModelChange,
     modelOptions,
+    installedModels: availableModelsRaw,
+    hasFetchedModels,
+    pullCandidates,
     isModelUpdating,
     isFetchingModels,
     handleProviderSelect,
