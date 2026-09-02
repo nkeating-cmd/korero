@@ -109,7 +109,8 @@ impl ModelManager {
         // Whisper supported languages (99 languages from tokenizer)
         // Including zh-Hans and zh-Hant variants to match frontend language codes
         let whisper_languages: Vec<String> = vec![
-            "en", "zh", "zh-Hans", "zh-Hant", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl",
+            "en", "en-NZ", "zh", "zh-Hans", "zh-Hant", "de", "es", "ru", "ko", "fr", "ja", "pt",
+            "tr", "pl",
             "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs",
             "ro", "da", "hu", "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy",
             "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is",

@@ -511,7 +511,24 @@ impl TranscriptionManager {
 
         // Validate selected language against the model's supported languages.
         // If the language isn't supported, fall back to "auto" to prevent errors.
-        let validated_language = if settings.selected_language == "auto" {
+        //
+        // Korero (P0-NZ / D-2, 2026-09-02): the SHAPE check below runs first and is
+        // deliberately independent of the model. This block used to fail open twice --
+        // an unknown model id fell to .unwrap_or(true), and a registered model with an
+        // empty supported_languages (every custom .bin Whisper model) satisfied
+        // is_empty() -- so an arbitrary string could reach the engine. whisper.cpp does
+        // not reject it: whisper_lang_id misses g_lang and returns -1, and
+        // whisper_token_lang(ctx, -1) is token_sot, so the start token is emitted twice
+        // in the language slot, silently.
+        let validated_language = if !crate::audio_toolkit::is_well_formed_locale(
+            &settings.selected_language,
+        ) {
+            warn!(
+                "Language '{}' is not a well-formed locale code, falling back to auto-detect",
+                settings.selected_language
+            );
+            "auto".to_string()
+        } else if settings.selected_language == "auto" {
             "auto".to_string()
         } else {
             let is_supported = self
@@ -569,7 +586,12 @@ impl TranscriptionManager {
                                 {
                                     "zh".to_string()
                                 } else {
-                                    validated_language.clone()
+                                    // Korero (P0-NZ): en-NZ -> en. A Korero locale tag
+                                    // must never reach the engine; see nz_english.rs.
+                                    crate::audio_toolkit::fold_locale_for_engine(
+                                        &validated_language,
+                                    )
+                                    .to_string()
                                 };
                                 Some(normalized)
                             };
@@ -758,12 +780,29 @@ impl TranscriptionManager {
             )
         };
 
-        // Filter out filler words and hallucinations
+        // Filter out filler words and hallucinations.
+        //
+        // Korero (D-1, 2026-09-02): this passed settings.app_language, the i18n UI
+        // locale, not the dictation language. The NZ tag-particle protection therefore
+        // held only while the interface was English; changing the UI language silently
+        // changed what was deleted from transcripts.
         let filtered_result = filter_transcription_output(
             &corrected_result,
-            &settings.app_language,
+            &settings.selected_language,
             &settings.custom_filler_words,
         );
+
+        // Korero (P0-NZ, 2026-09-02): the New Zealand English locale pass -- macron
+        // restoration, NZ place names, NZ spelling. Deterministic, offline, and applied
+        // for EVERY engine, which is the whole point: Parakeet accepts no bias prompt
+        // and no language hint, so this is the only NZ machinery that can reach it.
+        // Gated on the RAW selected_language, mirroring maybe_convert_chinese_variant.
+        let filtered_result =
+            if crate::audio_toolkit::is_nz_locale(&settings.selected_language) {
+                crate::audio_toolkit::apply_nz_english(&filtered_result)
+            } else {
+                filtered_result
+            };
 
         // Korero (v1.15.0): deterministic user-taught corrections (wrong -> right),
         // applied last so they win over fuzzy matching and filtering.
