@@ -264,7 +264,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onModelSelected }) => {
     <div className="h-screen w-screen flex flex-col px-8 pt-10 pb-6 gap-6 inset-0">
       {/* Kōrero fork: tightened hero header — bigger wordmark, calmer subtitle */}
       <div className="flex flex-col items-center gap-3 shrink-0">
-        <HandyTextLogo width={240} />
+        {/* Korero: wordmark removed; the app icon carries brand recognition. */}
         <p className="text-text-muted text-base max-w-md font-medium mx-auto text-center">
           {t("onboarding.subtitle")}
         </p>

@@ -106,7 +106,11 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
     // Reset language to auto if the new model doesn't support the currently selected language.
     // This prevents stale language settings from causing errors (e.g. Canary receiving zh-Hans)
     // and stops downstream processing (e.g. OpenCC) from running on an irrelevant language.
+    // Korero (P0-NZ / D-7, 2026-09-02): a Korero LOCALE TAG survives a model switch. It is
+    // never sent to an engine -- fold_locale_for_engine turns it into "en" before dispatch --
+    // so no model can be broken by keeping it, and clearing it silently disabled the feature.
     if settings.selected_language != "auto"
+        && !crate::audio_toolkit::is_nz_locale(&settings.selected_language)
         && !model_info.supported_languages.is_empty()
         && !model_info
             .supported_languages

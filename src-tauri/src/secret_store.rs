@@ -113,6 +113,9 @@ pub fn save_api_key(provider_id: &str, value: &str) -> bool {
 /// Returns `true` if the entry was deleted or already absent; `false` only on
 /// a hard backend error. Treating "already gone" as success keeps the caller's
 /// idempotency contract clean.
+// Korero (v1.2.0): kept as public API for future use (key rotation, provider
+// removal). Not called in the current build -- suppress the dead_code lint.
+#[allow(dead_code)]
 pub fn delete_api_key(provider_id: &str) -> bool {
     let Some(entry) = entry(provider_id) else {
         return false;

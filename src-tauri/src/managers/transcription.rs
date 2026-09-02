@@ -553,6 +553,12 @@ impl TranscriptionManager {
             }
         };
 
+        // Korero (P0-NZ / D-9, 2026-09-02): fold a Korero locale tag to a bare engine language
+        // HERE, once, rather than inside a single match arm. Shadowing the binding means every
+        // engine arm below is structurally incapable of seeing "en-NZ".
+        let validated_language =
+            crate::audio_toolkit::fold_locale_for_engine(&validated_language).to_string();
+
         // Perform transcription with the appropriate engine.
         // We use catch_unwind to prevent engine panics from poisoning the mutex,
         // which would make the app hang indefinitely on subsequent operations.
@@ -586,12 +592,7 @@ impl TranscriptionManager {
                                 {
                                     "zh".to_string()
                                 } else {
-                                    // Korero (P0-NZ): en-NZ -> en. A Korero locale tag
-                                    // must never reach the engine; see nz_english.rs.
-                                    crate::audio_toolkit::fold_locale_for_engine(
-                                        &validated_language,
-                                    )
-                                    .to_string()
+                                    validated_language.clone()
                                 };
                                 Some(normalized)
                             };
@@ -797,9 +798,18 @@ impl TranscriptionManager {
         // for EVERY engine, which is the whole point: Parakeet accepts no bias prompt
         // and no language hint, so this is the only NZ machinery that can reach it.
         // Gated on the RAW selected_language, mirroring maybe_convert_chinese_variant.
+        //
+        // custom_words is passed in so the user's own vocabulary SUPPRESSES this pass
+        // (D-8). Round one claimed a user's corrections always win; that was true of
+        // transcript_corrections and false of custom_words, which apply_custom_words
+        // restores above only for this pass to overwrite -- so a user named Awhina got
+        // macronised with no way to opt out.
         let filtered_result =
             if crate::audio_toolkit::is_nz_locale(&settings.selected_language) {
-                crate::audio_toolkit::apply_nz_english(&filtered_result)
+                crate::audio_toolkit::apply_nz_english(
+                    &filtered_result,
+                    &settings.custom_words,
+                )
             } else {
                 filtered_result
             };
