@@ -201,11 +201,36 @@ pub fn apply_dictation_format(text: &str) -> String {
     out
 }
 
+/// Case-insensitive search for an **ASCII** needle, returning an index into the ORIGINAL string.
+///
+/// # Why this exists rather than `haystack.to_lowercase().find(needle)`
+///
+/// That form returns an index into the *lowercased* string and the original was then sliced with
+/// it. The two agree only while lowercasing preserves byte length, and it does not: `İ` (U+0130)
+/// lowercases to 2 chars / 3 bytes from 2, and `ẞ` (U+1E9E) to 2 bytes from 3. Slicing the original
+/// at a stale index **panics** — *"byte index is not a char boundary"* — and a panic on the
+/// transcription path loses the user's dictation outright.
+///
+/// Macrons are safe by coincidence (`Ā`→`ā` is 2 bytes either way), so te reo never triggered it —
+/// but Turkish ships in this app's 20 locales, and correctness should not rest on an accident.
+///
+/// Byte comparison is provably sound here because every cue is pure ASCII: UTF-8 continuation and
+/// lead bytes are all ≥ 0x80, ASCII is ≤ 0x7F, so a match can never begin inside a multi-byte
+/// character. Every index returned is therefore a valid char boundary.
+fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
+    debug_assert!(needle.is_ascii(), "cue tables must be ASCII: {needle:?}");
+    let hay = haystack.as_bytes();
+    let ned = needle.as_bytes();
+    if ned.is_empty() || hay.len() < ned.len() {
+        return None;
+    }
+    (0..=hay.len() - ned.len()).find(|&i| hay[i..i + ned.len()].eq_ignore_ascii_case(ned))
+}
+
 /// Handles the explicit spoken cues. `None` means no cue was present.
 fn apply_explicit_cues(text: &str) -> Option<String> {
-    let lower = text.to_lowercase();
-    let has_bullet = BULLET_CUES.iter().any(|c| lower.contains(c));
-    let has_break = BREAK_CUES.iter().any(|c| lower.contains(c));
+    let has_bullet = BULLET_CUES.iter().any(|c| find_ascii_ci(text, c).is_some());
+    let has_break = BREAK_CUES.iter().any(|c| find_ascii_ci(text, c).is_some());
     if !has_bullet && !has_break {
         return None;
     }
@@ -215,7 +240,6 @@ fn apply_explicit_cues(text: &str) -> Option<String> {
     let mut changed = false;
 
     'outer: loop {
-        let lower_rest = rest.to_lowercase();
         // Longest cue first so "new bullet" is not eaten by "bullet".
         let mut best: Option<(usize, usize, bool)> = None;
         for (cue, is_bullet) in BULLET_CUES
@@ -223,7 +247,7 @@ fn apply_explicit_cues(text: &str) -> Option<String> {
             .map(|c| (*c, true))
             .chain(BREAK_CUES.iter().map(|c| (*c, false)))
         {
-            if let Some(pos) = lower_rest.find(cue) {
+            if let Some(pos) = find_ascii_ci(rest, cue) {
                 let better = match best {
                     None => true,
                     Some((bp, bl, _)) => pos < bp || (pos == bp && cue.len() > bl),
@@ -386,5 +410,47 @@ mod korero_fmt_tests {
     fn korero_fmt_digits_are_not_ordinals() {
         assert!(leading_ordinal("1990 was a good year.").is_none());
         assert!(leading_ordinal("2. do the thing").is_none());
+    }
+
+    // ---- the byte-index hazard -------------------------------------------------------------
+
+    /// Found in review: the cue search used to index the ORIGINAL string with an index from its
+    /// LOWERCASED copy. `İ` lowercases 2 bytes -> 3 and `ẞ` 3 -> 2, so the slice landed off a char
+    /// boundary and **panicked**, losing the dictation. Turkish ships in this app's 20 locales.
+    #[test]
+    fn korero_fmt_multibyte_case_changes_do_not_panic() {
+        for s in [
+            "İstanbul notes. Bullet point call the plumber. Bullet point pay it.",
+            "ẞtraße test. New bullet do the thing. New bullet do the other.",
+            "Kōrero whānau hapū. Bullet point kōrero. Bullet point waiata.",
+            "ÅÄÖ ÜÉÈ. New paragraph then more text.",
+        ] {
+            let out = apply_dictation_format(s);
+            assert!(!out.is_empty(), "empty output for {s:?}");
+        }
+    }
+
+    /// Macrons must survive the pass untouched -- this is a te reo product.
+    #[test]
+    fn korero_fmt_macrons_survive() {
+        let out = apply_dictation_format("First, email the whānau. Second, book the hui.");
+        assert!(out.contains("whānau"), "macron lost: {out:?}");
+        assert_eq!(out, "- email the whānau.\n- book the hui.");
+    }
+
+    #[test]
+    fn korero_fmt_cue_matching_is_case_insensitive() {
+        let out = apply_dictation_format("Do this. BULLET POINT do that.");
+        assert!(out.contains("- do that"), "got {out:?}");
+    }
+
+    #[test]
+    fn korero_fmt_ascii_ci_search_returns_original_indices() {
+        // A multi-byte prefix must not shift the reported index.
+        let s = "Kōrero bullet point x";
+        let idx = find_ascii_ci(s, "bullet point").expect("cue not found");
+        assert!(s.is_char_boundary(idx), "index {idx} is not a char boundary");
+        assert_eq!(&s[idx..idx + "bullet point".len()], "bullet point");
+        assert!(find_ascii_ci("nothing here", "bullet").is_none());
     }
 }
