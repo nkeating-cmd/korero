@@ -1072,7 +1072,7 @@ fn default_post_process_prompts() -> Vec<LLMPrompt> {
             // boundaries without conflicting with the earlier "do not reorder" guard.
             // Migration in ensure_post_process_defaults() upgrades existing installs
             // that still carry the v1.6.0 default text.
-            prompt: "Clean this transcript using NZ English spelling (colour, organise, whānau, etc.):\n1. Fix spelling, capitalisation, and punctuation errors\n2. Convert number words to digits (twenty-five → 25, ten percent → 10%, five dollars → $5)\n3. Replace spoken punctuation with symbols (period → ., comma → ,, question mark → ?)\n4. Remove filler words and false starts (um, uh, er, like as filler), and resolve self-corrections by keeping only the final intended wording (for example 'send it to, uh, send it to Sarah' becomes 'send it to Sarah', and 'meet on Tuesday, no, Wednesday' becomes 'meet on Wednesday') without changing the meaning\n5. Preserve te reo Māori words exactly as spoken\n6. Do NOT add, invent, or insert any speaker labels. ONLY if the transcript already begins lines with speaker labels (e.g. \"You:\" or a name): keep every existing label exactly as written, never merge, move, drop, or reassign text across speakers, and tidy wording only WITHIN each speaker's turn (join broken fragments inside a turn, never across a label). If the text has NO speaker labels — e.g. single-speaker dictation — return clean prose with no \"You:\" or name prefixes added.\n\nPreserve exact meaning. Do not add content or invent details. Use NZ English throughout.\n\nReturn ONLY the cleaned transcript — no preamble, notes, headings, or repetition of these instructions. Never write a lead-in such as \"Here is the cleaned transcript\".\n\nTranscript:\n${output}".to_string(),
+            prompt: "Clean this transcript using NZ English spelling (colour, organise, whānau, etc.):\n1. Fix spelling, capitalisation, and punctuation errors\n2. Convert number words to digits (twenty-five → 25, ten percent → 10%, five dollars → $5)\n3. Replace spoken punctuation with symbols (period → ., comma → ,, question mark → ?)\n4. Remove filler words and false starts (um, uh, er, like as filler), and resolve self-corrections by keeping only the final intended wording (for example 'send it to, uh, send it to Sarah' becomes 'send it to Sarah', and 'meet on Tuesday, no, Wednesday' becomes 'meet on Wednesday') without changing the meaning\n5. Preserve te reo Māori words exactly as spoken\n5b. PRESERVE EXISTING STRUCTURE. If the text already contains line breaks or lines beginning with '- ', keep every one of them exactly as they are. They were produced deliberately before you saw this text, from cues the speaker actually said. Never merge structured lines back into a paragraph.\n5c. Format a spoken list as a bulleted list. If the speaker enumerated items — by ordinals ('first… second… third'), by counting ('number one… number two'), or simply by listing several parallel actions or things — put each item on its own line beginning with '- '. Drop the spoken enumerator itself ('First, call the plumber' becomes '- call the plumber'). Use a numbered list ('1. ') ONLY when the order genuinely matters, such as steps that must happen in sequence. If the text is ordinary prose, leave it as prose — do not invent a list where the speaker did not make one.\n6. Do NOT add, invent, or insert any speaker labels. ONLY if the transcript already begins lines with speaker labels (e.g. \"You:\" or a name): keep every existing label exactly as written, never merge, move, drop, or reassign text across speakers, and tidy wording only WITHIN each speaker's turn (join broken fragments inside a turn, never across a label). If the text has NO speaker labels — e.g. single-speaker dictation — return clean prose with no \"You:\" or name prefixes added.\n\nPreserve exact meaning. Do not add content or invent details. Use NZ English throughout.\n\nReturn ONLY the cleaned transcript — no preamble, notes, headings, or repetition of these instructions. Never write a lead-in such as \"Here is the cleaned transcript\".\n\nTranscript:\n${output}".to_string(),
         },
         LLMPrompt {
             id: "korero_client_email".to_string(),
@@ -1234,7 +1234,18 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
                         // correction cleanup.
                         || existing
                             .prompt
-                            .contains("4. Remove filler words (um, uh, like as filler)"))
+                            .contains("4. Remove filler words (um, uh, like as filler)")
+                        // Kōrero (UX round, 2026-09-02): upgrade installs whose
+                        // prompt predates rules 5b/5c. 5b is the CONTRACT with the
+                        // new deterministic formatting pass -- without it the LLM
+                        // happily merges the bullets that pass just produced back
+                        // into a paragraph, and the two layers fight. 5c is the
+                        // list formatting itself. Sentinel: the rule 5 line with
+                        // no 5b following it.
+                        || (existing
+                            .prompt
+                            .contains("5. Preserve te reo Māori words exactly as spoken")
+                            && !existing.prompt.contains("5b. PRESERVE EXISTING STRUCTURE")))
                 {
                     debug!("Migrating korero_clean_transcript prompt to current default (no-invent speaker labels)");
                     existing.prompt = default_prompt.prompt.clone();

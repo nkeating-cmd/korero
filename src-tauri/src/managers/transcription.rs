@@ -814,6 +814,12 @@ impl TranscriptionManager {
                 filtered_result
             };
 
+        // Korero (UX round, 2026-09-02): deterministic dictation formatting.
+        // Only what a spoken cue makes unambiguous -- it never guesses, and it
+        // returns the input verbatim when nothing matched. The LLM layer infers
+        // the lists that were not cued; this is the floor, not the ceiling.
+        let filtered_result = crate::audio_toolkit::apply_dictation_format(&filtered_result);
+
         // Korero (v1.15.0): deterministic user-taught corrections (wrong -> right),
         // applied last so they win over fuzzy matching and filtering.
         let filtered_result = crate::corrections::apply_corrections(
