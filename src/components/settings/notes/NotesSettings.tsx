@@ -24,6 +24,8 @@ import {
   type Correction,
 } from "../../ui/Corrections";
 import { commands, type ModelInfo } from "../../../bindings";
+import i18n from "../../../i18n";
+import { formatDate } from "../../../utils/dateFormat";
 import { useSettings } from "../../../hooks/useSettings";
 
 /**
@@ -540,7 +542,16 @@ export const NotesSettings: React.FC = () => {
                   </button>
                 </div>
                 <span className="text-xs text-text-subtle">
-                  {new Date(n.updatedAt).toLocaleDateString()}
+                  {/* Korero (UX round, 2026-09-02): the shared formatter, not
+                      toLocaleDateString(). Called bare it follows the OPERATING
+                      SYSTEM locale, not the app's language setting -- so Korero
+                      in French on an English Windows showed English dates.
+                      formatDate takes SECONDS as a string; updatedAt is
+                      Date.now() milliseconds (see the Note type). */}
+                  {formatDate(
+                    String(Math.floor(n.updatedAt / 1000)),
+                    i18n.language,
+                  )}
                 </span>
               </div>
             );

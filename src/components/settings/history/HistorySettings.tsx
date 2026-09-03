@@ -16,6 +16,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { readFile } from "@tauri-apps/plugin-fs";
 import {
+  AlertTriangle,
   Check,
   ChevronDown,
   ChevronUp,
@@ -549,8 +550,13 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
       )}
       {ppFailed && !editing && (
         <div className="flex items-center gap-1.5">
+          {/* Korero (UX round, 2026-09-02): Lucide, not a bare U+26A0. A text
+              glyph renders from the OS emoji font, so it did not match the
+              stroke weight, optical size or colour of every other icon in the
+              app -- and it is the ONE icon a user sees when something failed. */}
+          <AlertTriangle size={12} className="text-pill-warning/70 shrink-0" />
           <span className="text-xs text-pill-warning/70">
-            ⚠ Post-processing unavailable
+            Post-processing unavailable
           </span>
         </div>
       )}
