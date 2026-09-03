@@ -25,7 +25,7 @@ import {
 } from "../../ui/Corrections";
 import { commands, type ModelInfo } from "../../../bindings";
 import i18n from "../../../i18n";
-import { formatDate } from "../../../utils/dateFormat";
+import { formatRelativeTime } from "../../../utils/dateFormat";
 import { useSettings } from "../../../hooks/useSettings";
 
 /**
@@ -543,12 +543,23 @@ export const NotesSettings: React.FC = () => {
                 </div>
                 <span className="text-xs text-text-subtle">
                   {/* Korero (UX round, 2026-09-02): the shared formatter, not
-                      toLocaleDateString(). Called bare it follows the OPERATING
-                      SYSTEM locale, not the app's language setting -- so Korero
-                      in French on an English Windows showed English dates.
-                      formatDate takes SECONDS as a string; updatedAt is
-                      Date.now() milliseconds (see the Note type). */}
-                  {formatDate(
+                      toLocaleDateString(). Called bare, that follows the
+                      OPERATING SYSTEM locale rather than the app's own language
+                      setting -- Korero in French on an English Windows showed
+                      English dates.
+
+                      RELATIVE, not absolute, and that is the whole point of the
+                      round. A first pass used formatDate() here, which left the
+                      app with TWO date treatments -- relative in History, a long
+                      absolute date in Notes -- which is the defect this work
+                      exists to remove. "2 hours ago" is also the more useful
+                      answer for "when did I last touch this note", and it is far
+                      shorter than "2 September 2026" in a narrow list column
+                      where a wrap would make every row a different height.
+
+                      Contract: the formatter takes SECONDS as a string;
+                      updatedAt is Date.now() milliseconds (see the Note type). */}
+                  {formatRelativeTime(
                     String(Math.floor(n.updatedAt / 1000)),
                     i18n.language,
                   )}
