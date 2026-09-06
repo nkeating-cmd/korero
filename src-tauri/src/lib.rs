@@ -829,9 +829,18 @@ pub fn run(cli_args: CliArgs) {
             // so subsequent launches restore normally — the user's own resize choices
             // accumulate in a fresh file and persist from that point forward.
             // Failure is non-fatal: if we can't delete, restore_state handles it.
+            //
+            // Kōrero (v1.40.0, VERIFY-M1 DEFECT-1): this used `app.path()`
+            // directly, which is the WRONG directory in portable mode (the
+            // migration then checked and wrote beside %APPDATA% instead of the
+            // portable Data dir) and, in an evaluation run, wrote its marker
+            // into the LIVE app data despite the sandbox. `portable::app_data_dir`
+            // is correct for all three modes. The whole block is additionally
+            // skipped for an eval run: a benchmark must neither consume nor
+            // mutate the user's window state.
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            {
-                if let Ok(data_dir) = app.path().app_data_dir() {
+            if !cli_args.is_eval() {
+                if let Ok(data_dir) = portable::app_data_dir(&app.handle()) {
                     let marker = data_dir.join(".korero-window-reset-v190");
                     if !marker.exists() {
                         let state_file = data_dir.join(".window-state.json");
@@ -859,8 +868,10 @@ pub fn run(cli_args: CliArgs) {
             // launches at the inner_size defaults above and a fresh state
             // file is written on next close.
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            if let Err(err) = main_window.restore_state(StateFlags::all()) {
-                log::warn!("window-state: failed to restore main window state: {err}");
+            if !cli_args.is_eval() {
+                if let Err(err) = main_window.restore_state(StateFlags::all()) {
+                    log::warn!("window-state: failed to restore main window state: {err}");
+                }
             }
 
             let mut settings = get_settings(&app.handle());

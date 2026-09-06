@@ -79,9 +79,14 @@ pub struct TranscribeTrace {
 
 #[derive(Clone)]
 pub struct TranscriptionManager {
-    /// Kōrero (v1.40.0, M1d): the last `transcribe_traced` result, read once by
+    /// Kōrero (v1.40.0, M1d): traces from `transcribe_traced`, drained once by
     /// the eval harness so callers through `transcribe()` stay unchanged.
-    last_trace: Arc<Mutex<Option<TranscribeTrace>>>,
+    ///
+    /// A Vec, not a slot: `transcribe_wav_chunked` splits at 300 s
+    /// (`meeting.rs` CHUNK_SAMPLES), so a ~10-minute evaluation take calls
+    /// `transcribe()` twice and a single slot would keep only the last chunk —
+    /// halving the raw text the macron-restored metric is computed from.
+    traces: Arc<Mutex<Vec<TranscribeTrace>>>,
     engine: Arc<Mutex<Option<LoadedEngine>>>,
     model_manager: Arc<ModelManager>,
     app_handle: AppHandle,
@@ -105,7 +110,7 @@ impl TranscriptionManager {
             watcher_handle: Arc::new(Mutex::new(None)),
             is_loading: Arc::new(Mutex::new(false)),
             loading_condvar: Arc::new(Condvar::new()),
-            last_trace: Arc::new(Mutex::new(None)),
+            traces: Arc::new(Mutex::new(Vec::new())),
         };
 
         // Start the idle watcher
@@ -492,12 +497,44 @@ impl TranscriptionManager {
         self.transcribe_traced(audio).map(|t| t.text)
     }
 
-    /// Kōrero (v1.40.0, M1d): take the last trace (eval harness only).
-    pub fn take_last_trace(&self) -> Option<TranscribeTrace> {
-        self.last_trace
+    /// Kōrero (v1.40.0, M1d): drain the accumulated traces, merged into one
+    /// (eval harness only). `raw` and `text` are the chunks joined in order —
+    /// so a multi-chunk file yields the WHOLE raw transcript, not the tail.
+    /// `initial_prompt` and `effective_language` come from the first chunk
+    /// (they are identical across chunks of one run); `echo_stripped` is true
+    /// if the guard fired on any chunk.
+    pub fn take_traces(&self) -> Option<TranscribeTrace> {
+        let mut guard = self
+            .traces
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let all = std::mem::take(&mut *guard);
+        if all.is_empty() {
+            return None;
+        }
+        let chunks = all.len();
+        let echo_stripped = all.iter().any(|t| t.echo_stripped);
+        let initial_prompt = all[0].initial_prompt.clone();
+        let effective_language = all[0].effective_language.clone();
+        let join = |parts: Vec<String>| -> String {
+            parts
+                .into_iter()
+                .filter(|p| !p.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let raw = join(all.iter().map(|t| t.raw.clone()).collect());
+        let text = join(all.iter().map(|t| t.text.clone()).collect());
+        if chunks > 1 {
+            log::info!("eval: merged {chunks} chunk traces");
+        }
+        Some(TranscribeTrace {
+            raw,
+            text,
+            initial_prompt,
+            effective_language,
+            echo_stripped,
+        })
     }
 
     /// Kōrero (v1.40.0, M1d): the body of `transcribe`, returning the raw engine
@@ -921,8 +958,8 @@ impl TranscriptionManager {
             effective_language,
             echo_stripped,
         };
-        if let Ok(mut slot) = self.last_trace.lock() {
-            *slot = Some(trace.clone());
+        if let Ok(mut slot) = self.traces.lock() {
+            slot.push(trace.clone());
         }
         Ok(trace)
     }
@@ -1045,5 +1082,76 @@ impl Drop for TranscriptionManager {
                 debug!("Idle watcher thread joined successfully");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod trace_merge_tests {
+    use super::TranscribeTrace;
+
+    /// VERIFY-M1 DEFECT-2: `transcribe_wav_chunked` splits at 300 s, so a
+    /// ~10-minute evaluation take produces several traces. Merging must yield
+    /// the WHOLE raw transcript — the earlier single-slot stash kept only the
+    /// last chunk, silently halving the macron-restored evidence.
+    ///
+    /// The merge is exercised here on the same shape `take_traces` builds,
+    /// without needing an engine or an AppHandle.
+    fn merge(all: Vec<TranscribeTrace>) -> Option<TranscribeTrace> {
+        if all.is_empty() {
+            return None;
+        }
+        let echo_stripped = all.iter().any(|t| t.echo_stripped);
+        let initial_prompt = all[0].initial_prompt.clone();
+        let effective_language = all[0].effective_language.clone();
+        let join = |parts: Vec<String>| -> String {
+            parts
+                .into_iter()
+                .filter(|p| !p.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        Some(TranscribeTrace {
+            raw: join(all.iter().map(|t| t.raw.clone()).collect()),
+            text: join(all.iter().map(|t| t.text.clone()).collect()),
+            initial_prompt,
+            effective_language,
+            echo_stripped,
+        })
+    }
+
+    fn t(raw: &str, text: &str, echo: bool) -> TranscribeTrace {
+        TranscribeTrace {
+            raw: raw.to_string(),
+            text: text.to_string(),
+            initial_prompt: Some("whanau, korero".to_string()),
+            effective_language: "en".to_string(),
+            echo_stripped: echo,
+        }
+    }
+
+    #[test]
+    fn traces_merge_keeps_every_chunk_not_just_the_last() {
+        let merged = merge(vec![
+            t("chunk one raw", "chunk one text", false),
+            t("chunk two raw", "chunk two text", false),
+        ])
+        .unwrap();
+        assert_eq!(merged.raw, "chunk one raw chunk two raw");
+        assert_eq!(merged.text, "chunk one text chunk two text");
+        assert_eq!(merged.effective_language, "en");
+        assert!(!merged.echo_stripped);
+    }
+
+    #[test]
+    fn traces_merge_flags_echo_from_any_chunk_and_skips_empties() {
+        let merged = merge(vec![
+            t("first", "first", false),
+            t("", "", false),
+            t("third", "third", true),
+        ])
+        .unwrap();
+        assert_eq!(merged.raw, "first third");
+        assert!(merged.echo_stripped, "echo on any chunk must survive the merge");
+        assert!(merge(vec![]).is_none());
     }
 }

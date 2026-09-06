@@ -225,10 +225,11 @@ pub async fn run(app: AppHandle, args: CliArgs) -> i32 {
     let outcome = crate::meeting::transcribe_wav_chunked_eval(&tm, &wav.to_string_lossy()).await;
     result.transcribe_ms = t1.elapsed().as_millis();
 
-    // The trace records what the LAST chunk saw; raw text is concatenated per
-    // chunk by the import path, so we take raw from the trace only when the
-    // file was a single chunk, otherwise fall back to the final text.
-    if let Some(trace) = tm.take_last_trace() {
+    // Traces are accumulated per chunk and merged here, so `raw_engine_text`
+    // covers the WHOLE file even when the 300 s chunker split it (VERIFY-M1
+    // DEFECT-2). `result.text` still comes from the import path's own join,
+    // which is authoritative; the merged trace text is not used for it.
+    if let Some(trace) = tm.take_traces() {
         result.effective_language = trace.effective_language;
         result.initial_prompt = trace.initial_prompt;
         result.echo_stripped = trace.echo_stripped;

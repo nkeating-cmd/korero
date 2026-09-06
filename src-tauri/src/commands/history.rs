@@ -287,4 +287,26 @@ mod tidy_reo_tests {
             assert!(!is_loopback_url(u), "{u} must not count as loopback");
         }
     }
+
+    /// VERIFY-M1 item 6: adversarial forms that LOOK loopback. The predicate is
+    /// deliberately conservative — a userinfo form is rejected outright rather
+    /// than parsed, because the only cost of a false negative is a hidden
+    /// button, while a false positive sends te reo transcripts off-device.
+    #[test]
+    fn loopback_check_rejects_lookalike_hosts() {
+        for u in [
+            "http://localhost@evil.com/v1",
+            "http://user:pass@evil.com/v1",
+            "http://127.0.0.1.evil.com/v1",
+            "http://evil.com/?h=localhost",
+            "http://evil.com/localhost",
+            "http://xn--localhost-/v1",
+            "http://127.0.0.2:11434/v1",
+            "http://[::2]:11434/v1",
+            "http://::ffff:127.0.0.1:11434/v1",
+            "http://0.0.0.0:11434/v1",
+        ] {
+            assert!(!is_loopback_url(u), "{u} must not count as loopback");
+        }
+    }
 }
