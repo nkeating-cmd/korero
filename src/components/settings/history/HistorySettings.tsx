@@ -25,6 +25,7 @@ import {
   Pencil,
   RotateCcw,
   Sparkles,
+  Languages,
   Star,
   Trash2,
   X,
@@ -39,6 +40,7 @@ import {
   type HistoryUpdatePayload,
 } from "@/bindings";
 import { useOsType } from "@/hooks/useOsType";
+import { useSettings } from "@/hooks/useSettings";
 import { formatDateTime } from "@/utils/dateFormat";
 import { AudioPlayer } from "../../ui/AudioPlayer";
 import { Button } from "../../ui/Button";
@@ -90,6 +92,16 @@ const OpenRecordingsButton: React.FC<{ onClick: () => void; label: string }> = (
 // ---------------------------------------------------------------------------
 // Main page component
 // ---------------------------------------------------------------------------
+
+/** SEC-02: loopback means localhost / 127.0.0.1 / ::1 — nothing else is "local". */
+const isLoopbackUrl = (url: string): boolean => {
+  try {
+    const host = new URL(url.includes("://") ? url : `http://${url}`).hostname.toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1";
+  } catch {
+    return false;
+  }
+};
 
 export const HistorySettings: React.FC = () => {
   const { t } = useTranslation();
@@ -226,6 +238,41 @@ export const HistorySettings: React.FC = () => {
     if (result.status !== "ok") throw new Error(String(result.error));
   };
 
+  // Kōrero (v1.40.0, M5 / backlog T7): "Tidy te reo" is shown only when a
+  // LOOPBACK Ollama is running with a model selected — hidden, never disabled
+  // (UX-SPEC 2). Probed once per page mount, not per card. "Local" is judged
+  // by the URL, not the provider flag (SEC-02).
+  const { getSetting } = useSettings();
+  const [tidyReoAvailable, setTidyReoAvailable] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const probe = async () => {
+      const providers = getSetting("post_process_providers") ?? [];
+      const ollama = providers.find((p) => p.id === "ollama");
+      const model = (getSetting("post_process_models") ?? {})["ollama"];
+      if (!ollama || !model || !isLoopbackUrl(ollama.base_url)) {
+        if (!cancelled) setTidyReoAvailable(false);
+        return;
+      }
+      try {
+        const status = await commands.ollamaStatus(ollama.base_url);
+        if (!cancelled) setTidyReoAvailable(Boolean(status.running));
+      } catch {
+        if (!cancelled) setTidyReoAvailable(false);
+      }
+    };
+    probe();
+    return () => {
+      cancelled = true;
+    };
+  }, [getSetting]);
+
+  const tidyReoEntry = async (id: number) => {
+    const result = await commands.tidyHistoryEntryReo(id);
+    if (result.status !== "ok") throw new Error(String(result.error));
+    handleEntryUpdated(result.data);
+  };
+
   const openRecordingsFolder = async () => {
     try {
       const result = await commands.openRecordingsFolder();
@@ -272,6 +319,7 @@ export const HistorySettings: React.FC = () => {
               getAudioUrl={getAudioUrl}
               deleteAudio={deleteAudioEntry}
               retryTranscription={retryHistoryEntry}
+              tidyReo={tidyReoAvailable ? tidyReoEntry : undefined}
               onEntryUpdated={handleEntryUpdated}
             />
           ))}
@@ -314,6 +362,8 @@ interface HistoryEntryProps {
   getAudioUrl: (fileName: string) => Promise<string | null>;
   deleteAudio: (id: number) => Promise<void>;
   retryTranscription: (id: number) => Promise<void>;
+  /** Kōrero (v1.40.0, M5): present only when a loopback Ollama is available. */
+  tidyReo?: (id: number) => Promise<void>;
   onEntryUpdated: (entry: HistoryEntry) => void;
 }
 
@@ -324,11 +374,13 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
   getAudioUrl,
   deleteAudio,
   retryTranscription,
+  tidyReo,
   onEntryUpdated,
 }) => {
   const { t, i18n } = useTranslation();
   const [showCopied, setShowCopied] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [tidying, setTidying] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState("");
   const [saving, setSaving] = useState(false);
@@ -444,6 +496,19 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
     }
   };
 
+  const handleTidyReo = async () => {
+    if (!tidyReo) return;
+    try {
+      setTidying(true);
+      await tidyReo(entry.id);
+    } catch (error) {
+      console.error("Failed to tidy te reo:", error);
+      toast.error(t("settings.history.tidyReoError", { error: String(error) }));
+    } finally {
+      setTidying(false);
+    }
+  };
+
   const formattedDate = formatDateTime(String(entry.timestamp), i18n.language);
 
   return (
@@ -527,6 +592,23 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
                   }
                 />
               </IconButton>
+              {tidyReo && hasTranscription && (
+                <IconButton
+                  onClick={handleTidyReo}
+                  disabled={retrying || tidying}
+                  title={t("settings.history.tidyReo")}
+                >
+                  <Languages
+                    width={16}
+                    height={16}
+                    style={
+                      tidying
+                        ? { animation: "spin 1s linear infinite" }
+                        : undefined
+                    }
+                  />
+                </IconButton>
+              )}
               <IconButton
                 onClick={handleDeleteEntry}
                 disabled={retrying}

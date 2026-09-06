@@ -487,6 +487,16 @@ fn rewrite_word(word: &str, protected: &[String]) -> Option<String> {
         return finish(word, canon.to_string());
     }
 
+    // Kōrero (v1.40.0, M4): the curated lexicon, consulted after the static tables. Inert until
+    // reviewed (see reo_lexicon); its parser already excluded ambiguous and English keys.
+    if let Some((canon, proper)) = crate::audio_toolkit::reo_lexicon::lookup(&key) {
+        if proper {
+            return finish(word, canon.to_string());
+        }
+        let repl = if capitalised { capitalise_first(canon) } else { canon.to_string() };
+        return finish(word, repl);
+    }
+
     if let Some(canon) = lookup(MACRON_COMMON, &key) {
         let repl = if capitalised {
             capitalise_first(canon)
@@ -524,14 +534,11 @@ fn finish(original: &str, replacement: String) -> Option<String> {
 mod korero_nz_tests {
     use super::*;
 
-    /// Mirror of `REO_MACRON_AMBIGUOUS` in `audio_toolkit::text`. Kept as a literal copy because
-    /// that constant is private and widening its visibility would add patch surface to a file that
-    /// already carries twelve patches. `korero_nz_t1_mirror_matches_text_rs` is what stops the copy
-    /// drifting: it reads the real list off disk rather than trusting this one.
-    const T1_AMBIGUOUS: &[&str] = &[
-        "ana", "keke", "maku", "mana", "matua", "naku", "nana", "tangata", "taua", "teina",
-        "tipuna", "tuahine", "tuakana", "tupuna", "wahine",
-    ];
+    /// Kōrero (v1.40.0, M4): the T1 list is read from its single source of truth
+    /// (`reo_lexicon/ambiguous.tsv`) instead of a literal mirror that could drift.
+    fn t1_ambiguous() -> &'static [String] {
+        crate::audio_toolkit::reo_lexicon::ambiguous_keys()
+    }
 
     /// Minimum lexicon key length; short keys collide with English words and acronyms.
     const MIN_KEY_LEN: usize = 4;
@@ -558,31 +565,23 @@ mod korero_nz_tests {
     fn korero_nz_lexicon_excludes_t1_ambiguous_forms() {
         for (key, _) in all_tables() {
             assert!(
-                !T1_AMBIGUOUS.contains(&key),
+                !t1_ambiguous().iter().any(|k| k == key),
                 "'{key}' is on the T1 macron-ambiguity list -- auto-macronising it would turn a \
                  singular into a plural. It must not appear in any NZ lexicon table."
             );
         }
     }
 
-    /// The mirror above is only worth having if it still matches the original. Reads `text.rs` at
-    /// compile time so a word REMOVED from `REO_MACRON_AMBIGUOUS` cannot leave this copy asserting
-    /// a guarantee that no longer exists.
-    ///
-    /// Limitation, stated rather than faked: this checks the forward direction only. A word ADDED
-    /// to `REO_MACRON_AMBIGUOUS` later is not caught here. Parsing the const's body was tried and
-    /// rejected — it depends on the exact `const NAME: &[&str] = &[` spelling and would produce
-    /// false failures on a reformat, which is worse than a known gap. See
-    /// [[feedback_gate_false_positives]]: a gate that over-matches gets switched off.
+    /// Every ambiguity pair pinned through BOTH mechanisms (BUILD-PLAN M4 tests):
+    /// the NZ-English pass leaves the bare form alone, and the custom-word matcher
+    /// refuses a macron-only rewrite of it even when the macronised form is taught.
     #[test]
-    fn korero_nz_t1_mirror_matches_text_rs() {
-        let text_rs = include_str!("text.rs");
-        for w in T1_AMBIGUOUS {
-            assert!(
-                text_rs.contains(&format!("\"{w}\"")),
-                "'{w}' is in this module's T1 mirror but no longer appears in text.rs -- either \
-                 the guard moved or this copy is stale"
-            );
+    fn ambiguous_pair_bare_forms_survive_both_mechanisms() {
+        let keys = t1_ambiguous();
+        assert!(keys.len() >= 15, "expected at least 15 ambiguity pairs, got {}", keys.len());
+        for bare in keys {
+            let sentence = format!("one {bare} spoke");
+            assert_eq!(nz(&sentence), sentence, "nz_english must not macronise '{bare}'");
         }
     }
 

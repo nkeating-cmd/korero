@@ -1,0 +1,25 @@
+# Kōrero te reo macron-ambiguity list — the T1 veto's single source of truth (v1.40.0, M4 step 1).
+# status: draft
+# NOT REVIEWED BY A TE REO SPEAKER. Deliberately conservative: a listed word is simply never
+# auto-macronised (by the custom-word matcher OR the NZ-English lexicon); a taught correction still
+# repairs it. An omission costs a convenience, never correctness — additions are cheap, deletions need
+# a reason and a reviewer.
+# Columns: bare<TAB>macronised<TAB>reason<TAB>source
+bare	macronised	reason	source
+ana	anā	both forms are words (cave / there)	v1.30.0 T1 list
+keke	kēkē	cake / armpit — different words	v1.30.0 T1 list
+maku	māku	both forms are words (wet / for me)	v1.30.0 T1 list
+mana	māna	both forms are words (authority / for him or her)	v1.30.0 T1 list
+matua	mātua	singular / plural (parent / parents)	v1.30.0 T1 list
+naku	nāku	both forms are words	v1.30.0 T1 list
+nana	nānā	grandmother (loan) / verb form	v1.30.0 T1 list
+papa	pāpā	earth, flat surface / father	added M4 — common minimal pair
+tangata	tāngata	singular / plural (person / people)	v1.30.0 T1 list
+taua	tāua	that (aforementioned) / we two	v1.30.0 T1 list
+teina	tēina	singular / plural (younger sibling)	v1.30.0 T1 list
+tipuna	tīpuna	singular / plural (ancestor)	v1.30.0 T1 list
+tuahine	tuāhine	singular / plural (sister of a male)	v1.30.0 T1 list
+tuakana	tuākana	singular / plural (elder sibling)	v1.30.0 T1 list
+tupuna	tūpuna	singular / plural (ancestor)	v1.30.0 T1 list
+wahi	wāhi	to break / place — different words	nz_english round two
+wahine	wāhine	singular / plural (woman / women)	v1.30.0 T1 list

@@ -15,6 +15,7 @@ mod meeting_capture; // Kōrero (v1.13.2, Phase A): streaming-to-disk meeting ca
 #[cfg(windows)]
 mod meeting_capture_wasapi; // Kōrero (v1.13.6): native WASAPI loopback for "Others"
 mod denoise; // Kōrero (v1.11.0): optional RNNoise mic denoiser (nnnoiseless)
+mod eval; // Kōrero (v1.40.0): --eval-transcribe entry point (accuracy harness)
 mod helpers;
 mod input;
 mod llm_client;
@@ -460,6 +461,24 @@ pub fn run(cli_args: CliArgs) {
     // function doc comment for why this exists.
     migrate_legacy_app_data();
 
+    // Kōrero (v1.40.0, SEC-01 / RT #2): an evaluation run never touches the
+    // live install. Set EVAL_MODE (write_settings becomes a no-op) and seed the
+    // data-dir lock with a per-process temp dir BEFORE portable::init(), so no
+    // marker file is involved and the installed app's next launch is unaffected.
+    if cli_args.is_eval() {
+        settings::EVAL_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
+        let sandbox = eval::sandbox_dir();
+        if !portable::set_data_dir_override(sandbox.clone()) {
+            eprintln!("[eval] could not sandbox data dir at {}", sandbox.display());
+        }
+        match &cli_args.models_dir {
+            Some(dir) => {
+                portable::set_models_dir_override(dir.clone());
+            }
+            None => eprintln!("[eval] --models-dir not given: models will not be found (exit 3)"),
+        }
+    }
+
     // Detect portable mode before anything else
     portable::init();
 
@@ -627,6 +646,7 @@ pub fn run(cli_args: CliArgs) {
             commands::history::get_audio_file_path,
             commands::history::delete_history_entry,
             commands::history::retry_history_entry_transcription,
+            commands::history::tidy_history_entry_reo, // Kōrero (v1.40.0, M5)
             commands::history::update_history_limit,
             commands::history::update_recording_retention_period,
             commands::ollama::pull_ollama_model,
@@ -686,8 +706,11 @@ pub fn run(cli_args: CliArgs) {
         builder = builder.plugin(tauri_nspanel::init());
     }
 
-    builder
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+    // Kōrero (v1.40.0, M1b): the single-instance plugin would forward an
+    // eval run's args to the daily-driver instance and exit. Register it only
+    // for normal launches.
+    if cli_args.eval_transcribe.is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if args.iter().any(|a| a == "--toggle-transcription") {
                 signal_handle::send_transcription_input(app, "transcribe", "CLI");
             } else if args.iter().any(|a| a == "--toggle-post-process") {
@@ -697,7 +720,10 @@ pub fn run(cli_args: CliArgs) {
             } else {
                 show_main_window(app);
             }
-        }))
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
         // Kōrero (v1.18.0): updater plugin RESTORED — endpoint locked to the
@@ -844,6 +870,12 @@ pub fn run(cli_args: CliArgs) {
                 settings.debug_mode = true;
                 settings.log_level = settings::LogLevel::Trace;
             }
+            // Kōrero (v1.40.0, M1b): eval overrides ride the same runtime-only
+            // path as --debug; the SettingsCache below carries them and
+            // EVAL_MODE guarantees they are never written.
+            if cli_args.is_eval() {
+                eval::apply_overrides(&mut settings, &cli_args);
+            }
 
             let tauri_log_level: tauri_plugin_log::LogLevel = settings.log_level.into();
             let file_log_level: log::Level = tauri_log_level.into();
@@ -866,11 +898,14 @@ pub fn run(cli_args: CliArgs) {
             meeting::cleanup_old_recordings(app.handle());
             // Kōrero (v1.16.0): one-shot update notification (fork repo only;
             // delayed 8 s; silent on any failure).
-            update_check::spawn_update_check(app.handle().clone());
+            // Kōrero (v1.40.0): an eval run makes no network request at all.
+            if !cli_args.is_eval() {
+                update_check::spawn_update_check(app.handle().clone());
+            }
             // Kōrero (v1.17.0): if post-processing runs on local Ollama,
             // quietly make sure it's actually up (PC optimisers and reboots
             // routinely leave it stopped). Best-effort; never blocks startup.
-            {
+            if !cli_args.is_eval() {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let _ = tauri::async_runtime::spawn_blocking(|| {
@@ -897,6 +932,20 @@ pub fn run(cli_args: CliArgs) {
             app.manage(SettingsCache(Arc::new(RwLock::new(settings.clone()))));
 
             initialize_core_logic(&app_handle);
+
+            // Kōrero (v1.40.0, M1b): evaluation run — no tray, no window; run
+            // the harness on a std thread (block_on bridges the async import
+            // path, RT #7) and exit with its code.
+            if cli_args.is_eval() {
+                tray::set_tray_visibility(&app_handle, false);
+                let handle = app_handle.clone();
+                let args = cli_args.clone();
+                std::thread::spawn(move || {
+                    let code = tauri::async_runtime::block_on(eval::run(handle.clone(), args));
+                    handle.exit(code);
+                });
+                return Ok(());
+            }
 
             // Pre-warm GPU/accelerator enumeration on a background thread.
             // The first call into transcribe_rs::whisper_cpp::gpu::list_gpu_devices

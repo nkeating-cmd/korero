@@ -62,8 +62,26 @@ impl Drop for LoadingGuard {
     }
 }
 
+/// Kōrero (v1.40.0, M1d): what the engine said versus what the user gets.
+/// `raw` is the engine text before `collapse_repeats`; `text` is the final
+/// output of the same post-engine chain dictation uses.
+#[derive(Debug, Clone, Default)]
+pub struct TranscribeTrace {
+    pub raw: String,
+    pub text: String,
+    /// The exact `initial_prompt` handed to whisper.cpp (None on Parakeet).
+    pub initial_prompt: Option<String>,
+    /// The language the engine was actually asked for ("auto" when detected).
+    pub effective_language: String,
+    /// True when the M3 echo guard removed a leading prompt echo.
+    pub echo_stripped: bool,
+}
+
 #[derive(Clone)]
 pub struct TranscriptionManager {
+    /// Kōrero (v1.40.0, M1d): the last `transcribe_traced` result, read once by
+    /// the eval harness so callers through `transcribe()` stay unchanged.
+    last_trace: Arc<Mutex<Option<TranscribeTrace>>>,
     engine: Arc<Mutex<Option<LoadedEngine>>>,
     model_manager: Arc<ModelManager>,
     app_handle: AppHandle,
@@ -87,6 +105,7 @@ impl TranscriptionManager {
             watcher_handle: Arc::new(Mutex::new(None)),
             is_loading: Arc::new(Mutex::new(false)),
             loading_condvar: Arc::new(Condvar::new()),
+            last_trace: Arc::new(Mutex::new(None)),
         };
 
         // Start the idle watcher
@@ -469,7 +488,21 @@ impl TranscriptionManager {
         current_model.clone()
     }
 
-    pub fn transcribe(&self, mut audio: Vec<f32>) -> Result<String> {
+    pub fn transcribe(&self, audio: Vec<f32>) -> Result<String> {
+        self.transcribe_traced(audio).map(|t| t.text)
+    }
+
+    /// Kōrero (v1.40.0, M1d): take the last trace (eval harness only).
+    pub fn take_last_trace(&self) -> Option<TranscribeTrace> {
+        self.last_trace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
+    /// Kōrero (v1.40.0, M1d): the body of `transcribe`, returning the raw engine
+    /// text and the prompt/language actually used alongside the final text.
+    pub fn transcribe_traced(&self, mut audio: Vec<f32>) -> Result<TranscribeTrace> {
         // Korero (v1.22.0): loudness-normalise quiet recordings before ASR.
         crate::corrections::normalize_for_asr(&mut audio);
         #[cfg(debug_assertions)]
@@ -489,7 +522,7 @@ impl TranscriptionManager {
         if audio.is_empty() {
             debug!("Empty audio vector");
             self.maybe_unload_immediately("empty audio");
-            return Ok(String::new());
+            return Ok(TranscribeTrace::default());
         }
 
         // Check if model is loaded, if not try to load it
@@ -559,6 +592,16 @@ impl TranscriptionManager {
         let validated_language =
             crate::audio_toolkit::fold_locale_for_engine(&validated_language).to_string();
 
+        // Kōrero (v1.40.0, M1d/M1e): the prompt is built ONCE here so the trace
+        // records exactly what the engine was given, shaped by the setting.
+        let bias_prompt: Option<String> = crate::corrections::build_bias_prompt_shaped(
+            &settings.custom_words,
+            &settings.transcript_corrections,
+            settings.bias_prompt_shape,
+        );
+        let effective_language = validated_language.clone();
+        let mut trace_prompt: Option<String> = None;
+
         // Perform transcription with the appropriate engine.
         // We use catch_unwind to prevent engine panics from poisoning the mutex,
         // which would make the app hang indefinitely on subsequent operations.
@@ -603,12 +646,10 @@ impl TranscriptionManager {
                                 // Korero (v1.19.1): closed-loop context biasing -- seed the
                                 // decoder with custom words AND taught corrections (deduped +
                                 // bounded). See corrections::build_bias_prompt.
-                                initial_prompt: crate::corrections::build_bias_prompt(
-                                    &settings.custom_words,
-                                    &settings.transcript_corrections,
-                                ),
+                                initial_prompt: bias_prompt.clone(),
                                 ..Default::default()
                             };
+                            trace_prompt = bias_prompt.clone();
 
                             whisper_engine
                                 .transcribe_with(&audio, &params)
@@ -745,6 +786,7 @@ impl TranscriptionManager {
         // the DICTATION path. This ran on meetings only; a model emitting a
         // repeated n-gram instead of speech went straight into the user's
         // document. Deliberately first, on raw engine output.
+        let raw_engine_text = result.text.clone();
         let result_text = crate::meeting::collapse_repeats(&result.text);
 
         // Apply word correction if custom words are configured.
@@ -765,9 +807,30 @@ impl TranscriptionManager {
         // the phonetic discount applies, both orders of magnitude above it.
         const EXACT_MATCH_ONLY: f64 = 1e-9;
 
+        // Kōrero (v1.40.0, M3 echo guard): strip a leading prompt echo BEFORE
+        // custom-word matching so an echoed term list is not "corrected" into
+        // the transcript. Whisper branch only (Parakeet has no prompt).
+        let (result_text, echo_stripped) = if is_whisper {
+            let stripped =
+                crate::corrections::strip_prompt_echo(&result_text, trace_prompt.as_deref());
+            let fired = stripped.len() != result_text.len();
+            if fired {
+                info!("Prompt echo stripped from the start of the transcript");
+            }
+            (stripped, fired)
+        } else {
+            (result_text, false)
+        };
+
+        // Kōrero (v1.40.0, M1e): the Whisper matcher policy is a setting so the
+        // fuzzy-vs-exact trade (backlog item 7) can be measured, not assumed.
+        let whisper_exact = matches!(
+            settings.whisper_custom_word_matching,
+            crate::settings::WordMatching::Exact
+        );
         let corrected_result = if settings.custom_words.is_empty() {
             result_text
-        } else if is_whisper {
+        } else if is_whisper && whisper_exact {
             // Whisper already gets the custom words as initial_prompt, so fuzzy
             // correction would fight the decoder. Exact matching does not: it is
             // a deterministic normaliser that restores the user's own spelling
@@ -805,7 +868,9 @@ impl TranscriptionManager {
         // restores above only for this pass to overwrite -- so a user named Awhina got
         // macronised with no way to opt out.
         let filtered_result =
-            if crate::audio_toolkit::is_nz_locale(&settings.selected_language) {
+            if settings.reo_lexicon_enabled
+                && crate::audio_toolkit::is_nz_locale(&settings.selected_language)
+            {
                 crate::audio_toolkit::apply_nz_english(
                     &filtered_result,
                     &settings.custom_words,
@@ -849,7 +914,17 @@ impl TranscriptionManager {
 
         self.maybe_unload_immediately("transcription");
 
-        Ok(final_result)
+        let trace = TranscribeTrace {
+            raw: raw_engine_text,
+            text: final_result,
+            initial_prompt: trace_prompt,
+            effective_language,
+            echo_stripped,
+        };
+        if let Ok(mut slot) = self.last_trace.lock() {
+            *slot = Some(trace.clone());
+        }
+        Ok(trace)
     }
 }
 

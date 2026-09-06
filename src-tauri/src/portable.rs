@@ -10,6 +10,39 @@ use tauri::Manager;
 
 static PORTABLE_DATA_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
+/// Kōrero (v1.40.0, SEC-01 / RT #2): explicit models-directory override, set
+/// only by an evaluation run. When the data dir is sandboxed the real models
+/// still have to be found; nothing else reads this.
+static MODELS_DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Kōrero (v1.40.0, SEC-01 / RT #2): seed the data-dir lock with an explicit
+/// path BEFORE `init()` runs. No marker file is written or read, so the
+/// installed app's own launch behaviour is untouched — this process alone
+/// stores its settings, history, logs and webview data under `dir`.
+///
+/// Must be called before `init()`; a second call, or a call after `init()`,
+/// is a no-op and returns `false`.
+pub fn set_data_dir_override(dir: PathBuf) -> bool {
+    if std::fs::create_dir_all(&dir).is_err() {
+        return false;
+    }
+    PORTABLE_DATA_DIR.set(Some(dir)).is_ok()
+}
+
+/// Kōrero (v1.40.0): see `set_data_dir_override`.
+pub fn set_models_dir_override(dir: PathBuf) -> bool {
+    MODELS_DIR_OVERRIDE.set(dir).is_ok()
+}
+
+/// Where downloaded models live: the override if an eval run set one,
+/// otherwise `<app data dir>/models` (portable-aware).
+pub fn models_dir(app: &tauri::AppHandle) -> Result<PathBuf, tauri::Error> {
+    if let Some(dir) = MODELS_DIR_OVERRIDE.get() {
+        return Ok(dir.clone());
+    }
+    Ok(app_data_dir(app)?.join("models"))
+}
+
 /// Detect portable mode by looking for a `portable` marker file next to the exe.
 /// Must be called once at startup before Tauri initializes.
 pub fn init() {

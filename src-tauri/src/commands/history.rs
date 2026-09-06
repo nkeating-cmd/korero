@@ -152,3 +152,139 @@ pub async fn update_recording_retention_period(
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Kōrero (v1.40.0, M5 / backlog T7): "Tidy te reo" — run the `korero_reo_blend`
+// post-processing prompt on ONE history entry, on demand, against a LOOPBACK
+// Ollama only. Never changes the post-process default; never reads the
+// enablement flag; the original transcription is preserved.
+// ---------------------------------------------------------------------------
+
+/// SEC-02: "local" must be a property of the URL, not of the provider's
+/// `is_local_provider` flag (the Ollama base URL is user-editable). Only a
+/// loopback host qualifies.
+pub(crate) fn is_loopback_url(base_url: &str) -> bool {
+    let without_scheme = base_url
+        .trim()
+        .strip_prefix("http://")
+        .or_else(|| base_url.trim().strip_prefix("https://"))
+        .unwrap_or(base_url.trim());
+    let host_port = without_scheme.split('/').next().unwrap_or("");
+    // Strip an IPv6 bracket form or a trailing :port.
+    let host = if let Some(rest) = host_port.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        host_port
+            .rsplit_once(':')
+            .map(|(h, _)| h)
+            .unwrap_or(host_port)
+    };
+    let host = host.to_ascii_lowercase();
+    host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+pub const REO_BLEND_PROMPT_ID: &str = "korero_reo_blend";
+
+#[tauri::command]
+#[specta::specta]
+pub async fn tidy_history_entry_reo(
+    app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+    id: i64,
+) -> Result<crate::managers::history::HistoryEntry, String> {
+    let settings = crate::settings::get_settings(&app);
+
+    // The prompt is looked up by id even when post-processing is off.
+    let prompt = settings
+        .post_process_prompts
+        .iter()
+        .find(|p| p.id == REO_BLEND_PROMPT_ID)
+        .cloned()
+        .ok_or_else(|| {
+            "The 'NZ English + te reo Māori' prompt is not present in settings".to_string()
+        })?;
+
+    // Loopback Ollama only (SEC-02).
+    let provider = settings
+        .post_process_providers
+        .iter()
+        .find(|p| p.id == "ollama")
+        .cloned()
+        .ok_or_else(|| "Ollama provider is not configured".to_string())?;
+    if !is_loopback_url(&provider.base_url) {
+        return Err(format!(
+            "Tidy te reo only runs against a local (loopback) Ollama; the configured URL is {}",
+            provider.base_url
+        ));
+    }
+    let model = settings
+        .post_process_models
+        .get("ollama")
+        .cloned()
+        .filter(|m| !m.is_empty())
+        .ok_or_else(|| "No local Ollama model selected in Post-processing settings".to_string())?;
+    if !crate::commands::ollama::is_reachable(&provider.base_url).await {
+        return Err("Ollama is not running".to_string());
+    }
+
+    let entry = history_manager
+        .get_entry_by_id(id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("History entry {id} not found"))?;
+
+    // Always from the ORIGINAL transcription, never from an earlier post-process.
+    let processed_prompt = prompt
+        .prompt
+        .replace("${output}", &entry.transcription_text);
+    let api_key = settings
+        .post_process_api_keys
+        .get("ollama")
+        .cloned()
+        .unwrap_or_default();
+    let tidied = crate::llm_client::send_chat_completion(
+        &provider,
+        api_key,
+        &model,
+        processed_prompt,
+        None,
+        None,
+    )
+    .await?
+    .ok_or_else(|| "The model returned no content".to_string())?;
+
+    history_manager
+        .update_post_processed_text(id, tidied)
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tidy_reo_tests {
+    use super::is_loopback_url;
+
+    #[test]
+    fn loopback_urls_are_local() {
+        for u in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:11434/v1",
+            "http://[::1]:11434/v1",
+            "https://LOCALHOST/v1",
+            "localhost:11434",
+        ] {
+            assert!(is_loopback_url(u), "{u} should be loopback");
+        }
+    }
+
+    #[test]
+    fn non_loopback_urls_are_not_local() {
+        for u in [
+            "http://192.168.1.20:11434/v1",
+            "https://ollama.example.com/v1",
+            "http://mybox.local:11434/v1",
+            "http://localhost.evil.com/v1",
+            "",
+        ] {
+            assert!(!is_loopback_url(u), "{u} must not count as loopback");
+        }
+    }
+}

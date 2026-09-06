@@ -192,7 +192,7 @@ fn build_match_key(word: &str) -> String {
 }
 
 /// True when `key` is an ordinary English word.
-fn is_common_en(key: &str) -> bool {
+pub(crate) fn is_common_en(key: &str) -> bool {
     COMMON_EN.binary_search(&key).is_ok()
 }
 
@@ -216,10 +216,8 @@ fn is_common_en(key: &str) -> bool {
 ///
 /// NOT REVIEWED BY A TE REO SPEAKER. Deliberately conservative. See
 /// docs/KORERO_REO_REVIEW_2026-08-26.md.
-static REO_MACRON_AMBIGUOUS: &[&str] = &[
-    "ana", "keke", "maku", "mana", "matua", "naku", "nana", "tangata", "taua", "teina", "tipuna",
-    "tuahine", "tuakana", "tupuna", "wahine",
-];
+// Kōrero (v1.40.0, M4): the list now lives in audio_toolkit/reo_lexicon/ambiguous.tsv,
+// the single source of truth shared with the NZ-English lexicon. See reo_lexicon::is_ambiguous_bare.
 
 /// Macron folding for the T1 guard.
 ///
@@ -257,7 +255,7 @@ fn is_ambiguous_macron_rewrite(spoken_key: &str, replacement: &str) -> bool {
     if bare != strip_macrons_key(&repl_key) {
         return false; // more than a macron differs -- not this guard to decide
     }
-    REO_MACRON_AMBIGUOUS.binary_search(&bare.as_str()).is_ok()
+    crate::audio_toolkit::reo_lexicon::is_ambiguous_bare(&bare)
 }
 
 /// True when EVERY token of the n-gram is an ordinary English word -- i.e. what
@@ -1138,20 +1136,15 @@ mod korero_v1_30_tests {
 
     #[test]
     fn korero_t1_ambiguity_list_is_sorted_lowercase_and_macron_free() {
-        for pair in REO_MACRON_AMBIGUOUS.windows(2) {
-            assert!(
-                pair[0] < pair[1],
-                "REO_MACRON_AMBIGUOUS must be sorted for binary_search: {pair:?}"
-            );
+        // Kōrero (v1.40.0, M4): the list is parsed from reo_lexicon/ambiguous.tsv.
+        let keys = crate::audio_toolkit::reo_lexicon::ambiguous_keys();
+        for pair in keys.windows(2) {
+            assert!(pair[0] < pair[1], "ambiguity keys must be sorted for binary_search: {pair:?}");
         }
-        for w in REO_MACRON_AMBIGUOUS {
-            assert!(!w.is_empty(), "empty entry in REO_MACRON_AMBIGUOUS");
+        for w in keys {
+            assert!(!w.is_empty(), "empty entry in ambiguity list");
             assert_eq!(*w, w.to_lowercase(), "entries must be lowercase: {w}");
-            assert_eq!(
-                strip_macrons_key(w),
-                *w,
-                "entries are lookup keys and must be stored macron-free: {w}"
-            );
+            assert_eq!(strip_macrons_key(w), *w, "entries are lookup keys and must be stored macron-free: {w}");
         }
     }
 
@@ -1210,5 +1203,31 @@ mod korero_v1_30_tests {
             inert, "whanau",
             "threshold 0.0 accepts nothing (strict <), which is why EXACT_MATCH_ONLY is an epsilon"
         );
+    }
+}
+
+#[cfg(test)]
+mod reo_lexicon_veto_tests {
+    use super::*;
+
+    /// BUILD-PLAN M4: every ambiguity pair, custom-word side. Teaching the macronised
+    /// form as a custom word must not rewrite the bare form (it is a different word).
+    #[test]
+    fn ambiguous_pair_custom_words_never_macronise_bare_form() {
+        const EXACT_MATCH_ONLY: f64 = 1e-9;
+        let pairs = crate::audio_toolkit::reo_lexicon::ambiguous_pairs();
+        assert!(pairs.len() >= 15);
+        for (bare, macronised) in pairs {
+            let words = vec![macronised.clone()];
+            let spoken = format!("one {bare} here");
+            assert_eq!(
+                apply_custom_words(&spoken, &words, EXACT_MATCH_ONLY),
+                spoken,
+                "custom word '{macronised}' must not rewrite bare '{bare}'"
+            );
+        }
+        // ...and a non-ambiguous macron word still IS restored by the same mechanism.
+        let words = vec!["whānau".to_string()];
+        assert_eq!(apply_custom_words("our whanau", &words, EXACT_MATCH_ONLY), "our whānau");
     }
 }

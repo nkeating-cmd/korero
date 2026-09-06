@@ -506,6 +506,19 @@ pub struct AppSettings {
     pub autostart_enabled: bool,
     #[serde(default = "default_update_checks_enabled")]
     pub update_checks_enabled: bool,
+
+    // ---- Kōrero (v1.40.0, M1e): accuracy-round knobs. No UI. Each is a
+    // serde-default setting so the measured code path IS the shipped code
+    // path — an A/B winner ships by changing the default, nothing else.
+    /// Shape of the Whisper `initial_prompt` (custom words + corrections).
+    #[serde(default)]
+    pub bias_prompt_shape: BiasPromptShape,
+    /// Custom-word matcher policy on Whisper engines.
+    #[serde(default)]
+    pub whisper_custom_word_matching: WordMatching,
+    /// Macron-restoration lexicon (NZ locale pass) on/off.
+    #[serde(default = "default_reo_lexicon_enabled")]
+    pub reo_lexicon_enabled: bool,
     #[serde(default = "default_model")]
     pub selected_model: String,
     #[serde(default = "default_always_on_microphone")]
@@ -640,6 +653,33 @@ fn default_autostart_enabled() -> bool {
 
 fn default_update_checks_enabled() -> bool {
     true
+}
+
+fn default_reo_lexicon_enabled() -> bool {
+    true
+}
+
+/// Kōrero (v1.40.0): shape of the Whisper `initial_prompt`. `List` is the
+/// byte-identical v1.19.1 behaviour and the default until a paired-bootstrap
+/// comparison says otherwise. `Probe` exists only for the eval harness.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BiasPromptShape {
+    #[default]
+    List,
+    Sentence,
+    Off,
+    Probe,
+}
+
+/// Kōrero (v1.40.0): custom-word matcher policy on Whisper. `Exact` is the
+/// v1.30.0 behaviour (item 7) and stays the default until measured.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WordMatching {
+    #[default]
+    Exact,
+    Fuzzy,
 }
 
 fn default_selected_language() -> String {
@@ -1384,6 +1424,9 @@ pub fn get_default_settings() -> AppSettings {
         start_hidden: default_start_hidden(),
         autostart_enabled: default_autostart_enabled(),
         update_checks_enabled: default_update_checks_enabled(),
+        bias_prompt_shape: BiasPromptShape::default(),
+        whisper_custom_word_matching: WordMatching::default(),
+        reo_lexicon_enabled: default_reo_lexicon_enabled(),
         selected_model: "".to_string(),
         always_on_microphone: false,
         selected_microphone: None,
@@ -1623,7 +1666,26 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
     settings
 }
 
+/// Kōrero (v1.40.0, SEC-01): set once by an evaluation run before the Tauri
+/// builder. While true, `write_settings` is a no-op — startup paths such as
+/// `auto_select_model_if_needed` and the HandyKeys fallback call it with no
+/// user action, and an eval override must never reach the live store.
+pub static EVAL_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static EVAL_WRITE_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn write_settings(app: &AppHandle, settings: AppSettings) {
+    if EVAL_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+        if !EVAL_WRITE_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            log::warn!("EVAL_MODE: settings write suppressed (evaluation runs never persist)");
+        }
+        // Keep the in-memory cache coherent for this process only.
+        if let Some(cache) = app.try_state::<crate::SettingsCache>() {
+            if let Ok(mut guard) = cache.0.write() {
+                *guard = settings;
+            }
+        }
+        return;
+    }
     // Kōrero (v1.11.0): keep the denoiser's process-global flag in sync with the
     // persisted setting on every write (read before `settings` is moved below).
     crate::denoise::set_enabled(settings.denoise_enabled);
@@ -1691,4 +1753,49 @@ pub fn get_history_limit(app: &AppHandle) -> usize {
 
 pub fn get_recording_retention_period(app: &AppHandle) -> RecordingRetentionPeriod {
     get_settings(app).recording_retention_period
+}
+
+#[cfg(test)]
+mod eval_knob_tests {
+    use super::*;
+
+    /// The three upstream fields with no serde default; everything else must
+    /// fall back on its own default when absent from an older store.
+    const MINIMAL: &str = r#"{"bindings":{},"push_to_talk":false,"audio_feedback":false}"#;
+
+    /// Kōrero (v1.40.0): the three accuracy-round knobs must default correctly
+    /// when absent from an older settings_store.json, and round-trip when set.
+    #[test]
+    fn serde_default_eval_knobs_absent_means_shipped_behaviour() {
+        let s: AppSettings = serde_json::from_str(MINIMAL).expect("minimal object must deserialise");
+        assert_eq!(s.bias_prompt_shape, BiasPromptShape::List);
+        assert_eq!(s.whisper_custom_word_matching, WordMatching::Exact);
+        assert!(s.reo_lexicon_enabled);
+    }
+
+    #[test]
+    fn serde_default_eval_knobs_round_trip() {
+        let s: AppSettings = serde_json::from_str(
+            r#"{"bindings":{},"push_to_talk":false,"audio_feedback":false,"bias_prompt_shape":"sentence","whisper_custom_word_matching":"fuzzy","reo_lexicon_enabled":false}"#,
+        )
+        .unwrap();
+        assert_eq!(s.bias_prompt_shape, BiasPromptShape::Sentence);
+        assert_eq!(s.whisper_custom_word_matching, WordMatching::Fuzzy);
+        assert!(!s.reo_lexicon_enabled);
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"bias_prompt_shape\":\"sentence\""));
+    }
+
+    /// RT-code #8 (Ship-first): the meaningful test for the update-check gate
+    /// is the serde default, not a tautological helper.
+    #[test]
+    fn serde_default_update_checks_enabled() {
+        let s: AppSettings = serde_json::from_str(MINIMAL).unwrap();
+        assert!(s.update_checks_enabled);
+        let s: AppSettings = serde_json::from_str(
+            r#"{"bindings":{},"push_to_talk":false,"audio_feedback":false,"update_checks_enabled":false}"#,
+        )
+        .unwrap();
+        assert!(!s.update_checks_enabled);
+    }
 }

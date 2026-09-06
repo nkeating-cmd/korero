@@ -2029,6 +2029,15 @@ impl TranscribeProgress {
     }
 }
 
+/// Kōrero (v1.40.0, M1c / RT #1): the import path for the eval harness.
+/// A thin wrapper so `TranscribeProgress` can stay module-private.
+pub(crate) async fn transcribe_wav_chunked_eval(
+    tm: &Arc<TranscriptionManager>,
+    path: &str,
+) -> Result<String, String> {
+    transcribe_wav_chunked(tm, path, None).await
+}
+
 async fn transcribe_wav_chunked(
     tm: &Arc<TranscriptionManager>,
     path: &str,

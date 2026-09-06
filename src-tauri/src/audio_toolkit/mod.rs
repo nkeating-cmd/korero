@@ -2,6 +2,7 @@ pub mod audio;
 pub mod constants;
 pub mod dictation_format;
 pub mod nz_english;
+pub mod reo_lexicon;
 pub mod text;
 pub mod utils;
 pub mod vad;
