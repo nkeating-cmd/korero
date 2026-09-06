@@ -1,0 +1,83 @@
+# Kōrero — VERIFICATION build (v1.40.0, M1)
+#
+# Produces an installer for RUNTIME VERIFICATION on a Windows runner, for the
+# case where the local build machine is not to hand. Manual trigger only.
+#
+# What this is NOT:
+#   - not a release. It creates no tag, no GitHub release, and touches no
+#     signing key: `createUpdaterArtifacts` is turned OFF via --config, so
+#     `tauri build` does not require TAURI_SIGNING_PRIVATE_KEY and no `.sig`
+#     is produced. The installer therefore CANNOT serve auto-update, which is
+#     deliberate — it can never be mistaken for a real release artefact.
+#   - not Authenticode-signed. SmartScreen will warn, as it does for every
+#     Kōrero build today.
+#
+# Why no secrets: this workflow references none at all, so the third-party
+# actions below never see a credential (SECURITY-AUDIT SEC-02 does not apply
+# here). `permissions: contents: read` is the whole grant.
+#
+# The public repo is the post-sync LIVE TREE, so this builds the real thing —
+# korero-tooling is only needed to regenerate the tree, not to compile it.
+
+name: Verify build (manual, unsigned)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_tests:
+        description: "Also run cargo test + frontend lint before building"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Frontend install
+        run: bun install
+
+      # Closes the two gates the Linux container could not run: the Windows
+      # cfg blocks, and TypeScript (src/bindings.ts is hand-edited in this
+      # branch — specta only regenerates it in a debug build).
+      - name: Frontend build + lint
+        if: ${{ inputs.run_tests }}
+        run: |
+          bun run build
+          bun run lint
+
+      - name: cargo test
+        if: ${{ inputs.run_tests }}
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Build NSIS installer (no updater artefacts, no signing key)
+        run: bun run tauri build --bundles nsis --config .github/ci-no-updater.json
+
+      - name: Collect installer
+        shell: bash
+        run: |
+          mkdir -p dist-installer
+          find src-tauri/target/release/bundle/nsis -name '*-setup.exe' -exec cp {} dist-installer/ \;
+          ls -la dist-installer/
+          sha256sum dist-installer/*.exe | tee dist-installer/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: korero-installer-unsigned
+          path: dist-installer/
+          retention-days: 14
+          if-no-files-found: error
