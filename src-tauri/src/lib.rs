@@ -953,7 +953,22 @@ pub fn run(cli_args: CliArgs) {
                 let args = cli_args.clone();
                 std::thread::spawn(move || {
                     let code = tauri::async_runtime::block_on(eval::run(handle.clone(), args));
-                    handle.exit(code);
+                    // `AppHandle::exit(code)` does NOT propagate the code on Windows.
+                    // Measured on yoga-26 (1.40.0, NSIS build): a run that correctly
+                    // refused a missing model, wrote its error JSON and returned 3
+                    // still left the process with exit status 0.
+                    //
+                    // That is not cosmetic. `run.ps1` gates on `$p.ExitCode -ne 0` and
+                    // checks.json treats the exit code as the gate, so a swallowed code
+                    // turns every failure into a silent success: the harness would score
+                    // an empty transcript and report a real-looking 0.0 accuracy.
+                    //
+                    // The result JSON is already written and closed by this point, and
+                    // an eval run holds nothing needing unwinding, so exit directly.
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                    let _ = std::io::stderr().flush();
+                    std::process::exit(code);
                 });
                 return Ok(());
             }
