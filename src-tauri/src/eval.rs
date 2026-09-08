@@ -93,6 +93,41 @@ pub struct EvalResult {
     pub error: Option<String>,
 }
 
+/// Canonicalise as much of `p` as exists on disk, then re-append the part that
+/// does not. BOTH sides of the containment test in `out_path_is_acceptable`
+/// must go through this.
+///
+/// Why (found by the Windows CI gate, invisible on Linux): the old code
+/// canonicalised the forbidden root but fell back to the RAW path for
+/// `out.parent()` whenever that parent did not exist yet — the normal case when
+/// `--out` names a file in a directory the run is about to create. On Windows
+/// `canonicalize` returns a verbatim extended-length path (the "?" UNC prefix,
+/// long form) while the raw parent stays plain and possibly 8.3-shortened, so
+/// `starts_with` compared two spellings of the same directory, found no match,
+/// and the guard silently PASSED — letting an eval run write into the live
+/// app-data dir it exists to protect (SEC-01). macOS fails the same way via the
+/// /tmp -> /private/tmp symlink.
+fn canonicalish(p: &Path) -> PathBuf {
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur = p.to_path_buf();
+    loop {
+        if let Ok(c) = cur.canonicalize() {
+            let mut out = c;
+            for seg in tail.iter().rev() {
+                out.push(seg);
+            }
+            return out;
+        }
+        let Some(name) = cur.file_name().map(|n| n.to_os_string()) else {
+            return p.to_path_buf();
+        };
+        tail.push(name);
+        if !cur.pop() {
+            return p.to_path_buf();
+        }
+    }
+}
+
 /// Refuse `--out` paths that could clobber anything that matters.
 pub fn out_path_is_acceptable(
     out: &Path,
@@ -105,12 +140,9 @@ pub fn out_path_is_acceptable(
             out.display()
         ));
     }
-    let canon_parent = out
-        .parent()
-        .map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()))
-        .unwrap_or_default();
+    let canon_parent = out.parent().map(canonicalish).unwrap_or_default();
     for root in forbidden_roots {
-        let root_c = root.canonicalize().unwrap_or_else(|_| root.clone());
+        let root_c = canonicalish(root);
         if canon_parent.starts_with(&root_c) {
             return Err(format!(
                 "{} is inside {} — an eval result must not be written into an app data dir",
@@ -328,5 +360,30 @@ mod eval_tests {
         let inside = dir.join("sub").join("r2.json");
         assert!(out_path_is_acceptable(&inside, false, &[dir.clone()]).is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn eval_out_guard_survives_path_spelling_differences() {
+        // Regression for the Windows CI failure. The forbidden root EXISTS, so it
+        // canonicalises to the verbatim long form; the out parent does NOT exist,
+        // so it used to keep its raw, possibly 8.3-shortened spelling, and the two
+        // never matched. Both sides must normalise identically now.
+        let root = std::env::temp_dir().join("korero_eval_spelling_test");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let deep = root.join("a").join("b").join("c").join("r.json");
+        assert!(
+            out_path_is_acceptable(&deep, false, &[root.clone()]).is_err(),
+            "a deep, not-yet-created path under a forbidden root must be refused"
+        );
+
+        // A sibling whose name has the root's name as a STRING prefix must not be
+        // caught: `starts_with` is component-wise, and it has to stay that way.
+        let sibling = std::env::temp_dir()
+            .join("korero_eval_spelling_test_other")
+            .join("r.json");
+        assert!(out_path_is_acceptable(&sibling, false, &[root.clone()]).is_ok());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }
