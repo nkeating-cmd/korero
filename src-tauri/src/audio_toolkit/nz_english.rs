@@ -369,6 +369,19 @@ fn lower_first(s: &str) -> String {
 ///
 /// Returns the input verbatim when nothing matched, the same discipline `collapse_repeats` uses.
 pub fn apply_nz_english(text: &str, custom_words: &[String]) -> String {
+    apply_nz_english_opts(text, custom_words, true)
+}
+
+/// Korero (v1.40.0, R1.1): `apply_nz_english` with the curated `reo_lexicon`
+/// rows switchable on their own. The static `MACRON_PROPER`, `MACRON_COMMON`
+/// and `SPELLING` tables are NOT affected by the flag -- turning the lexicon
+/// off must not silently take NZ spelling correction with it, which is what
+/// the single `reo_lexicon_enabled` knob did before this split.
+pub fn apply_nz_english_opts(
+    text: &str,
+    custom_words: &[String],
+    reo_lexicon_enabled: bool,
+) -> String {
     if text.is_empty() {
         return text.to_string();
     }
@@ -385,7 +398,7 @@ pub fn apply_nz_english(text: &str, custom_words: &[String]) -> String {
             continue;
         }
         if idx > cursor {
-            let (tok, hit) = rewrite_token(&text[cursor..idx], &protected);
+            let (tok, hit) = rewrite_token(&text[cursor..idx], &protected, reo_lexicon_enabled);
             changed |= hit;
             out.push_str(&tok);
         }
@@ -393,7 +406,7 @@ pub fn apply_nz_english(text: &str, custom_words: &[String]) -> String {
         cursor = idx + ch.len_utf8();
     }
     if cursor < text.len() {
-        let (tok, hit) = rewrite_token(&text[cursor..], &protected);
+        let (tok, hit) = rewrite_token(&text[cursor..], &protected, reo_lexicon_enabled);
         changed |= hit;
         out.push_str(&tok);
     }
@@ -406,13 +419,13 @@ pub fn apply_nz_english(text: &str, custom_words: &[String]) -> String {
 }
 
 /// Rewrites one whitespace-delimited token, descending into hyphen/apostrophe compounds.
-fn rewrite_token(token: &str, protected: &[String]) -> (String, bool) {
+fn rewrite_token(token: &str, protected: &[String], reo_lexicon_enabled: bool) -> (String, bool) {
     let (lead, core, trail) = split_affixes(token);
     if core.is_empty() {
         return (token.to_string(), false);
     }
 
-    let (rewritten, hit) = rewrite_core(core, protected);
+    let (rewritten, hit) = rewrite_core(core, protected, reo_lexicon_enabled);
     if !hit {
         return (token.to_string(), false);
     }
@@ -420,8 +433,8 @@ fn rewrite_token(token: &str, protected: &[String]) -> (String, bool) {
 }
 
 /// Rewrites the alphanumeric core, splitting on [`JOINERS`] so compounds are handled per-segment.
-fn rewrite_core(core: &str, protected: &[String]) -> (String, bool) {
-    if let Some(word) = rewrite_word(core, protected) {
+fn rewrite_core(core: &str, protected: &[String], reo_lexicon_enabled: bool) -> (String, bool) {
+    if let Some(word) = rewrite_word(core, protected, reo_lexicon_enabled) {
         return (word, true);
     }
     if !core.contains(JOINERS) {
@@ -436,7 +449,7 @@ fn rewrite_core(core: &str, protected: &[String]) -> (String, bool) {
             continue;
         }
         let seg = &core[seg_start..i];
-        match rewrite_word(seg, protected) {
+        match rewrite_word(seg, protected, reo_lexicon_enabled) {
             Some(w) => {
                 out.push_str(&w);
                 changed = true;
@@ -447,7 +460,7 @@ fn rewrite_core(core: &str, protected: &[String]) -> (String, bool) {
         seg_start = i + c.len_utf8();
     }
     let tail = &core[seg_start..];
-    match rewrite_word(tail, protected) {
+    match rewrite_word(tail, protected, reo_lexicon_enabled) {
         Some(w) => {
             out.push_str(&w);
             changed = true;
@@ -458,7 +471,7 @@ fn rewrite_core(core: &str, protected: &[String]) -> (String, bool) {
 }
 
 /// Rewrites a single bare word. `None` means "leave it exactly as it is".
-fn rewrite_word(word: &str, protected: &[String]) -> Option<String> {
+fn rewrite_word(word: &str, protected: &[String], reo_lexicon_enabled: bool) -> Option<String> {
     if word.is_empty() {
         return None;
     }
@@ -489,7 +502,10 @@ fn rewrite_word(word: &str, protected: &[String]) -> Option<String> {
 
     // Kōrero (v1.40.0, M4): the curated lexicon, consulted after the static tables. Inert until
     // reviewed (see reo_lexicon); its parser already excluded ambiguous and English keys.
-    if let Some((canon, proper)) = crate::audio_toolkit::reo_lexicon::lookup(&key) {
+    if let Some((canon, proper)) = reo_lexicon_enabled
+        .then(|| crate::audio_toolkit::reo_lexicon::lookup(&key))
+        .flatten()
+    {
         if proper {
             return finish(word, canon.to_string());
         }
@@ -549,6 +565,25 @@ mod korero_nz_tests {
 
     fn nz(s: &str) -> String {
         apply_nz_english(s, &[])
+    }
+
+    /// Korero (v1.40.0, R1.1): the regression this split exists to prevent.
+    /// `reo_lexicon_enabled = false` must switch off ONLY the curated rows --
+    /// the static macron tables and NZ spelling keep working. Before the split
+    /// one flag gated all four tables, so `--lexicon off` measured "no NZ pass
+    /// at all" and shipping that result would have disabled NZ spelling.
+    #[test]
+    fn reo_lexicon_flag_does_not_disable_static_tables() {
+        let off = |s: &str| apply_nz_english_opts(s, &[], false);
+        assert_eq!(off("the whanau"), "the whānau", "MACRON_COMMON must still fire");
+        assert_eq!(off("nga tangata"), "ngā tangata", "LOWERCASE_ONLY path must still fire");
+        assert_eq!(
+            off("we analyzed the behavior"),
+            "we analysed the behaviour",
+            "SPELLING must survive the lexicon being switched off"
+        );
+        // ...and the T1 veto is unaffected in either position.
+        assert_eq!(off("one wahine spoke"), "one wahine spoke");
     }
 
     fn all_tables() -> Vec<(&'static str, &'static str)> {

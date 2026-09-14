@@ -7,6 +7,7 @@
 # Columns: bare<TAB>macronised<TAB>reason<TAB>source
 bare	macronised	reason	source
 ana	anā	both forms are words (cave / there)	v1.30.0 T1 list
+kaka	kākā	garment / the parrot — different words	M4 step 1 candidate, R1.2
 keke	kēkē	cake / armpit — different words	v1.30.0 T1 list
 maku	māku	both forms are words (wet / for me)	v1.30.0 T1 list
 mana	māna	both forms are words (authority / for him or her)	v1.30.0 T1 list
@@ -20,6 +21,7 @@ teina	tēina	singular / plural (younger sibling)	v1.30.0 T1 list
 tipuna	tīpuna	singular / plural (ancestor)	v1.30.0 T1 list
 tuahine	tuāhine	singular / plural (sister of a male)	v1.30.0 T1 list
 tuakana	tuākana	singular / plural (elder sibling)	v1.30.0 T1 list
+tui	tūī	the bird, also a common name and a beer brand — bare form is a proper noun in NZ English	M4 step 1(b), R1.2
 tupuna	tūpuna	singular / plural (ancestor)	v1.30.0 T1 list
 wahi	wāhi	to break / place — different words	nz_english round two
 wahine	wāhine	singular / plural (woman / women)	v1.30.0 T1 list

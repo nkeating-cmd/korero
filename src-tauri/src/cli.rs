@@ -30,7 +30,7 @@ pub struct CliArgs {
     // ---- Kōrero (v1.40.0) evaluation flags --------------------------------
     /// Evaluation run: transcribe this WAV through the import path and exit.
     /// No window, no tray, no network, nothing persisted.
-    #[arg(long, value_name = "WAV", requires_all = ["model", "out"])]
+    #[arg(long, value_name = "WAV", requires_all = ["model", "out", "models_dir"])]
     pub eval_transcribe: Option<std::path::PathBuf>,
 
     /// Model id to evaluate (must already be downloaded; never downloads).
@@ -57,9 +57,16 @@ pub struct CliArgs {
     #[arg(long, value_enum, requires = "eval_transcribe")]
     pub matcher: Option<EvalMatcher>,
 
-    /// Macron-restoration lexicon on/off for the run.
+    /// Curated reo_lexicon rows on/off for the run. Does NOT disable the
+    /// static macron tables or NZ spelling -- see --nz-pass for that.
     #[arg(long, value_enum, requires = "eval_transcribe")]
     pub lexicon: Option<EvalToggle>,
+
+    /// Korero (v1.40.0, R1.1): the whole NZ-English pass on/off (static macron
+    /// tables + curated lexicon + NZ spelling). Separated from --lexicon so the
+    /// two are independently measurable.
+    #[arg(long, value_enum, requires = "eval_transcribe")]
+    pub nz_pass: Option<EvalToggle>,
 
     /// Directory holding the downloaded models. Required because an eval run
     /// sandboxes its data dir (nothing it does can touch the live install).
@@ -164,6 +171,36 @@ mod eval_cli_tests {
             "r.json"
         ])
         .is_err());
+    }
+
+    /// Korero (v1.40.0, R1.4): omitting --models-dir used to parse fine, then
+    /// sandbox the data dir, find no models and exit 3 with "Model 'X' is not
+    /// downloaded" -- indistinguishable from a genuinely absent model, and the
+    /// stderr hint is invisible in a release build (windows_subsystem = windows).
+    #[test]
+    fn eval_requires_models_dir() {
+        assert!(CliArgs::try_parse_from([
+            "korero",
+            "--eval-transcribe",
+            "s.wav",
+            "--model",
+            "turbo",
+            "--out",
+            "r.json"
+        ])
+        .is_err());
+        assert!(CliArgs::try_parse_from([
+            "korero",
+            "--eval-transcribe",
+            "s.wav",
+            "--model",
+            "turbo",
+            "--out",
+            "r.json",
+            "--models-dir",
+            "C:/models"
+        ])
+        .is_ok());
     }
 
     #[test]

@@ -64,6 +64,9 @@ pub fn apply_overrides(settings: &mut AppSettings, args: &CliArgs) {
     if let Some(lex) = args.lexicon {
         settings.reo_lexicon_enabled = matches!(lex, EvalToggle::On);
     }
+    if let Some(nz) = args.nz_pass {
+        settings.nz_english_pass_enabled = matches!(nz, EvalToggle::On);
+    }
     // Never touch the network or the LLM in an eval run.
     settings.update_checks_enabled = false;
     settings.post_process_enabled = false;
@@ -84,6 +87,7 @@ pub struct EvalResult {
     pub echo_stripped: bool,
     pub matcher: String,
     pub lexicon: bool,
+    pub nz_pass: bool,
     pub wav: String,
     pub audio_seconds: f64,
     pub load_ms: u128,
@@ -140,7 +144,18 @@ pub fn out_path_is_acceptable(
             out.display()
         ));
     }
-    let canon_parent = out.parent().map(canonicalish).unwrap_or_default();
+    // Korero (v1.40.0, R1.5): resolve a relative --out against the CWD BEFORE
+    // taking .parent(). `Path::new("r.json").parent()` is `Some("")`, which
+    // canonicalises to "" and starts_with no root -- so a bare filename walked
+    // straight past this guard even with the CWD inside a forbidden root.
+    let abs: PathBuf = if out.is_absolute() {
+        out.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|d| d.join(out))
+            .unwrap_or_else(|_| out.to_path_buf())
+    };
+    let canon_parent = abs.parent().map(canonicalish).unwrap_or_default();
     for root in forbidden_roots {
         let root_c = canonicalish(root);
         if canon_parent.starts_with(&root_c) {
@@ -209,6 +224,7 @@ pub async fn run(app: AppHandle, args: CliArgs) -> i32 {
         prompt_mode: format!("{:?}", settings.bias_prompt_shape).to_lowercase(),
         matcher: format!("{:?}", settings.whisper_custom_word_matching).to_lowercase(),
         lexicon: settings.reo_lexicon_enabled,
+        nz_pass: settings.nz_english_pass_enabled,
         wav: wav.display().to_string(),
         ..Default::default()
     };
@@ -299,6 +315,10 @@ mod eval_tests {
             "turbo",
             "--out",
             "r.json",
+            // R1.4: --models-dir is now required by clap, so an omission is a
+            // clap error rather than a look-alike "model not downloaded" exit 3.
+            "--models-dir",
+            "C:/models",
         ];
         v.extend_from_slice(extra);
         CliArgs::try_parse_from(v).unwrap()
@@ -347,6 +367,31 @@ mod eval_tests {
             s.selected_language,
             crate::settings::get_default_settings().selected_language
         );
+    }
+
+    /// Korero (v1.40.0, R1.5): a BARE relative --out used to pass the SEC-01
+    /// containment guard, because `parent()` of a bare filename is `Some("")`.
+    /// Measured on legion-26 before the fix: `--out r.json` returned Ok(()) with
+    /// the CWD set to the forbidden root itself.
+    #[test]
+    fn eval_out_guard_resolves_relative_paths() {
+        let dir = std::env::temp_dir().join("korero_eval_relative_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::current_dir().ok();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let bare = Path::new("r.json");
+        assert!(
+            out_path_is_acceptable(bare, false, &[dir.clone()]).is_err(),
+            "a bare relative --out inside a forbidden root must be refused"
+        );
+        // A relative path OUTSIDE every forbidden root is still fine.
+        assert!(out_path_is_acceptable(bare, false, &[]).is_ok());
+
+        if let Some(p) = prev {
+            let _ = std::env::set_current_dir(p);
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

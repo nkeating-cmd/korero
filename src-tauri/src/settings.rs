@@ -516,7 +516,13 @@ pub struct AppSettings {
     /// Custom-word matcher policy on Whisper engines.
     #[serde(default)]
     pub whisper_custom_word_matching: WordMatching,
-    /// Macron-restoration lexicon (NZ locale pass) on/off.
+    /// Korero (v1.40.0, R1.1): the whole New Zealand English pass -- the static
+    /// macron tables, the curated lexicon AND NZ spelling correction. Named for
+    /// what it actually gates; `reo_lexicon_enabled` below gates only the
+    /// curated rows, so an A/B on one does not silently move the other.
+    #[serde(default = "default_nz_english_pass_enabled")]
+    pub nz_english_pass_enabled: bool,
+    /// Curated `reo_lexicon` rows only. The static tables are unaffected.
     #[serde(default = "default_reo_lexicon_enabled")]
     pub reo_lexicon_enabled: bool,
     #[serde(default = "default_model")]
@@ -656,6 +662,10 @@ fn default_update_checks_enabled() -> bool {
 }
 
 fn default_reo_lexicon_enabled() -> bool {
+    true
+}
+
+fn default_nz_english_pass_enabled() -> bool {
     true
 }
 
@@ -1426,6 +1436,7 @@ pub fn get_default_settings() -> AppSettings {
         update_checks_enabled: default_update_checks_enabled(),
         bias_prompt_shape: BiasPromptShape::default(),
         whisper_custom_word_matching: WordMatching::default(),
+        nz_english_pass_enabled: default_nz_english_pass_enabled(),
         reo_lexicon_enabled: default_reo_lexicon_enabled(),
         selected_model: "".to_string(),
         always_on_microphone: false,
@@ -1771,6 +1782,27 @@ mod eval_knob_tests {
         assert_eq!(s.bias_prompt_shape, BiasPromptShape::List);
         assert_eq!(s.whisper_custom_word_matching, WordMatching::Exact);
         assert!(s.reo_lexicon_enabled);
+        // Korero (v1.40.0, R1.1): the NZ pass is a separate knob and defaults on,
+        // so an older settings_store.json keeps exactly the shipped behaviour.
+        assert!(s.nz_english_pass_enabled);
+    }
+
+    /// R1.1: the two knobs must be independently settable -- that is the whole
+    /// point of the split, and a single-knob regression would silently return.
+    #[test]
+    fn serde_nz_pass_and_lexicon_are_independent() {
+        let s: AppSettings = serde_json::from_str(
+            r#"{"bindings":{},"push_to_talk":false,"audio_feedback":false,"reo_lexicon_enabled":false}"#,
+        )
+        .unwrap();
+        assert!(!s.reo_lexicon_enabled);
+        assert!(s.nz_english_pass_enabled, "lexicon off must not imply pass off");
+        let s: AppSettings = serde_json::from_str(
+            r#"{"bindings":{},"push_to_talk":false,"audio_feedback":false,"nz_english_pass_enabled":false}"#,
+        )
+        .unwrap();
+        assert!(!s.nz_english_pass_enabled);
+        assert!(s.reo_lexicon_enabled, "pass off must not imply lexicon off");
     }
 
     #[test]

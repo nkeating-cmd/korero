@@ -66,6 +66,7 @@ const IconButton: React.FC<{
         : "text-text/50 hover:text-logo-primary"
     }`}
     title={title}
+    aria-label={title}
   >
     {children}
   </button>

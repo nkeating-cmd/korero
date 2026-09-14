@@ -2,9 +2,42 @@ fn main() {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     build_apple_intelligence_bridge();
 
+    emit_git_sha();
+
     generate_tray_translations();
 
     tauri_build::build()
+}
+
+/// Korero (v1.40.0, R1.3): stamp the build with its commit, so an eval result
+/// can be tied back to a tree. `eval.rs` reads it via
+/// `option_env!("KORERO_GIT_SHA")`; nothing ever set it, so every run recorded
+/// "unknown" and RT #6's `release-eval-result-fresh` gate could never pass.
+/// Falls back to "unknown" when git is unavailable (e.g. a source tarball).
+fn emit_git_sha() {
+    use std::process::Command;
+    println!("cargo:rerun-if-changed=../.git/HEAD");
+    let sha = Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let dirty = Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=no"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false);
+    let value = match sha {
+        Some(s) if dirty => format!("{s}-dirty"),
+        Some(s) => s,
+        None => "unknown".to_string(),
+    };
+    println!("cargo:rustc-env=KORERO_GIT_SHA={value}");
 }
 
 /// Generate tray menu translations from frontend locale files.

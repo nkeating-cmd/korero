@@ -905,12 +905,17 @@ impl TranscriptionManager {
         // restores above only for this pass to overwrite -- so a user named Awhina got
         // macronised with no way to opt out.
         let filtered_result =
-            if settings.reo_lexicon_enabled
+            if settings.nz_english_pass_enabled
                 && crate::audio_toolkit::is_nz_locale(&settings.selected_language)
             {
-                crate::audio_toolkit::apply_nz_english(
+                // Korero (v1.40.0, R1.1): the pass is gated by
+                // `nz_english_pass_enabled`; only the curated lexicon rows are
+                // gated by `reo_lexicon_enabled`, so the A/B on one does not
+                // silently move NZ spelling with it.
+                crate::audio_toolkit::apply_nz_english_opts(
                     &filtered_result,
                     &settings.custom_words,
+                    settings.reo_lexicon_enabled,
                 )
             } else {
                 filtered_result
@@ -958,8 +963,13 @@ impl TranscriptionManager {
             effective_language,
             echo_stripped,
         };
-        if let Ok(mut slot) = self.traces.lock() {
-            slot.push(trace.clone());
+        // Korero (v1.40.0, R1.6): only `eval::run` ever drains this stash, so
+        // pushing on every dictation left every transcript of the session
+        // resident in a tray process that runs for days. Eval runs only.
+        if crate::settings::EVAL_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Ok(mut slot) = self.traces.lock() {
+                slot.push(trace.clone());
+            }
         }
         Ok(trace)
     }

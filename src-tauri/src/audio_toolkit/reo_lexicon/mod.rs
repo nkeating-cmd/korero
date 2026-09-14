@@ -213,6 +213,9 @@ mod tests {
         ] {
             assert!(is_ambiguous_bare(w), "{w} must be on the ambiguity list");
         }
+        // R1.2: named in BUILD-PLAN M4 step 1 and step 1(b), previously absent.
+        assert!(is_ambiguous_bare("kaka"), "kaka/kākā is a real minimal pair");
+        assert!(is_ambiguous_bare("tui"), "tui is a proper noun in NZ English");
         assert!(!is_ambiguous_bare("whanau"));
         assert!(!is_ambiguous_bare("korero"));
     }

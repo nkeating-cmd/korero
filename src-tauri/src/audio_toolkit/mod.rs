@@ -13,7 +13,8 @@ pub use audio::{
 };
 pub use dictation_format::apply_dictation_format;
 pub use nz_english::{
-    apply_nz_english, fold_locale_for_engine, is_nz_locale, is_well_formed_locale,
+    apply_nz_english, apply_nz_english_opts, fold_locale_for_engine, is_nz_locale,
+    is_well_formed_locale,
 };
 pub use text::{apply_custom_words, filter_transcription_output};
 pub use utils::get_cpal_host;
