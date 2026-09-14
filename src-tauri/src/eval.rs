@@ -77,6 +77,9 @@ pub struct EvalResult {
     pub schema: u32,
     pub app_version: String,
     pub git_sha: String,
+    /// True when tracked source differed from HEAD at build time. Separate from
+    /// `git_sha` so RT #6's gate can compare the sha exactly.
+    pub git_dirty: bool,
     pub exe_sha256: String,
     pub model: String,
     pub engine: String,
@@ -218,6 +221,7 @@ pub async fn run(app: AppHandle, args: CliArgs) -> i32 {
         git_sha: option_env!("KORERO_GIT_SHA")
             .unwrap_or("unknown")
             .to_string(),
+        git_dirty: matches!(option_env!("KORERO_GIT_DIRTY"), Some("1")),
         exe_sha256: sha256_of_current_exe(),
         model: model.clone(),
         requested_language: settings.selected_language.clone(),
