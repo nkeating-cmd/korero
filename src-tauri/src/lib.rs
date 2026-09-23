@@ -954,7 +954,7 @@ pub fn run(cli_args: CliArgs) {
                 std::thread::spawn(move || {
                     let code = tauri::async_runtime::block_on(eval::run(handle.clone(), args));
                     // `AppHandle::exit(code)` does NOT propagate the code on Windows.
-                    // Measured on yoga-26 (1.40.0, NSIS build): a run that correctly
+                    // Measured on a Windows 11 machine (1.40.0, NSIS build): a run that correctly
                     // refused a missing model, wrote its error JSON and returned 3
                     // still left the process with exit status 0.
                     //

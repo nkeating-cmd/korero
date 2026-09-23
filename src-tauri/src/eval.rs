@@ -375,7 +375,7 @@ mod eval_tests {
 
     /// Korero (v1.40.0, R1.5): a BARE relative --out used to pass the SEC-01
     /// containment guard, because `parent()` of a bare filename is `Some("")`.
-    /// Measured on legion-26 before the fix: `--out r.json` returned Ok(()) with
+    /// Measured on a Windows dev machine before the fix: `--out r.json` returned Ok(()) with
     /// the CWD set to the forbidden root itself.
     #[test]
     fn eval_out_guard_resolves_relative_paths() {
