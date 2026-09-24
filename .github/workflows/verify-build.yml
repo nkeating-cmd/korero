@@ -53,11 +53,12 @@ jobs:
       # Closes the two gates the Linux container could not run: the Windows
       # cfg blocks, and TypeScript (src/bindings.ts is hand-edited in this
       # branch — specta only regenerates it in a debug build).
-      - name: Frontend build + lint
+      - name: Frontend build + lint + unit tests
         if: ${{ inputs.run_tests }}
         run: |
           bun run build
           bun run lint
+          bun run test:unit
 
       - name: cargo test
         if: ${{ inputs.run_tests }}

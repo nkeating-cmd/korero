@@ -303,8 +303,9 @@ fn capture_worker(
     let mut last_emit = Instant::now();
     // Phase B (v1.14.0): optional live segmenter. v1.19.0: Silero-gated, same
     // bundled model as the dictation path (built on this worker thread).
-    let mut segmenter =
-        segments.map(|tx| Segmenter::new(source, tx, build_meeting_vad(app.as_ref(), source)));
+    let mut segmenter = segments.map(|tx| {
+        Segmenter::new(source, tx, build_meeting_vad(app.as_ref(), source)).with_live_stats()
+    });
 
     // Drains `deque` into the WAV via the resampler; shared by the main loop
     // and the stop path.

@@ -16,7 +16,7 @@
 //! have its model unloaded out from under the final transcription.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -28,7 +28,8 @@ use tauri::{AppHandle, Manager, State};
 use crate::audio_toolkit::audio::FrameResampler;
 use crate::audio_toolkit::list_input_devices;
 use crate::meeting_capture::{
-    LiveSegment, SegmentSender, Segmenter, StreamCapture, SEG_QUIET_RMS,
+    live_stats, reset_live_stats, LiveSegment, LiveSourceStats, SegmentSender, Segmenter,
+    StreamCapture, SEG_QUIET_RMS,
 };
 #[cfg(windows)]
 use crate::meeting_capture_wasapi::WasapiLoopback;
@@ -58,6 +59,12 @@ pub struct MeetingResult {
     pub segments: Vec<TranscriptSeg>,
     pub mic_path: Option<String>,
     pub system_path: Option<String>,
+    /// Kōrero (meetings reliability, 2026-09-25): plain-English problems found
+    /// while finishing the meeting — a microphone that never heard speech, no
+    /// system audio, a speaker rebuilt from the recording because live
+    /// transcription missed parts. Previously the only signal was an empty
+    /// transcript, with no reason attached.
+    pub warnings: Vec<String>,
 }
 
 /// v1.17.0: one chronological transcript segment. `source` is "you" or
@@ -139,9 +146,26 @@ impl ActiveCapture {
 struct LiveTranscript {
     /// (start_ms, source, text), appended in segment-arrival order.
     segs: Mutex<Vec<(u64, &'static str, String)>>,
+    /// Kōrero (meetings reliability, 2026-09-25): live segments whose
+    /// transcription FAILED, per source. These used to be a log line and
+    /// nothing else, so an engine error part-way through a meeting left a hole
+    /// in the transcript that Stop never noticed. Stop now rebuilds any source
+    /// with a non-zero count from its WAV.
+    failed_you: AtomicU64,
+    failed_others: AtomicU64,
 }
 
 impl LiveTranscript {
+    fn note_failure(&self, source: &str) {
+        let c = if source == "you" { &self.failed_you } else { &self.failed_others };
+        c.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn failures(&self, source: &str) -> u64 {
+        let c = if source == "you" { &self.failed_you } else { &self.failed_others };
+        c.load(Ordering::Relaxed)
+    }
+
     /// Append a transcribed segment. v1.19.0: collapses a consecutive duplicate
     /// from the SAME source — a near-silence hallucination repeats the same
     /// phrase across back-to-back segments ("You: Thank you." ×9), so a segment
@@ -627,10 +651,16 @@ pub async fn meeting_start_capture(
     let live = Arc::new(LiveTranscript::default());
     // v1.19.0: one pause flag shared by both capture workers.
     let paused = Arc::new(AtomicBool::new(false));
+    // Kōrero (meetings reliability, 2026-09-25): fresh health counters for this
+    // meeting, and a flag the consumer reads to know whether a system-audio
+    // capture exists at all (it is only known after the consumer starts).
+    reset_live_stats();
+    let system_on = Arc::new(AtomicBool::new(false));
     let consumer = {
         let live = live.clone();
         let tm = transcription_manager.inner().clone();
         let app_ev = app.clone();
+        let system_on = system_on.clone();
         std::thread::spawn(move || {
             #[derive(serde::Serialize, Clone)]
             struct LiveEvent {
@@ -644,8 +674,49 @@ pub async fn meeting_start_capture(
                 /// TranscriptSeg so the frontend can treat them alike.
                 start_ms: u64,
             }
-            while let Ok(seg) = seg_rx.recv() {
-                match tm.transcribe(seg.samples) {
+            // Kōrero (meetings reliability, 2026-09-25): a TIMED receive, so
+            // the capture-health check below still runs while a stream is
+            // producing no segments at all — which is exactly the case it is
+            // there to catch.
+            let mut warned: Vec<CaptureIssue> = Vec::new();
+            loop {
+                let seg = match seg_rx.recv_timeout(Duration::from_secs(5)) {
+                    Ok(seg) => Some(seg),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+                let you_h = SourceHealth::of(live_stats("you"));
+                let others_h = SourceHealth::of(live_stats("others"));
+                for issue in capture_issues(
+                    you_h,
+                    others_h,
+                    system_on.load(Ordering::Relaxed),
+                    MIC_SILENT_WARN_SECS,
+                    SYSTEM_SILENT_WARN_SECS,
+                ) {
+                    if warned.contains(&issue) {
+                        continue;
+                    }
+                    warned.push(issue);
+                    let msg = issue_message(issue, you_h, others_h, true);
+                    log::warn!("Meeting capture health: {msg}");
+                    use tauri::Emitter;
+                    let _ = app_ev.emit("meeting-capture-warning", msg);
+                    // The warning is an in-app toast, and during a call Kōrero
+                    // is usually behind the meeting app. Flash its taskbar
+                    // button so the user knows to look.
+                    if let Some(w) = app_ev.get_webview_window("main") {
+                        let _ = w.request_user_attention(Some(
+                            tauri::UserAttentionType::Informational,
+                        ));
+                    }
+                }
+                let Some(seg) = seg else { continue };
+                // Kōrero (meetings reliability, 2026-09-25): reload-and-retry.
+                // An engine panic unloads the model, and nothing reloaded it,
+                // so every later segment of the meeting failed with "Model is
+                // not loaded" — silently, for the rest of the call.
+                match transcribe_retrying(&tm, seg.samples) {
                     Ok(text) => {
                         // v1.19.0 guards (d)+(b): collapse intra-segment repeats
                         // and drop near-floor hallucination phrases.
@@ -668,9 +739,14 @@ pub async fn meeting_start_capture(
                             },
                         );
                     }
-                    Err(e) => log::warn!(
-                        "Live segment transcription failed (the WAV still has the audio): {e}"
-                    ),
+                    Err(e) => {
+                        live.note_failure(seg.source);
+                        log::warn!(
+                            "Live segment transcription failed for '{}' (Stop will rebuild \
+                             that speaker from the WAV): {e}",
+                            seg.source
+                        );
+                    }
                 }
             }
         })
@@ -713,6 +789,7 @@ pub async fn meeting_start_capture(
     // consumer exit when the workers finish.
     let (system, backend) = start_system_capture(&app, others_path, Some(seg_tx), paused.clone());
     let system_captured = system.is_some();
+    system_on.store(system_captured, Ordering::Relaxed);
     if system_captured {
         log::info!("Meeting system capture started (backend: {backend}).");
     } else {
@@ -825,6 +902,9 @@ pub async fn meeting_stop_capture(
     } = capture;
     let mic_pathbuf = mic.path.clone();
     let sys_pathbuf = system.as_ref().map(|s| s.path().clone());
+    // Whether a system-audio capture ran at all (its WAV may still be
+    // discarded below as empty — which is itself one of the cases to report).
+    let sys_was_captured = sys_pathbuf.is_some();
     let (mic_written, sys_written) = tauri::async_runtime::spawn_blocking(move || {
         let m = mic.stop().unwrap_or_else(|e| {
             log::error!("Mic capture stop failed: {e}");
@@ -872,20 +952,81 @@ pub async fn meeting_stop_capture(
     // order they actually spoke instead of "all of you, then all of them".
     // Non-fatal throughout: the audio is safe on disk regardless.
     let tm = app.state::<Arc<TranscriptionManager>>().inner().clone();
+    // Kōrero (meetings reliability, 2026-09-25): both capture workers have
+    // joined, so these counters are final for this meeting.
+    let you_h = SourceHealth::of(live_stats("you"));
+    let others_h = SourceHealth::of(live_stats("others"));
+    let mut warnings: Vec<String> = Vec::new();
     let mut seg_log = live.snapshot();
-    let has_you = seg_log.iter().any(|(_, s, _)| *s == "you");
-    let has_others = seg_log.iter().any(|(_, s, _)| *s == "others");
-    if !has_you {
-        if let Some(p) = &mic_path {
-            seg_log.extend(segment_wav_offline(&tm, p, "you").await);
+
+    // Kōrero (meetings reliability, 2026-09-25): rebuild a speaker from its WAV
+    // when the live transcript for it is EMPTY (as before) or INCOMPLETE (new).
+    // Incomplete means at least one live segment was dropped because
+    // transcription fell behind, or failed to transcribe. Before this, only an
+    // entirely empty side was rebuilt, so a partial loss stayed in the saved
+    // transcript with nothing to say it had happened.
+    for (source, path) in [("you", mic_path.as_deref()), ("others", system_path.as_deref())] {
+        let Some(p) = path else { continue };
+        let has_live = seg_log.iter().any(|(_, s, _)| *s == source);
+        let lost = live_stats(source).dropped.load(Ordering::Relaxed) + live.failures(source);
+        if !needs_offline_rebuild(has_live, lost) {
+            continue;
         }
-    }
-    if !has_others {
-        if let Some(p) = &system_path {
-            seg_log.extend(segment_wav_offline(&tm, p, "others").await);
+        let label = side_label(source);
+        // The idle-unload watcher stops protecting the model the moment
+        // MEETING_ACTIVE clears (top of this function), and an engine crash
+        // during the meeting may have unloaded it already. Loading is claimed
+        // synchronously and the first transcribe() waits for it.
+        tm.initiate_model_load();
+        match segment_wav_offline(&tm, p, source).await {
+            Ok(r) => {
+                if r.failed > 0 {
+                    warnings.push(format!(
+                        "{} of {} parts of {label} could not be transcribed ({}). The audio is \
+                         saved — use Re-transcribe to try again.",
+                        r.failed,
+                        r.attempted,
+                        r.last_error.as_deref().unwrap_or("unknown error"),
+                    ));
+                }
+                if adopt_rebuild(has_live, r.failed, r.segs.is_empty()) {
+                    if has_live {
+                        log::warn!(
+                            "Meeting stop: live transcript for '{source}' missed {lost} \
+                             segment(s); rebuilt it from {p}."
+                        );
+                        warnings.push(format!(
+                            "Live transcription missed {lost} part(s) of {label}, so that side \
+                             was rebuilt from the recording."
+                        ));
+                    }
+                    seg_log.retain(|(_, s, _)| *s != source);
+                    seg_log.extend(r.segs);
+                }
+            }
+            Err(e) => {
+                log::warn!("Meeting stop: could not rebuild '{source}' from {p}: {e}");
+                warnings.push(format!(
+                    "Couldn't transcribe {label} from the recording ({e}). The audio is saved — \
+                     use Re-transcribe to try again."
+                ));
+            }
         }
     }
     seg_log.sort_by_key(|(ms, _, _)| *ms);
+
+    // Kōrero (meetings reliability, 2026-09-25): say WHY a side is empty. The
+    // thresholds are lower than the in-meeting ones: at Stop the whole meeting
+    // is known, so even a short recording can be judged.
+    for issue in capture_issues(
+        you_h,
+        others_h,
+        sys_was_captured,
+        MIC_SILENT_STOP_SECS,
+        SYSTEM_SILENT_STOP_SECS,
+    ) {
+        warnings.push(issue_message(issue, you_h, others_h, false));
+    }
 
     let segments: Vec<TranscriptSeg> = to_transcript_segs(&seg_log);
     let you = join_log(&seg_log, "you");
@@ -901,6 +1042,7 @@ pub async fn meeting_stop_capture(
         segments,
         mic_path,
         system_path,
+        warnings,
     })
 }
 
@@ -1045,11 +1187,26 @@ pub async fn meeting_transcribe_merge(
     // Match meeting_transcribe_file: the model may be idle-unloaded on this path.
     tm.initiate_model_load();
     let mut seg_log: Vec<(u64, &'static str, String)> = Vec::new();
-    if let Some(p) = &mic_path {
-        seg_log.extend(segment_wav_offline(&tm, p, "you").await);
-    }
-    if let Some(p) = &system_path {
-        seg_log.extend(segment_wav_offline(&tm, p, "others").await);
+    // Kōrero (meetings reliability, 2026-09-25): errors are now REPORTED. The
+    // offline path used to swallow every per-segment failure, so a model that
+    // was not loaded produced an empty transcript and the UI said "Still no
+    // speech found" — which then replaced a good transcript with nothing.
+    // Any failed part now fails the whole re-transcribe, and the frontend keeps
+    // the existing transcript untouched.
+    for (source, path) in [("you", mic_path.as_deref()), ("others", system_path.as_deref())] {
+        let Some(p) = path else { continue };
+        let r = segment_wav_offline(&tm, p, source).await?;
+        if r.failed > 0 {
+            return Err(format!(
+                "{} of {} parts of {} could not be transcribed ({}). Your existing transcript \
+                 was kept.",
+                r.failed,
+                r.attempted,
+                side_label(source),
+                r.last_error.as_deref().unwrap_or("unknown error"),
+            ));
+        }
+        seg_log.extend(r.segs);
     }
     seg_log.sort_by_key(|(ms, _, _)| *ms);
     // Kōrero (v1.26.0): offsets survive here too. On a re-transcribe of BOTH
@@ -1630,6 +1787,20 @@ fn strip_llm_preamble(answer: &str, system_prompt: &str) -> String {
     }
 }
 
+/// Kōrero (meetings reliability, 2026-09-25): the line appended to notes made
+/// from a transcript that was cut to fit the model. `kept`/`total` are char
+/// counts. Floors the percentage, so it never over-states the coverage.
+fn truncation_note(kept: usize, total: usize) -> String {
+    let pct = (kept.min(total) * 100).checked_div(total).unwrap_or(100);
+    format!(
+        "\n\n---\n\n*These notes cover only the first {pct}% of the transcript: the meeting is \
+         longer than the {},{:03}-character limit for notes. To cover a different part, set the \
+         trim markers to that part and generate the notes again.*",
+        kept / 1000,
+        kept % 1000
+    )
+}
+
 /// Post-process a meeting transcript with a custom, per-meeting prompt, using the
 /// configured post-processing provider/model. `prompt` becomes the system
 /// instruction; `text` (the transcript) is the content. Returns the result.
@@ -1666,7 +1837,13 @@ pub async fn meeting_post_process(
 
     // Cap the transcript so it can't blow the model's context window.
     const MAX_CHARS: usize = 48_000;
-    let text = if text.chars().count() > MAX_CHARS {
+    // Kōrero (meetings reliability, 2026-09-25): remember HOW MUCH was cut.
+    // The model was told, but the saved notes never were, so the notes for 6
+    // of 60 meetings in one real store silently skipped their final third. The
+    // notes now say so, and point at the trim markers as the way to choose
+    // the part that matters.
+    let total_chars = text.chars().count();
+    let text = if total_chars > MAX_CHARS {
         let kept: String = text.chars().take(MAX_CHARS).collect();
         format!("{kept}\n\n[Transcript truncated to fit the model's context window.]")
     } else {
@@ -1748,6 +1925,11 @@ pub async fn meeting_post_process(
     // notes begin at the real content. Applied once to the final text; the live
     // streaming preview is transient and intentionally left untouched.
     let answer = strip_llm_preamble(&answer, &system_for_strip);
+    let answer = if total_chars > MAX_CHARS && !answer.trim().is_empty() {
+        format!("{answer}{}", truncation_note(MAX_CHARS, total_chars))
+    } else {
+        answer
+    };
 
     // Signal completion so the UI can stop its streaming indicator.
     let _ = app.emit("meeting-postprocess-done", answer.clone());
@@ -1841,46 +2023,247 @@ async fn transcribe_path_lossy(tm: &Arc<TranscriptionManager>, path: &str) -> St
 /// uses, then transcribe each segment, returning `(start_ms, source, text)`.
 /// Used by the recovery / re-transcribe paths so a meeting reconstructed from
 /// the on-disk WAVs interleaves the two speakers chronologically, exactly like
-/// the live path. Best-effort: a decode/transcribe failure yields no segments
-/// for that source (the caller still has the per-stream plain transcript).
+/// the live path. A decode failure is an `Err`; per-segment transcription
+/// failures are counted in the result (see `OfflineTranscript`).
 async fn segment_wav_offline(
     tm: &Arc<TranscriptionManager>,
     path: &str,
     source: &'static str,
-) -> Vec<(u64, &'static str, String)> {
+) -> Result<OfflineTranscript, String> {
     let tm = tm.clone();
     let path = path.to_string();
     tauri::async_runtime::spawn_blocking(move || {
-        let segs = match decode_and_segment(&path, source) {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!("Offline segmenting failed for {path}: {e} (WAV preserved)");
-                return Vec::new();
-            }
+        // Kōrero (meetings reliability, 2026-09-25): a decode failure is an
+        // ERROR now, not an empty result. Callers decide what it means: Stop
+        // keeps the live text and warns; Re-transcribe keeps the old transcript.
+        let segs = decode_and_segment(&path, source)
+            .map_err(|e| format!("Could not read the recording: {e}"))?;
+        let mut out = OfflineTranscript {
+            attempted: segs.len(),
+            ..OfflineTranscript::default()
         };
-        let mut out: Vec<(u64, &'static str, String)> = Vec::with_capacity(segs.len());
         for s in segs {
-            if let Ok(text) = tm.transcribe(s.samples) {
-                // Same v1.19.0 guards as the live path (offline has energy-only
-                // segments, so peak_rms still drives the near-floor drop).
-                let text = match clean_segment_text(&text, Some(s.peak_rms)) {
-                    Some(t) => t,
-                    None => continue,
-                };
-                if out
-                    .last()
-                    .map(|(_, _, last)| normalise_phrase(last) == normalise_phrase(&text))
-                    .unwrap_or(false)
-                {
-                    continue; // cross-segment duplicate collapse (guard a)
+            let text = match transcribe_retrying(&tm, s.samples) {
+                Ok(t) => t,
+                Err(e) => {
+                    // Previously `if let Ok(..)` — every failure vanished, so a
+                    // model that was not loaded looked exactly like silence.
+                    out.failed += 1;
+                    out.last_error = Some(e);
+                    continue;
                 }
-                out.push((s.start_ms, source, text));
+            };
+            // Same v1.19.0 guards as the live path (offline has energy-only
+            // segments, so peak_rms still drives the near-floor drop).
+            let text = match clean_segment_text(&text, Some(s.peak_rms)) {
+                Some(t) => t,
+                None => continue,
+            };
+            if out
+                .segs
+                .last()
+                .map(|(_, _, last)| normalise_phrase(last) == normalise_phrase(&text))
+                .unwrap_or(false)
+            {
+                continue; // cross-segment duplicate collapse (guard a)
             }
+            out.segs.push((s.start_ms, source, text));
         }
-        out
+        if out.failed > 0 {
+            log::warn!(
+                "Offline transcription of {path}: {} of {} segment(s) failed; last error: {}",
+                out.failed,
+                out.attempted,
+                out.last_error.as_deref().unwrap_or("?")
+            );
+        }
+        Ok(out)
     })
     .await
-    .unwrap_or_default()
+    .map_err(|e| format!("Offline transcription task failed: {e}"))?
+}
+
+/// Kōrero (meetings reliability, 2026-09-25): the outcome of re-segmenting and
+/// transcribing one WAV, with failures COUNTED rather than dropped.
+#[derive(Default)]
+struct OfflineTranscript {
+    segs: Vec<(u64, &'static str, String)>,
+    /// Speech segments cut from the file (each one a transcription attempt).
+    attempted: usize,
+    /// Attempts that failed even after a model reload.
+    failed: usize,
+    last_error: Option<String>,
+}
+
+/// Kōrero (meetings reliability, 2026-09-25): transcribe, and if that failed
+/// because the model is no longer loaded, load it and try the same audio once
+/// more.
+///
+/// An engine panic unloads the model ("…will reload on next attempt"), but
+/// nothing on the meeting paths ever triggered that reload: `transcribe()`
+/// only WAITS for a load already in progress. One bad segment therefore
+/// failed every segment after it, for the rest of the meeting or file.
+fn transcribe_retrying(tm: &TranscriptionManager, samples: Vec<f32>) -> Result<String, String> {
+    match tm.transcribe(samples.clone()) {
+        Ok(t) => Ok(t),
+        Err(first) => {
+            if tm.is_model_loaded() {
+                return Err(first.to_string());
+            }
+            log::warn!(
+                "Transcription failed with the model unloaded ({first}); reloading and \
+                 retrying once."
+            );
+            tm.initiate_model_load();
+            tm.transcribe(samples).map_err(|e| e.to_string())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kōrero (meetings reliability, 2026-09-25): capture health verdicts.
+//
+// Pure functions over a snapshot of the live counters (meeting_capture.rs), so
+// the rules are testable without audio hardware. Used twice: by the live
+// consumer, to warn DURING the meeting while the user can still fix a device,
+// and by Stop, to say why a side of the transcript is empty.
+// ---------------------------------------------------------------------------
+
+/// Seconds of microphone audio, all below the speech gate, before the live
+/// meeting warns that the mic is not hearing anyone.
+const MIC_SILENT_WARN_SECS: u64 = 60;
+/// Seconds of microphone audio before the live meeting judges the system side.
+const SYSTEM_SILENT_WARN_SECS: u64 = 90;
+/// The same checks at Stop, where the whole meeting is known.
+const MIC_SILENT_STOP_SECS: u64 = 10;
+const SYSTEM_SILENT_STOP_SECS: u64 = 60;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct SourceHealth {
+    secs: u64,
+    loud_frames: u64,
+    peak_rms: f32,
+}
+
+impl SourceHealth {
+    fn of(st: &LiveSourceStats) -> Self {
+        Self {
+            secs: st.seconds(),
+            loud_frames: st.loud_frames.load(Ordering::Relaxed),
+            peak_rms: st.peak_rms(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaptureIssue {
+    /// The microphone delivered audio, but never a single frame loud enough to
+    /// be speech.
+    MicSilent,
+    /// A system-audio capture is running but has delivered under a tenth as
+    /// much audio as the microphone. WASAPI loopback delivers NOTHING while
+    /// its output device is idle, so this is the signature of the meeting
+    /// playing on a different device (a headset, say).
+    SystemSilent,
+}
+
+fn capture_issues(
+    you: SourceHealth,
+    others: SourceHealth,
+    system_on: bool,
+    mic_min_secs: u64,
+    system_min_secs: u64,
+) -> Vec<CaptureIssue> {
+    let mut v = Vec::new();
+    if you.secs >= mic_min_secs && you.loud_frames == 0 {
+        v.push(CaptureIssue::MicSilent);
+    }
+    if system_on && you.secs >= system_min_secs && others.secs.saturating_mul(10) < you.secs {
+        v.push(CaptureIssue::SystemSilent);
+    }
+    v
+}
+
+/// "−52 dBFS" for a peak RMS in 0..1; the speech gate (0.010) is −40 dBFS.
+fn fmt_dbfs(rms: f32) -> String {
+    if rms <= 0.0 {
+        "no sound at all".to_string()
+    } else {
+        format!("{:.0} dBFS", 20.0 * rms.log10())
+    }
+}
+
+fn fmt_duration(secs: u64) -> String {
+    if secs < 90 {
+        format!("{secs} s")
+    } else {
+        format!("{} min", (secs + 30) / 60)
+    }
+}
+
+/// The plain-English message for an issue. `live` = said during the meeting
+/// (the recording is still running and the user can act); otherwise at Stop.
+fn issue_message(
+    issue: CaptureIssue,
+    you: SourceHealth,
+    others: SourceHealth,
+    live: bool,
+) -> String {
+    match (issue, live) {
+        (CaptureIssue::MicSilent, true) => format!(
+            "Kōrero can't hear your microphone: nothing loud enough to be speech in the last {} \
+             (loudest sound {}; speech needs about -40 dBFS). Check which microphone is selected in \
+             Settings and that it isn't muted. The recording is still running.",
+            fmt_duration(you.secs),
+            fmt_dbfs(you.peak_rms),
+        ),
+        (CaptureIssue::MicSilent, false) => format!(
+            "Your microphone recorded nothing loud enough to be speech in this meeting (loudest \
+             sound {}; speech needs about -40 dBFS), so your side is empty. Check which microphone \
+             is selected in Settings and that it isn't muted.",
+            fmt_dbfs(you.peak_rms),
+        ),
+        (CaptureIssue::SystemSilent, true) => format!(
+            "Almost no sound is reaching Kōrero from your computer's audio output ({} in {}). If the \
+             call has started and plays through a headset or another device that isn't Windows' \
+             default output, the other people won't be transcribed: make that device the default \
+             output. If the call hasn't started yet, ignore this.",
+            fmt_duration(others.secs),
+            fmt_duration(you.secs),
+        ),
+        (CaptureIssue::SystemSilent, false) => format!(
+            "Only {} of computer audio was captured in a {} meeting, so the other people are \
+             probably missing from the transcript. The meeting audio was most likely playing on a \
+             device other than Windows' default output.",
+            fmt_duration(others.secs),
+            fmt_duration(you.secs),
+        ),
+    }
+}
+
+/// Stop rebuilds a source from its WAV when its live transcript is empty, or
+/// when any live segment for it was dropped or failed.
+fn needs_offline_rebuild(has_live: bool, lost: u64) -> bool {
+    !has_live || lost > 0
+}
+
+/// Whether Stop should REPLACE a source's live segments with the rebuilt ones.
+/// With no live text, anything is better than nothing. With live text, only a
+/// clean, non-empty rebuild may replace it — a rebuild that itself hit
+/// failures could have fewer parts than the live text it would overwrite.
+fn adopt_rebuild(has_live: bool, rebuild_failed: usize, rebuild_empty: bool) -> bool {
+    if !has_live {
+        return true;
+    }
+    rebuild_failed == 0 && !rebuild_empty
+}
+
+fn side_label(source: &str) -> &'static str {
+    if source == "you" {
+        "your side"
+    } else {
+        "the other people's side"
+    }
 }
 
 /// Decode a WAV to 16 kHz mono and run the live `Segmenter` over it, returning
@@ -1952,10 +2335,12 @@ async fn transcribe_buffer(
         return Ok(String::new());
     }
     let tm = tm.clone();
-    tauri::async_runtime::spawn_blocking(move || tm.transcribe(samples))
+    // Kōrero (meetings reliability, 2026-09-25): reload-and-retry once, so one
+    // engine crash part-way through a long import does not fail every window
+    // after it with "Model is not loaded".
+    tauri::async_runtime::spawn_blocking(move || transcribe_retrying(&tm, samples))
         .await
         .map_err(|e| format!("Transcription task failed: {e}"))?
-        .map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -2732,5 +3117,119 @@ mod korero_v1_31_decode_tests {
             "decoded {} samples @ {rate} Hz x{channels}, peak {peak:.4}",
             got.len()
         );
+    }
+}
+
+/// Kōrero (meetings reliability, 2026-09-25). Each test is named for the
+/// behaviour it pins, so a failure reads as the regression it would be.
+#[cfg(test)]
+mod korero_meetings_reliability_tests {
+    use super::*;
+
+    fn health(secs: u64, loud_frames: u64, peak_rms: f32) -> SourceHealth {
+        SourceHealth {
+            secs,
+            loud_frames,
+            peak_rms,
+        }
+    }
+
+    /// The in-meeting check (live thresholds).
+    fn live(you: SourceHealth, others: SourceHealth, system_on: bool) -> Vec<CaptureIssue> {
+        capture_issues(you, others, system_on, MIC_SILENT_WARN_SECS, SYSTEM_SILENT_WARN_SECS)
+    }
+
+    /// The check at Stop (lower thresholds: the whole meeting is known).
+    fn at_stop(you: SourceHealth, others: SourceHealth, system_on: bool) -> Vec<CaptureIssue> {
+        capture_issues(you, others, system_on, MIC_SILENT_STOP_SECS, SYSTEM_SILENT_STOP_SECS)
+    }
+
+    #[test]
+    fn a_silent_mic_is_reported_once_it_has_run_long_enough() {
+        // A real 34-minute meeting: mic peak 0.0073, never one loud frame.
+        let silent = health(2067, 0, 0.0073);
+        assert_eq!(live(silent, health(0, 0, 0.0), false), vec![CaptureIssue::MicSilent]);
+        // ...but not in the first seconds, before there is anything to judge.
+        assert!(live(health(20, 0, 0.0), health(0, 0, 0.0), false).is_empty());
+    }
+
+    #[test]
+    fn one_loud_frame_means_the_mic_is_working() {
+        let issues = live(health(600, 1, 0.2), health(600, 50, 0.1), true);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn loopback_that_delivered_almost_nothing_is_reported() {
+        // A real 63-minute meeting: 12 s of system audio in total.
+        let issues = live(health(3817, 18_588, 0.34), health(12, 5, 0.13), true);
+        assert_eq!(issues, vec![CaptureIssue::SystemSilent]);
+    }
+
+    #[test]
+    fn no_system_warning_when_no_system_capture_was_running() {
+        // Mic-only meetings already get their own "system audio couldn't be
+        // captured" message at start; the health check must not add a second.
+        let issues = live(health(3817, 18_588, 0.34), health(0, 0, 0.0), false);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn a_healthy_meeting_raises_nothing() {
+        // A real, healthy 47-minute meeting: both sides delivered ~2830 s.
+        let issues = at_stop(health(2834, 5289, 0.05), health(2832, 9208, 0.09), true);
+        assert!(issues.is_empty(), "{issues:?}");
+        // A real meeting where others delivered 886 s against 1368 s
+        // of mic — less, but nowhere near the "under a tenth" signature.
+        let uneven = at_stop(health(1368, 2544, 0.13), health(886, 4337, 0.08), true);
+        assert!(uneven.is_empty(), "{uneven:?}");
+    }
+
+    #[test]
+    fn messages_name_the_level_and_the_durations() {
+        let quiet = health(2067, 0, 0.0073);
+        let m = issue_message(CaptureIssue::MicSilent, quiet, health(0, 0, 0.0), false);
+        assert!(m.contains("-43 dBFS"), "{m}");
+        let long = health(3817, 1, 0.3);
+        let s = issue_message(CaptureIssue::SystemSilent, long, health(12, 1, 0.1), false);
+        assert!(s.contains("12 s") && s.contains("64 min"), "{s}");
+        assert_eq!(fmt_dbfs(0.0), "no sound at all");
+        assert_eq!(fmt_duration(89), "89 s");
+        assert_eq!(fmt_duration(90), "2 min");
+    }
+
+    #[test]
+    fn stop_rebuilds_an_empty_or_a_lossy_side_and_nothing_else() {
+        assert!(needs_offline_rebuild(false, 0), "empty side: rebuild (the old rule)");
+        assert!(needs_offline_rebuild(true, 1), "lossy side: rebuild (new)");
+        assert!(!needs_offline_rebuild(true, 0), "complete live side: keep it");
+    }
+
+    #[test]
+    fn a_rebuild_only_replaces_live_text_when_it_is_clean() {
+        assert!(adopt_rebuild(false, 3, true), "nothing live: anything is better");
+        assert!(adopt_rebuild(true, 0, false), "clean rebuild replaces a lossy live side");
+        assert!(!adopt_rebuild(true, 2, false), "a rebuild with failures must not overwrite");
+        assert!(!adopt_rebuild(true, 0, true), "an empty rebuild must not erase live text");
+    }
+
+    #[test]
+    fn live_failures_are_counted_per_source() {
+        let live = LiveTranscript::default();
+        live.note_failure("you");
+        live.note_failure("you");
+        live.note_failure("others");
+        assert_eq!(live.failures("you"), 2);
+        assert_eq!(live.failures("others"), 1);
+    }
+
+    #[test]
+    fn truncated_notes_say_how_much_they_cover() {
+        // A real 73,594-character transcript, cut to 48,000.
+        let n = truncation_note(48_000, 73_594);
+        assert!(n.contains("first 65%"), "{n}");
+        assert!(n.contains("48,000-character"), "{n}");
+        assert!(truncation_note(48_000, 48_000).contains("100%"));
+        assert!(truncation_note(0, 0).contains("100%"), "no divide by zero");
     }
 }

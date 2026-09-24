@@ -1,179 +1,198 @@
-// Kōrero (v1.30.2): the meeting post-processing job, lifted OUT of React.
+// Kōrero (v1.30.2, reworked 2026-09-25): ALL long-running meeting work lives
+// here, outside React, so it survives leaving the Meetings tab.
 //
-// WHY. App.tsx renders only the active section's component, so leaving the
-// Meetings tab UNMOUNTS MeetingsSettings. Everything about a post-process run
-// used to live inside that component:
+// HISTORY. v1.30.2 lifted post-processing (the notes) out of MeetingsSettings,
+// because App.tsx unmounts the active section's component on every tab change
+// and the notes were being generated into a dead `setState`. It left three
+// things behind, and those are what "it doesn't run in the background" kept
+// meaning after v1.30.2:
 //
-//   - the awaited `commands.meetingPostProcess(...)` promise,
-//   - the `meeting-postprocess-delta` listener feeding the live preview,
-//   - the `busy` flag driving the spinner,
-//   - and `patchMeeting`, which is a `setMeetings` on that component.
+//   - STOP. Turning a stopped recording into a meeting happened inside the
+//     view. Leaving the tab while it said "Processing…" meant the meeting was
+//     never created; only the WAVs survived, in the Recordings list.
+//   - TRANSCRIPTION (Re-transcribe, Transcribe + post-process, Import,
+//     Recover). The result was written to disk "because the view is gone" by
+//     checking the STARTING view's own mountedRef — so if you had come back in
+//     the meantime, the new view saved its older copy over it. See
+//     meetingsBridge.ts for that race and its fix.
+//   - BUSY STATE. Spinners and progress for all of the above were component
+//     state, so coming back mid-run showed idle buttons over running work, and
+//     a second click queued a duplicate run.
 //
-// So navigating away didn't stop the model — Rust kept generating, and the
-// machine kept paying for it — but the answer came back to a dead `setState`
-// and was dropped on the floor. Worse, the 500 ms debounced autosave cleared
-// its own timer on unmount, so even a result that HAD landed a moment earlier
-// was never written to meetings.json. From the outside this looks exactly like
-// "navigating out of the tab cancels the job".
+// Now: one job slot for model work (`job`: notes, refine), one for
+// transcription work (`task`), and a `stopping` flag for Stop. Every result is
+// handed to `meetingsBridge`, which puts it in whichever Meetings view is open,
+// or on disk if none is. The view only READS this store to draw its buttons.
 //
-// The fix mirrors what audioBriefStore already does for Audio Brief: the job
-// lives in a module-level singleton that outlives the view. It keeps running in
-// the background, accumulates its streamed text here, and — this is the part
-// that matters — guarantees the finished notes reach disk whether or not any
-// component is alive to receive them.
-//
-// Scope: ONE job at a time, deliberately. The UI only ever offers one, and a
-// single slot means "is something running?" has one true answer instead of a
-// map the UI has to reconcile.
+// Scope stays "one at a time" (task OR job), as before: the transcription
+// engine and the local model are both single, shared resources. Stop is never
+// refused — it must always be possible to end a meeting.
 
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
+import { toast } from "sonner";
 import { commands } from "@/bindings";
+import {
+  createMeetingsBridge,
+  type DeliveryOutcome,
+  type MeetingDoc,
+} from "./meetingsBridge";
 
-export type MeetingJobKind = "post" | "both";
-export type MeetingJobStatus = "running" | "done" | "error";
+// ---------------------------------------------------------------------------
+// The single route to meetings.json (see meetingsBridge.ts).
+export const meetingsBridge = createMeetingsBridge({
+  load: async () => {
+    try {
+      const r = await commands.meetingsStoreLoad();
+      return r.status === "ok"
+        ? { ok: true as const, data: r.data }
+        : {
+            ok: false as const,
+            error: String(r.error ?? "could not read the meetings store"),
+          };
+    } catch (e) {
+      return { ok: false as const, error: errText(e) };
+    }
+  },
+  save: async (json) => {
+    try {
+      const r = await commands.meetingsStoreSave(json);
+      return r.status === "ok"
+        ? { ok: true as const }
+        : { ok: false as const, error: String(r.error) };
+    } catch (e) {
+      return { ok: false as const, error: errText(e) };
+    }
+  },
+});
 
-/** The patch a finished run produces. Mirrors the three fields the old
- *  inline `patchMeeting` wrote, so adoption by the view is a straight spread. */
-export interface MeetingJobResult {
-  processed: string;
-  processPrompt: string;
-  processedTrimKey: string;
-}
+// ---------------------------------------------------------------------------
+// Types
+
+export type MeetingJobKind = "post" | "both" | "refine";
 
 export interface MeetingJob {
   meetingId: string;
   kind: MeetingJobKind;
   startedAt: number;
-  /** Streamed tokens so far — the live preview, rebuilt on return to the tab. */
+  /** Streamed tokens so far — the live preview, kept while the tab is closed. */
   live: string;
-  status: MeetingJobStatus;
-  error?: string;
-  /** Set on success, cleared once a mounted view has applied it. */
-  result?: MeetingJobResult;
-  /** True once a view has taken `result` into its own state. */
-  consumed: boolean;
+  status: "running";
+}
+
+export type MeetingTaskKind = "transcribe" | "both" | "import" | "recover";
+
+export interface MeetingTask {
+  kind: MeetingTaskKind;
+  /** The meeting being re-transcribed; null for an import/recover (it has no
+   *  meeting until the transcript exists). */
+  meetingId: string | null;
+  /** Human label for "Busy with …" when the work is not the meeting on screen. */
+  label: string;
+  /** The file being recovered (so its row in Recordings can show a spinner). */
+  path?: string;
+  startedAt: number;
+  progress: { window: number; total: number | null } | null;
+}
+
+export interface TranscriptSegLike {
+  source: string;
+  text: string;
+  start_ms?: number;
+}
+
+/** The transcript fields a (re-)transcription produces. */
+export interface TranscriptPatch {
+  you: string;
+  others: string;
+  transcript: TranscriptSegLike[];
 }
 
 interface MeetingJobsState {
   job: MeetingJob | null;
-  /**
-   * Start a run. Resolves to false if one was already in flight and this start
-   * was REFUSED — callers must surface that, or the user gets no notes and no
-   * explanation. (Review finding: `runImport` fired and ignored the result, so
-   * an import started during a meeting run silently produced nothing.)
-   */
+  task: MeetingTask | null;
+  stopping: { startedAt: number } | null;
+
+  /** Generate notes. Resolves false only if the run was REFUSED (busy). */
   start: (args: {
     meetingId: string;
-    kind: MeetingJobKind;
+    kind: "post" | "both";
     text: string;
     prompt: string;
     trimKey: string;
   }) => Promise<boolean>;
-  /** A mounted view claims the finished result so it can patch its own state. */
-  consume: (meetingId: string) => MeetingJobResult | null;
-  /** Dismiss a finished/failed job so the banner goes away. */
-  clear: () => void;
+
+  /** Revise existing notes with the reader's feedback (Undo in the toast).
+   *  Resolves true when the refined notes landed. */
+  refine: (args: {
+    meetingId: string;
+    previous: string;
+    feedback: string;
+  }) => Promise<boolean>;
+
+  /** Re-transcribe a meeting's audio; with `thenNotes`, generate notes after. */
+  transcribe: (args: {
+    meetingId: string;
+    title: string;
+    micPath: string | null;
+    systemPath: string | null;
+    thenNotes?: {
+      /** Pure: builds the model input from the NEW transcript (trim applied). */
+      buildText: (t: TranscriptPatch) => string;
+      prompt: string;
+      trimKey: string;
+    };
+  }) => Promise<boolean>;
+
+  /** Transcribe an audio file into a new meeting; optionally generate notes.
+   *  `notesPrompt` null = transcript only. */
+  importFile: (args: {
+    path: string;
+    label: string;
+    /** Pure: builds the new meeting from the transcript text. */
+    makeMeeting: (transcript: string) => MeetingDoc;
+    notesPrompt: string | null;
+  }) => Promise<boolean>;
+
+  /** Transcribe a WAV from the Recordings list into a new meeting. */
+  recover: (args: {
+    path: string;
+    label: string;
+    makeMeeting: (transcript: string) => MeetingDoc;
+  }) => Promise<boolean>;
+
+  /** Stop the running meeting and turn it into a meeting entry. */
+  stopMeeting: (args: {
+    /** Pure: builds the new meeting from the stop result. */
+    makeMeeting: (r: {
+      you: string;
+      others: string;
+      segments: TranscriptSegLike[];
+      mic_path: string | null;
+      system_path: string | null;
+    }) => MeetingDoc;
+  }) => Promise<void>;
 }
+
+type SetState = (
+  fn: (s: MeetingJobsState) => Partial<MeetingJobsState>,
+) => void;
 
 // ---------------------------------------------------------------------------
-// Durable landing strip.
-//
-// If nobody claimed the result shortly after it arrived, the view is not
-// mounted and there is no React state to patch — so write it into the meetings
-// store ourselves, read-modify-write.
-//
-// The delay is longer than the view's 500 ms autosave debounce ON PURPOSE. When
-// the view IS mounted it consumes the result, patches its own array and its
-// debounce saves the whole document; doing our own write as well would race
-// that save with a copy of the array we read BEFORE the patch, and could put
-// the notes back over a newer edit. Waiting until after that window, AND
-// claiming the job synchronously before the first await (see `start`), makes
-// the two paths mutually exclusive: exactly one of them writes.
-const ADOPTION_GRACE_MS = 1200;
+// Module-level listeners, registered once, so they keep working while the
+// Meetings tab is closed.
 
-/**
- * Read-modify-write a patch into the meetings store on disk.
- *
- * Used whenever the result of long-running work arrives with no mounted view to
- * receive it. Obeys the v1.29.0 R-02 rule without exception: only ever save a
- * store that was successfully READ, so a file momentarily locked by OneDrive or
- * antivirus can never be replaced with a truncated or empty document.
- */
-export async function persistMeetingPatch(
-  meetingId: string,
-  patch: Record<string, unknown>,
-): Promise<boolean> {
-  try {
-    const res = await commands.meetingsStoreLoad();
-    if (res.status !== "ok" || !res.data.trim()) return false;
-    const list = JSON.parse(res.data) as Array<Record<string, unknown>>;
-    if (!Array.isArray(list)) return false;
-    let found = false;
-    const next = list.map((m) => {
-      if (m && m.id === meetingId) {
-        found = true;
-        return { ...m, ...patch };
-      }
-      return m;
-    });
-    if (!found) return false; // meeting deleted while the work was running
-    const saved = await commands.meetingsStoreSave(JSON.stringify(next));
-    return saved.status === "ok";
-  } catch (e) {
-    console.error("Could not persist meeting patch:", e);
-    return false;
-  }
-}
-
-/**
- * Prepend a brand-new meeting to the store on disk.
- *
- * The import path needs this: transcription of a 45-minute file takes minutes,
- * and if the view is gone when it finishes there is no React state to add the
- * meeting to. Without this the entire import — transcript included — evaporated.
- */
-export async function persistNewMeeting(
-  meeting: Record<string, unknown>,
-): Promise<boolean> {
-  try {
-    const res = await commands.meetingsStoreLoad();
-    if (res.status !== "ok") return false;
-    const list = res.data.trim()
-      ? (JSON.parse(res.data) as Array<Record<string, unknown>>)
-      : [];
-    if (!Array.isArray(list)) return false;
-    if (list.some((m) => m && m.id === meeting.id)) return true; // already there
-    const saved = await commands.meetingsStoreSave(
-      JSON.stringify([meeting, ...list]),
-    );
-    return saved.status === "ok";
-  } catch (e) {
-    console.error("Could not persist imported meeting:", e);
-    return false;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Delta listener, registered ONCE at module load rather than per-mount. This is
-// what lets the live preview keep accumulating while the tab is closed, so
-// coming back shows the text generated in the meantime instead of a blank box.
 let deltaListenerAttached = false;
+let globalListenersAttached = false;
 
-function attachDeltaListener(
-  set: (fn: (s: MeetingJobsState) => Partial<MeetingJobsState>) => void,
-) {
+function attachDeltaListener(set: SetState) {
   if (deltaListenerAttached) return;
   deltaListenerAttached = true;
-  // Review finding: the flag was set before the async registration resolved and
-  // there was no catch, so a rejected `listen()` killed the live preview for the
-  // whole session AND produced an unhandled rejection. Reset on failure so the
-  // next run retries; the preview is cosmetic, the run itself is unaffected.
+  // Reset on failure so the next run retries; the preview is cosmetic, the
+  // run itself is unaffected (review finding, v1.30.2).
   listen<string>("meeting-postprocess-delta", (e) => {
     set((s) =>
-      s.job && s.job.status === "running"
-        ? { job: { ...s.job, live: s.job.live + e.payload } }
-        : {},
+      s.job ? { job: { ...s.job, live: s.job.live + e.payload } } : {},
     );
   }).catch((err) => {
     deltaListenerAttached = false;
@@ -181,88 +200,454 @@ function attachDeltaListener(
   });
 }
 
-export const useMeetingJobs = create<MeetingJobsState>((set, get) => ({
-  job: null,
-
-  start: async ({ meetingId, kind, text, prompt, trimKey }) => {
-    // One slot, one job. The UI disables its controls while a job runs, so this
-    // is a backstop — but without it a second start would overwrite the slot and
-    // the first run's answer would arrive to a job that no longer exists,
-    // silently. Refusing is the only outcome that cannot lose work.
-    const existing = get().job;
-    if (existing && existing.status === "running") {
-      console.warn(
-        `Refusing to start a second post-process run; ${existing.meetingId} is still generating.`,
+function attachGlobalListeners(set: SetState) {
+  if (globalListenersAttached) return;
+  globalListenersAttached = true;
+  // Chunked-transcription progress, for whichever task is running.
+  listen<{ id: string; window: number; total: number | null }>(
+    "meeting-transcribe-progress",
+    (e) => {
+      set((s) =>
+        s.task
+          ? {
+              task: {
+                ...s.task,
+                progress: { window: e.payload.window, total: e.payload.total },
+              },
+            }
+          : {},
       );
-      return false;
-    }
+    },
+  ).catch((err) =>
+    console.error("Could not attach the transcription progress listener:", err),
+  );
+  // Capture-health warnings raised DURING a meeting (silent microphone, no
+  // system audio). A toast rather than Meetings-page state: the point is to
+  // reach the user wherever they are in the app, while they can still fix it.
+  listen<string>("meeting-capture-warning", (e) => {
+    toast.warning(e.payload, { duration: 30_000 });
+  }).catch((err) =>
+    console.error("Could not attach the capture-warning listener:", err),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+
+function errText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** Say where a result went when it did NOT land on screen. */
+function reportLanding(
+  outcome: DeliveryOutcome,
+  msgs: { done: string; saved: string; what: string },
+) {
+  switch (outcome) {
+    case "shown":
+      return;
+    case "view":
+      toast.success(msgs.done);
+      return;
+    case "disk":
+      toast.success(msgs.saved);
+      return;
+    case "missing":
+      toast.message(
+        `${msgs.what} finished, but that meeting has been deleted.`,
+      );
+      return;
+    case "failed":
+      toast.error(
+        `${msgs.what} finished, but the meetings store could not be written. Nothing on disk was changed; please try again.`,
+      );
+      return;
+  }
+}
+
+const NOTES_MSGS = {
+  done: "Meeting notes are ready.",
+  saved: "Meeting notes are ready and saved — open Meetings to see them.",
+  what: "Post-processing",
+};
+const TRANSCRIPT_MSGS = {
+  done: "Transcription finished.",
+  saved: "Transcription finished and was saved.",
+  what: "Transcription",
+};
+
+/** Re-transcribe recorded WAVs chronologically; non-WAV imports per file. */
+async function transcribeAudio(
+  micPath: string | null,
+  systemPath: string | null,
+): Promise<TranscriptPatch> {
+  const isWav = (p: string | null) => !!p && /\.wav$/i.test(p);
+  if (isWav(micPath) || isWav(systemPath)) {
+    const r = await commands.meetingTranscribeMerge(
+      isWav(micPath) ? micPath : null,
+      isWav(systemPath) ? systemPath : null,
+    );
+    if (r.status !== "ok") throw new Error(r.error);
+    const transcript = r.data as TranscriptSegLike[];
+    const join = (src: string) =>
+      transcript
+        .filter((s) => s.source === src)
+        .map((s) => s.text)
+        .join(" ");
+    return { you: join("you"), others: join("others"), transcript };
+  }
+  const tx = async (path: string | null) => {
+    if (!path) return "";
+    const r = await commands.meetingTranscribeFile(path);
+    if (r.status === "ok") return r.data;
+    throw new Error(r.error);
+  };
+  const you = await tx(micPath);
+  const others = await tx(systemPath);
+  return { you, others, transcript: [] };
+}
+
+// ---------------------------------------------------------------------------
+
+export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
+  attachGlobalListeners(set);
+
+  const isBusy = () => !!get().task || !!get().job;
+
+  const refuse = () => {
+    const s = get();
+    const what = s.task?.label ?? (s.job ? "generating notes" : "another job");
+    toast.message(
+      `Busy ${what} — one job at a time. Try again when it finishes.`,
+    );
+    return false;
+  };
+
+  /** Claim the task slot. Returns the claim time (its identity) or null. */
+  const claimTask = (t: Omit<MeetingTask, "startedAt" | "progress">) => {
+    if (isBusy()) return null;
+    const startedAt = Date.now();
+    set(() => ({ task: { ...t, startedAt, progress: null } }));
+    return startedAt;
+  };
+  const releaseTask = (startedAt: number) =>
+    set((s) =>
+      s.task && s.task.startedAt === startedAt ? { task: null } : {},
+    );
+
+  /**
+   * Run one model job in the single job slot and deliver its patch. Claims the
+   * slot SYNCHRONOUSLY (before the first await), so callers can hand over from
+   * a task without the buttons flickering idle in between.
+   */
+  const runJob = async (args: {
+    meetingId: string;
+    kind: MeetingJobKind;
+    text: string;
+    prompt: string;
+    patchFor: (result: string) => Record<string, unknown>;
+    /** Called with where the result landed; default reports it as notes. */
+    onLanded?: (outcome: DeliveryOutcome) => void;
+    failLabel: string;
+  }): Promise<boolean> => {
+    if (isBusy()) return false;
     attachDeltaListener(set);
-    set({
+    const startedAt = Date.now();
+    set(() => ({
       job: {
-        meetingId,
-        kind,
-        startedAt: Date.now(),
+        meetingId: args.meetingId,
+        kind: args.kind,
+        startedAt,
         live: "",
-        status: "running",
-        consumed: false,
+        status: "running" as const,
       },
-    });
-
+    }));
     try {
-      const r = await commands.meetingPostProcess(text, prompt);
+      const r = await commands.meetingPostProcess(args.text, args.prompt);
       if (r.status !== "ok") throw new Error(r.error);
-
-      const result: MeetingJobResult = {
-        processed: r.data,
-        processPrompt: prompt,
-        processedTrimKey: trimKey,
-      };
-      set((s) =>
-        s.job && s.job.meetingId === meetingId
-          ? { job: { ...s.job, status: "done", result, live: "" } }
-          : {},
+      const outcome = await meetingsBridge.deliverPatch(
+        args.meetingId,
+        args.patchFor(r.data),
       );
-
-      // Give a mounted view its chance, then guarantee the result reaches disk.
-      //
-      // Review finding: this was a check-then-act. It read `!consumed`, then
-      // awaited a multi-megabyte store load, then wrote back the snapshot it had
-      // read. If the view committed during that await — plausible on a long
-      // transcript, where React is busy re-rendering the streamed markdown —
-      // the write reverted every edit made since the last save. Claiming the
-      // job SYNCHRONOUSLY before any await closes the window: after this `set`,
-      // `consume()` returns null and the view leaves the disk write to us.
-      window.setTimeout(() => {
-        const j = get().job;
-        if (!j || j.meetingId !== meetingId || j.consumed || !j.result) return;
-        set({ job: { ...j, consumed: true } });
-        void persistMeetingPatch(meetingId, { ...j.result }).then((ok) => {
-          if (!ok) {
-            console.error(
-              "Post-process result could not be written to the meetings store.",
-            );
-          }
-        });
-      }, ADOPTION_GRACE_MS);
+      (args.onLanded ?? ((o) => reportLanding(o, NOTES_MSGS)))(outcome);
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      set((s) =>
-        s.job && s.job.meetingId === meetingId
-          ? { job: { ...s.job, status: "error", error: message, live: "" } }
-          : {},
-      );
+      toast.error(`${args.failLabel} failed: ${errText(e)}`);
+    } finally {
+      set((s) => (s.job && s.job.startedAt === startedAt ? { job: null } : {}));
     }
     return true;
-  },
+  };
 
-  consume: (meetingId) => {
-    const j = get().job;
-    if (!j || j.meetingId !== meetingId || j.status !== "done" || !j.result) {
-      return null;
-    }
-    set({ job: { ...j, consumed: true } });
-    return j.result;
-  },
+  const notesJob = (a: {
+    meetingId: string;
+    kind: "post" | "both";
+    text: string;
+    prompt: string;
+    trimKey: string;
+  }) =>
+    runJob({
+      meetingId: a.meetingId,
+      kind: a.kind,
+      text: a.text,
+      prompt: a.prompt,
+      failLabel: "Post-processing",
+      patchFor: (processed) => ({
+        processed,
+        processPrompt: a.prompt,
+        processedTrimKey: a.trimKey,
+      }),
+    });
 
-  clear: () => set({ job: null }),
-}));
+  return {
+    job: null,
+    task: null,
+    stopping: null,
+
+    start: async (a) => {
+      if (isBusy()) return refuse();
+      return notesJob(a);
+    },
+
+    refine: async ({ meetingId, previous, feedback }) => {
+      if (isBusy()) return refuse();
+      const prompt =
+        "You are revising EXISTING meeting notes based on the reader's feedback. " +
+        "Apply the feedback faithfully, keep the same Markdown structure and headings where still appropriate, " +
+        "do not invent facts or add content not supported by the notes, and output ONLY the revised notes " +
+        'with no preamble or commentary. Feedback: "' +
+        feedback +
+        '".';
+      let landed = false;
+      await runJob({
+        meetingId,
+        kind: "refine",
+        text: previous.trim(),
+        prompt,
+        failLabel: "Refine",
+        patchFor: (processed) => ({ processed }),
+        onLanded: (outcome) => {
+          if (outcome === "missing" || outcome === "failed") {
+            reportLanding(outcome, {
+              ...NOTES_MSGS,
+              what: "Refining the notes",
+            });
+            return;
+          }
+          landed = true;
+          toast.success(
+            outcome === "disk" ? "Notes refined and saved." : "Notes refined.",
+            {
+              action: {
+                label: "Undo",
+                // Through the bridge like everything else, so Undo works whether
+                // or not the Meetings view is open when it is clicked.
+                onClick: () => {
+                  void meetingsBridge
+                    .deliverPatch(meetingId, { processed: previous })
+                    .then((o) => {
+                      if (o === "failed" || o === "missing") {
+                        toast.error(
+                          "Could not undo — the notes could not be saved.",
+                        );
+                      }
+                    });
+                },
+              },
+            },
+          );
+        },
+      });
+      return landed;
+    },
+
+    transcribe: async ({
+      meetingId,
+      title,
+      micPath,
+      systemPath,
+      thenNotes,
+    }) => {
+      const claim = claimTask({
+        kind: thenNotes ? "both" : "transcribe",
+        meetingId,
+        label: `transcribing “${title}”`,
+      });
+      if (claim === null) return refuse();
+      try {
+        const patch = await transcribeAudio(micPath, systemPath);
+        const outcome = await meetingsBridge.deliverPatch(meetingId, {
+          ...patch,
+        });
+        if (outcome === "missing" || outcome === "failed") {
+          reportLanding(outcome, TRANSCRIPT_MSGS);
+          return false;
+        }
+        const empty = !patch.you.trim() && !patch.others.trim();
+        if (!thenNotes) {
+          if (empty) toast.message("Still no speech found.");
+          else reportLanding(outcome, TRANSCRIPT_MSGS);
+          return true;
+        }
+        const text = thenNotes.buildText(patch);
+        if (!text.trim()) {
+          toast.message("No speech found to post-process.");
+          return true;
+        }
+        // Hand over to the notes job: release the task first (runJob refuses
+        // while any task is held); runJob claims its slot synchronously.
+        releaseTask(claim);
+        void notesJob({
+          meetingId,
+          kind: "both",
+          text,
+          prompt: thenNotes.prompt,
+          trimKey: thenNotes.trimKey,
+        });
+        return true;
+      } catch (e) {
+        toast.error(
+          `${thenNotes ? "Transcribe + post-process" : "Re-transcription"} failed: ${errText(e)}`,
+        );
+        return false;
+      } finally {
+        releaseTask(claim);
+      }
+    },
+
+    importFile: async ({ path, label, makeMeeting, notesPrompt }) => {
+      const claim = claimTask({
+        kind: "import",
+        meetingId: null,
+        label: `importing ${label}`,
+      });
+      if (claim === null) return refuse();
+      try {
+        const r = await commands.meetingTranscribeFile(path);
+        if (r.status !== "ok") {
+          toast.error(`Transcription failed: ${r.error}`);
+          return false;
+        }
+        // Saved the moment a transcript exists, BEFORE any notes (v1.30.2):
+        // the worst case is "transcript but no notes yet", never "nothing".
+        const m = makeMeeting(r.data);
+        const outcome = await meetingsBridge.deliverNew(m, true);
+        if (outcome === "failed") {
+          toast.error(
+            "Transcription finished but the meetings store could not be written. The audio file is untouched; try importing again.",
+          );
+          return false;
+        }
+        toast.success(
+          outcome === "disk"
+            ? "Imported audio transcribed — open Meetings to see it."
+            : "Imported audio transcribed.",
+        );
+        if (notesPrompt !== null && r.data.trim()) {
+          releaseTask(claim);
+          void notesJob({
+            meetingId: m.id,
+            kind: "post",
+            text: r.data,
+            prompt: notesPrompt,
+            trimKey: ":",
+          });
+        }
+        return true;
+      } catch (e) {
+        toast.error(`Import failed: ${errText(e)}`);
+        return false;
+      } finally {
+        releaseTask(claim);
+      }
+    },
+
+    recover: async ({ path, label, makeMeeting }) => {
+      const claim = claimTask({
+        kind: "recover",
+        meetingId: null,
+        label: `recovering ${label}`,
+        path,
+      });
+      if (claim === null) return refuse();
+      try {
+        const r = await commands.meetingTranscribeFile(path);
+        if (r.status !== "ok") {
+          toast.error(`Transcription failed: ${r.error}`);
+          return false;
+        }
+        const outcome = await meetingsBridge.deliverNew(
+          makeMeeting(r.data),
+          true,
+        );
+        if (outcome === "failed") {
+          toast.error(
+            "Transcription finished but the meetings store could not be written. The recording is untouched; try again.",
+          );
+          return false;
+        }
+        toast.success(
+          outcome === "disk"
+            ? "Recording transcribed and added to your meetings — open Meetings to see it."
+            : "Recording transcribed and added to your meetings.",
+        );
+        return true;
+      } catch (e) {
+        toast.error(`Transcription failed: ${errText(e)}`);
+        return false;
+      } finally {
+        releaseTask(claim);
+      }
+    },
+
+    stopMeeting: async ({ makeMeeting }) => {
+      if (get().stopping) return;
+      set(() => ({ stopping: { startedAt: Date.now() } }));
+      try {
+        const res = await commands.meetingStopCapture();
+        if (res.status !== "ok") {
+          toast.error(`Meeting stop failed: ${res.error}`);
+          return;
+        }
+        const { you, others, segments, mic_path, system_path } = res.data;
+        const warnings = res.data.warnings ?? [];
+        // Say WHY first (silent mic, no system audio, a side rebuilt from the
+        // recording). These used to surface only as an empty transcript.
+        for (const w of warnings) toast.warning(w, { duration: 30_000 });
+        if (!you.trim() && !others.trim() && !mic_path && !system_path) {
+          toast.message("No audio captured.");
+          return;
+        }
+        const m = makeMeeting({
+          you,
+          others,
+          segments: segments as TranscriptSegLike[],
+          mic_path,
+          system_path,
+        });
+        const outcome = await meetingsBridge.deliverNew(m, true);
+        if (outcome === "failed") {
+          toast.error(
+            "The meeting was recorded, but the meetings store could not be written. The audio is safe — find it under Recordings and transcribe it from there.",
+          );
+          return;
+        }
+        if (outcome === "disk") {
+          toast.success("Meeting saved — open Meetings to see it.");
+        }
+        if (you.trim() || others.trim()) {
+          // v1.17.0: warm the local notes model so the first "Generate notes"
+          // doesn't pay the cold model-load cost.
+          commands.meetingPrewarmPostProcess().catch(() => {});
+        } else if (warnings.length === 0) {
+          toast.message(
+            "Audio saved, but transcription was empty — you can re-transcribe it.",
+          );
+        }
+      } catch (e) {
+        toast.error(`Meeting stop failed: ${errText(e)}`);
+      } finally {
+        set(() => ({ stopping: null }));
+      }
+    },
+  };
+});

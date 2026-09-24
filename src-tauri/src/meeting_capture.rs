@@ -110,6 +110,89 @@ pub(crate) const SEG_QUIET_RMS: f32 = 0.010;
 /// closing tail) bypass the VAD and fall back to the energy gate.
 const VAD_FRAME_SAMPLES: usize = TARGET_RATE * 30 / 1000;
 
+// ---------------------------------------------------------------------------
+// Kōrero (meetings reliability, 2026-09-25): per-source LIVE capture health.
+//
+// Two failures were invisible until the meeting was over:
+//
+// 1. A stream that captured nothing usable — the wrong microphone (a 34-minute
+//    meeting peaked at RMS 0.007, below the 0.010 gate, so not one
+//    segment was ever cut), or loopback on an output device the call wasn't
+//    using (a 63-minute meeting produced 12 s of "others" audio).
+//    The user found out at Stop, as "transcription was empty".
+// 2. A live segment dropped because transcription fell behind. The warning
+//    said "recoverable from the WAV", but Stop only rebuilt a source from its
+//    WAV when that source had NO live text at all, so a partial loss was
+//    permanent and silent.
+//
+// These counters feed both: the consumer checks them while the meeting runs
+// (so the user can fix a device DURING the meeting), and Stop reads them to
+// decide whether the live transcript for a source can be trusted.
+//
+// Statics, not plumbing: exactly one meeting records at a time (enforced in
+// `meeting_start_capture`), the counters are reset at every start, and only
+// the two LIVE segmenters opt in (`with_live_stats`) — the offline
+// re-segmenting path never touches them.
+// ---------------------------------------------------------------------------
+
+/// Health counters for one live source ("you" or "others").
+pub(crate) struct LiveSourceStats {
+    /// 16 kHz samples that reached the segmenter (paused audio never does).
+    pub(crate) samples: std::sync::atomic::AtomicU64,
+    /// 30 ms frames at or above the speech energy gate (`SEG_QUIET_RMS`).
+    pub(crate) loud_frames: std::sync::atomic::AtomicU64,
+    /// Highest frame RMS seen, in millionths (atomics hold integers).
+    pub(crate) peak_rms_micro: std::sync::atomic::AtomicU64,
+    /// Segments dropped because live transcription was falling behind.
+    pub(crate) dropped: std::sync::atomic::AtomicU64,
+}
+
+impl LiveSourceStats {
+    const fn new() -> Self {
+        Self {
+            samples: std::sync::atomic::AtomicU64::new(0),
+            loud_frames: std::sync::atomic::AtomicU64::new(0),
+            peak_rms_micro: std::sync::atomic::AtomicU64::new(0),
+            dropped: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn reset(&self) {
+        self.samples.store(0, Ordering::Relaxed);
+        self.loud_frames.store(0, Ordering::Relaxed);
+        self.peak_rms_micro.store(0, Ordering::Relaxed);
+        self.dropped.store(0, Ordering::Relaxed);
+    }
+
+    /// Seconds of audio this source has delivered so far.
+    pub(crate) fn seconds(&self) -> u64 {
+        self.samples.load(Ordering::Relaxed) / TARGET_RATE as u64
+    }
+
+    pub(crate) fn peak_rms(&self) -> f32 {
+        self.peak_rms_micro.load(Ordering::Relaxed) as f32 / 1_000_000.0
+    }
+}
+
+static LIVE_STATS_YOU: LiveSourceStats = LiveSourceStats::new();
+static LIVE_STATS_OTHERS: LiveSourceStats = LiveSourceStats::new();
+
+/// The live counters for a source tag. Anything that is not "you" is the
+/// system side — the only two tags the capture code ever uses.
+pub(crate) fn live_stats(source: &str) -> &'static LiveSourceStats {
+    if source == "you" {
+        &LIVE_STATS_YOU
+    } else {
+        &LIVE_STATS_OTHERS
+    }
+}
+
+/// Zero both sources. Called at the start of every meeting.
+pub(crate) fn reset_live_stats() {
+    LIVE_STATS_YOU.reset();
+    LIVE_STATS_OTHERS.reset();
+}
+
 /// Build the optional speech-gating VAD for a meeting segmenter. Resolves the
 /// SAME bundled Silero model the dictation recorder uses and wraps it in the
 /// SAME smoothing (prefill/hangover/onset) so behaviour is consistent across
@@ -182,6 +265,10 @@ pub(crate) struct Segmenter {
     /// v1.19.0: did any frame in the current buffer register as speech? With a
     /// VAD this is the cut gate; without one the `speech_peak` test is used.
     had_voice: bool,
+    /// Kōrero (meetings reliability, 2026-09-25): the live health counters for
+    /// this source. `None` on the offline re-segmenting path, which must never
+    /// count towards the health of a meeting that may be recording right now.
+    stats: Option<&'static LiveSourceStats>,
 }
 
 impl Segmenter {
@@ -201,7 +288,15 @@ impl Segmenter {
             seg_start: 0,
             vad,
             had_voice: false,
+            stats: None,
         }
+    }
+
+    /// Opt this segmenter into the live health counters for its source. Only
+    /// the two live capture paths call this (cpal and native WASAPI).
+    pub(crate) fn with_live_stats(mut self) -> Self {
+        self.stats = Some(live_stats(self.source));
+        self
     }
 
     /// Feed one resampled 16 kHz frame (the ~30 ms frames the captures emit).
@@ -217,6 +312,14 @@ impl Segmenter {
         let rms = (frame.iter().map(|s| s * s).sum::<f32>() / frame.len() as f32).sqrt();
         self.buf.extend_from_slice(frame);
         self.samples_seen += frame.len();
+        if let Some(st) = self.stats {
+            st.samples.fetch_add(frame.len() as u64, Ordering::Relaxed);
+            if rms >= SEG_QUIET_RMS {
+                st.loud_frames.fetch_add(1, Ordering::Relaxed);
+            }
+            st.peak_rms_micro
+                .fetch_max((rms * 1_000_000.0) as u64, Ordering::Relaxed);
+        }
 
         // Two-stage gate. Stage 1 (cheap): frames below the energy floor are
         // definitely silence — never pay for a VAD inference on them. Stage 2:
@@ -305,9 +408,12 @@ impl Segmenter {
             Ok(()) => {}
             Err(mpsc::TrySendError::Full(_)) => {
                 self.dropped += 1;
+                if let Some(st) = self.stats {
+                    st.dropped.fetch_add(1, Ordering::Relaxed);
+                }
                 log::warn!(
                     "Live transcription falling behind — dropped segment #{} from '{}' \
-                     (the full transcript is still recoverable from the WAV).",
+                     (Stop will rebuild this speaker from the WAV).",
                     self.dropped,
                     self.source
                 );
@@ -408,8 +514,10 @@ impl StreamCapture {
             // Phase B (v1.14.0): optional live segmenter. v1.19.0: gated by the
             // same bundled Silero model the dictation path uses (built on this
             // worker thread — the VAD is not Send).
-            let mut segmenter =
-                segments.map(|tx| Segmenter::new(source, tx, build_meeting_vad(app.as_ref(), source)));
+            let mut segmenter = segments.map(|tx| {
+                Segmenter::new(source, tx, build_meeting_vad(app.as_ref(), source))
+                    .with_live_stats()
+            });
 
             loop {
                 match rx.recv_timeout(Duration::from_millis(200)) {
@@ -664,4 +772,44 @@ where
         |e| log::error!("Meeting capture stream error: {e}"),
         None,
     )
+}
+
+/// Kōrero (meetings reliability, 2026-09-25): live capture health counters.
+/// ONE test touches the statics, so parallel test threads cannot interleave.
+#[cfg(test)]
+mod korero_live_stats_tests {
+    use super::*;
+
+    #[test]
+    fn live_segmenters_count_audio_loudness_and_drops_offline_ones_do_not() {
+        reset_live_stats();
+        // A zero-capacity channel with no receiver ready: every cut is a drop.
+        let (tx, _rx) = mpsc::sync_channel::<LiveSegment>(0);
+        let mut live = Segmenter::new("you", tx, None).with_live_stats();
+        let quiet = vec![0.001f32; 480]; // ~-60 dBFS, below the gate
+        let loud = vec![0.2f32; 480]; // well above it
+        for _ in 0..100 {
+            live.push(&loud); // 3 s of "speech"
+        }
+        for _ in 0..40 {
+            live.push(&quiet); // 1.2 s of quiet -> cuts a segment -> dropped
+        }
+        let st = live_stats("you");
+        assert_eq!(st.samples.load(Ordering::Relaxed), 140 * 480);
+        assert_eq!(st.loud_frames.load(Ordering::Relaxed), 100);
+        assert!((st.peak_rms() - 0.2).abs() < 0.001, "peak {}", st.peak_rms());
+        assert_eq!(st.dropped.load(Ordering::Relaxed), 1, "the full channel dropped the segment");
+
+        // The offline re-segmenting path must never move the live counters.
+        let (tx2, _rx2) = mpsc::sync_channel::<LiveSegment>(0);
+        let mut offline = Segmenter::new("you", tx2, None);
+        for _ in 0..100 {
+            offline.push(&loud);
+        }
+        assert_eq!(st.loud_frames.load(Ordering::Relaxed), 100, "offline pushes leaked into live stats");
+
+        reset_live_stats();
+        assert_eq!(st.samples.load(Ordering::Relaxed), 0);
+        assert_eq!(live_stats("others").samples.load(Ordering::Relaxed), 0);
+    }
 }

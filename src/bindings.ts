@@ -682,7 +682,7 @@ async meetingStartCapture() : Promise<Result<boolean, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async meetingStopCapture() : Promise<Result<{ you: string; others: string; segments: Array<{ source: string; text: string }>; mic_path: string | null; system_path: string | null }, string>> {
+async meetingStopCapture() : Promise<Result<{ you: string; others: string; segments: Array<{ source: string; text: string }>; mic_path: string | null; system_path: string | null; warnings: string[] }, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("meeting_stop_capture") };
 } catch (e) {
