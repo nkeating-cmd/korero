@@ -2130,8 +2130,10 @@ fn transcribe_retrying(tm: &TranscriptionManager, samples: Vec<f32>) -> Result<S
 // ---------------------------------------------------------------------------
 
 /// Seconds of microphone audio, all below the speech gate, before the live
-/// meeting warns that the mic is not hearing anyone.
-const MIC_SILENT_WARN_SECS: u64 = 60;
+/// meeting warns that the mic is not hearing anyone. Two minutes, not one: a
+/// user on a headset may simply listen for the first minute of a call, and a
+/// false alarm teaches people to ignore the real one.
+const MIC_SILENT_WARN_SECS: u64 = 120;
 /// Seconds of microphone audio before the live meeting judges the system side.
 const SYSTEM_SILENT_WARN_SECS: u64 = 90;
 /// The same checks at Stop, where the whole meeting is known.
@@ -2213,14 +2215,15 @@ fn issue_message(
         (CaptureIssue::MicSilent, true) => format!(
             "Kōrero can't hear your microphone: nothing loud enough to be speech in the last {} \
              (loudest sound {}; speech needs about -40 dBFS). Check which microphone is selected in \
-             Settings and that it isn't muted. The recording is still running.",
+             Settings and that it isn't muted. If you just haven't spoken yet, ignore this. The \
+             recording is still running.",
             fmt_duration(you.secs),
             fmt_dbfs(you.peak_rms),
         ),
         (CaptureIssue::MicSilent, false) => format!(
             "Your microphone recorded nothing loud enough to be speech in this meeting (loudest \
-             sound {}; speech needs about -40 dBFS), so your side is empty. Check which microphone \
-             is selected in Settings and that it isn't muted.",
+             sound {}; speech needs about -40 dBFS), so your side is empty. If you did speak, check \
+             which microphone is selected in Settings and that it isn't muted.",
             fmt_dbfs(you.peak_rms),
         ),
         (CaptureIssue::SystemSilent, true) => format!(
