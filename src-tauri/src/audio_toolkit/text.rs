@@ -493,7 +493,13 @@ pub fn apply_custom_words(text: &str, custom_words: &[String], threshold: f64) -
 
 /// Preserves the case pattern of the original word when applying a replacement
 fn preserve_case_pattern(original: &str, replacement: &str) -> String {
-    if original.chars().all(|c| c.is_uppercase()) {
+    // Kōrero (1.41.0, F14): "all capitals" needs at least TWO letters. A lone
+    // capital is just the start of a word — when Parakeet split "whānau" into
+    // "W Nau", the single "W" was read as all-caps and the fix came out as
+    // "WHĀNAU" in the middle of a sentence. Punctuation no longer counts
+    // either way ("HAPU," is still all-caps).
+    let letters: Vec<char> = original.chars().filter(|c| c.is_alphabetic()).collect();
+    if letters.len() >= 2 && letters.iter().all(|c| c.is_uppercase()) {
         replacement.to_uppercase()
     } else if original.chars().next().map_or(false, |c| c.is_uppercase()) {
         let mut chars: Vec<char> = replacement.chars().collect();
@@ -683,6 +689,15 @@ mod tests {
         assert_eq!(preserve_case_pattern("HELLO", "world"), "WORLD");
         assert_eq!(preserve_case_pattern("Hello", "world"), "World");
         assert_eq!(preserve_case_pattern("hello", "WORLD"), "WORLD");
+    }
+
+    /// Kōrero (1.41.0, F14): a single capital letter is not "all capitals".
+    #[test]
+    fn korero_f14_a_lone_capital_is_not_shouting() {
+        assert_eq!(preserve_case_pattern("W", "whānau"), "Whānau");
+        assert_eq!(preserve_case_pattern("HAP", "hapū"), "HAPŪ");
+        assert_eq!(preserve_case_pattern("HAPU,", "hapū"), "HAPŪ");
+        assert_eq!(preserve_case_pattern("I", "iwi"), "Iwi");
     }
 
     #[test]

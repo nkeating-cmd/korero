@@ -522,6 +522,10 @@ pub struct AppSettings {
     /// curated rows, so an A/B on one does not silently move the other.
     #[serde(default = "default_nz_english_pass_enabled")]
     pub nz_english_pass_enabled: bool,
+    /// Korero (1.41.0, F13): set once `ensure_nz_locale_default` has run on
+    /// this install, so a user who switches back to plain English keeps it.
+    #[serde(default)]
+    pub nz_locale_default_applied: bool,
     /// Curated `reo_lexicon` rows only. The static tables are unaffected.
     #[serde(default = "default_reo_lexicon_enabled")]
     pub reo_lexicon_enabled: bool,
@@ -695,7 +699,35 @@ pub enum WordMatching {
 fn default_selected_language() -> String {
     // Kōrero: default to English. "auto" was upstream default but caused
     // mistriggers on NZ accents in early testing.
-    "en".to_string()
+    //
+    // Kōrero (1.41.0, F13): New Zealand English, not plain "en". The NZ pass
+    // (macrons, NZ place names, NZ spelling) only runs when the language is
+    // "en-NZ" (`is_nz_locale`), so with an "en" default the product's headline
+    // feature never ran for anyone who had not found the "New Zealand English"
+    // switch. The engine still receives "en": `fold_locale_for_engine` folds
+    // the locale before transcription, so recognition itself is unchanged.
+    "en-NZ".to_string()
+}
+
+/// Kōrero (1.41.0, F13): one-time switch of an inherited "en" to "en-NZ".
+///
+/// Changing the default alone would reach only NEW installs: every existing
+/// install has "en" saved from the old default, so the NZ pass would stay off
+/// for exactly the users who already have Kōrero. This runs once per install
+/// (the flag records that it ran), converts only a plain "en" (never "auto",
+/// never another language), and leaves the "New Zealand English" switch in
+/// Settings as the way to opt back out — which then sticks, because the flag
+/// stops this from ever running again.
+fn ensure_nz_locale_default(settings: &mut AppSettings) -> bool {
+    if settings.nz_locale_default_applied {
+        return false;
+    }
+    settings.nz_locale_default_applied = true;
+    if settings.selected_language == "en" {
+        settings.selected_language = "en-NZ".to_string();
+        log::info!("settings: switched the inherited language \"en\" to \"en-NZ\" (one-time, F13)");
+    }
+    true
 }
 
 fn default_overlay_position() -> OverlayPosition {
@@ -1437,6 +1469,7 @@ pub fn get_default_settings() -> AppSettings {
         bias_prompt_shape: BiasPromptShape::default(),
         whisper_custom_word_matching: WordMatching::default(),
         nz_english_pass_enabled: default_nz_english_pass_enabled(),
+        nz_locale_default_applied: false,
         reo_lexicon_enabled: default_reo_lexicon_enabled(),
         selected_model: "".to_string(),
         always_on_microphone: false,
@@ -1555,7 +1588,8 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
         default_settings
     };
 
-    if ensure_post_process_defaults(&mut settings) {
+    // Korero (1.41.0, F13): `|` not `||` — both one-shot migrations must run.
+    if ensure_post_process_defaults(&mut settings) | ensure_nz_locale_default(&mut settings) {
         store.set("settings", serde_json::to_value(&settings).unwrap());
     }
 
@@ -1665,7 +1699,8 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
         default_settings
     };
 
-    if ensure_post_process_defaults(&mut settings) {
+    // Korero (1.41.0, F13): `|` not `||` — both one-shot migrations must run.
+    if ensure_post_process_defaults(&mut settings) | ensure_nz_locale_default(&mut settings) {
         store.set("settings", serde_json::to_value(&settings).unwrap());
     }
 
@@ -1829,5 +1864,66 @@ mod eval_knob_tests {
         )
         .unwrap();
         assert!(!s.update_checks_enabled);
+    }
+}
+
+/// Kōrero (1.41.0, F13): New Zealand English is ON out of the box, for new
+/// installs AND for existing ones that inherited the old "en" default.
+#[cfg(test)]
+mod korero_f13_nz_default_tests {
+    use super::*;
+
+    const MINIMAL: &str = r#"{"bindings":{},"push_to_talk":false,"audio_feedback":false}"#;
+
+    #[test]
+    fn default_settings_run_the_nz_pass() {
+        // The whole of F13 in one assertion: the pass runs only when BOTH the
+        // knob is on AND the language is the NZ locale. Before 1.41.0 the
+        // second half was false for every default install.
+        let s = get_default_settings();
+        assert!(s.nz_english_pass_enabled);
+        assert!(
+            crate::audio_toolkit::is_nz_locale(&s.selected_language),
+            "default language {:?} does not run the NZ pass",
+            s.selected_language
+        );
+    }
+
+    #[test]
+    fn an_older_store_without_a_language_gets_en_nz() {
+        let s: AppSettings = serde_json::from_str(MINIMAL).unwrap();
+        assert!(crate::audio_toolkit::is_nz_locale(&s.selected_language));
+        assert!(!s.nz_locale_default_applied, "an older store has never run the switch");
+    }
+
+    #[test]
+    fn an_inherited_en_is_switched_once_and_only_once() {
+        let mut s: AppSettings = serde_json::from_str(
+            r#"{"bindings":{},"push_to_talk":false,"audio_feedback":false,"selected_language":"en"}"#,
+        )
+        .unwrap();
+        assert!(ensure_nz_locale_default(&mut s), "first run must report a change");
+        assert_eq!(s.selected_language, "en-NZ");
+        assert!(s.nz_locale_default_applied);
+
+        // The user then turns "New Zealand English" OFF. That choice must stick.
+        s.selected_language = "en".to_string();
+        assert!(!ensure_nz_locale_default(&mut s), "second run must be a no-op");
+        assert_eq!(s.selected_language, "en");
+
+        // And the flag survives a save/load round trip.
+        let back: AppSettings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(back.nz_locale_default_applied);
+    }
+
+    #[test]
+    fn other_languages_and_auto_are_never_touched() {
+        for lang in ["auto", "mi", "fr", "zh-Hans", "en-NZ"] {
+            let mut s: AppSettings = serde_json::from_str(MINIMAL).unwrap();
+            s.selected_language = lang.to_string();
+            ensure_nz_locale_default(&mut s);
+            assert_eq!(s.selected_language, lang, "{lang} was changed");
+            assert!(s.nz_locale_default_applied);
+        }
     }
 }
