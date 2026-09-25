@@ -9,15 +9,15 @@ and layers on a full rebrand, several new features, reliability fixes, and secur
 > For the upstream project's documentation, philosophy, and community, see
 > **[handy.computer](https://handy.computer)** and **[cjpais/Handy](https://github.com/cjpais/Handy)**.
 
-Like Handy, Kōrero transcribes **entirely on your machine**: your audio and your transcripts never
-leave it. Speech models download once on first use. Post-processing is opt-in and only ever contacts
-an LLM provider you configure yourself.
+Like Handy, Kōrero transcribes **entirely on your machine**: your audio never leaves it. Post-processing
+(AI clean-up and meeting notes) is off until you turn it on, and then sends transcript text only to the
+LLM provider you choose. Choose Ollama and even that stays on your machine.
 
 Two things do reach the network, and it is worth naming them rather than rounding down to "offline":
 speech models are downloaded on first use, and the app asks GitHub once at startup whether a newer
 release exists. Neither carries audio, transcripts, or anything about you. No telemetry, ever.
 
-Current version: **v1.41.0**.
+Current version: **v1.41.0** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.41.0)).
 
 ---
 
@@ -60,7 +60,7 @@ Current version: **v1.41.0**.
 - **Optional noise suppression** — RNNoise via the pure-Rust [`nnnoiseless`](https://github.com/jneem/nnnoiseless) crate (off by default; 48 kHz mics).
 
 ### Post-processing (LLM clean-up)
-- **9 providers** out of the box — DeepSeek (default), OpenAI, Anthropic Claude, OpenRouter, Groq, Cerebras, z.ai, Bedrock, and a custom/local endpoint.
+- **11 providers** out of the box — DeepSeek (default), OpenAI, Anthropic Claude, Google Gemini, OpenRouter, Groq, Cerebras, z.ai, AWS Bedrock, Ollama (local), and a custom endpoint. Post-processing is off until you turn it on.
 - **Local models via Ollama**, including in-app model pull — plus an **Ollama doctor** (v1.17): detects a missing or stopped Ollama, installs it via winget from inside the app, starts it with one click, **auto-restarts it when a clean-up request finds it down**, and checks it's running at startup.
 - **Curated default prompts** — clean transcript, client email, Slack/WhatsApp, meeting note, red-team, and **NZ English + te reo Māori** (restores macrons, never translates te reo, fixes common mis-hearings like "far no" → *whānau*).
 
@@ -80,43 +80,58 @@ Current version: **v1.41.0**.
 ### Security & supply chain
 - **API keys stored in the OS keychain** (Windows Credential Manager), never written to disk in plaintext, with a one-time migration + pre-migration backup and clear failure surfacing.
 - **Content-Security-Policy** added to the webview; **filesystem capability narrowed** to the app's own data directory.
-- A **clippy** gate plus **`cargo-audit`** and **`cargo-deny`** (licence / source / advisory) checks, and an evidence contract of 23 named checks that each state a claim, a command and an expected exit code. CI runs `cargo test --locked` on every push.
-- Threat model documented.
+- **Signed updates** — the app installs an update only if its signature matches the public key built into it.
+- CI runs `cargo test --locked` and a frontend build on every push to `main`, with `clippy` as an advisory check. `src-tauri/deny.toml` holds the `cargo-deny` licence, source and advisory rules.
 
 ### Models & acceleration
 - **Default model: Parakeet V3** — CPU-efficient, NZ-accent friendly, with DirectML GPU acceleration on Windows.
+- **Whisper models run on the CPU on Windows.** This build leaves out Whisper's Vulkan GPU support to avoid a build dependency, so the larger Whisper models can be much slower than real time. Use Parakeet for everyday dictation.
 
 ### Build & distribution
-- **Windows NSIS installer** and a **standard portable** build (model downloads on first run).
-- A **fully-offline portable edition** with Parakeet V3 pre-installed (no first-run download).
+- **Windows NSIS installer** with **signed automatic updates** from GitHub Releases.
+- **Portable mode** (inherited from Handy): put an empty file named `portable` next to `korero.exe` and Kōrero keeps its settings, models and recordings in a `Data` folder beside it instead of in `%APPDATA%`.
 
 ---
 
 ## Install
 
-Grab the latest **`Korero_<version>_x64-setup.exe`** from the
-[Releases](https://github.com/nkeating-cmd/korero/releases) page, or build from source below.
+Download **`Korero_<version>_x64-setup.exe`** from the
+[latest release](https://github.com/nkeating-cmd/korero/releases/latest) and run it, or build from source below.
+After that, Kōrero keeps itself up to date: it checks GitHub once at startup and offers each new version.
+Your settings, meetings and recordings are kept.
+
+The installer isn't code-signed yet, so Windows SmartScreen may warn you: choose **More info → Run anyway**.
+Updates are protected separately: the app installs one only if its signature matches.
 
 WebView2 runtime is required (ships with Windows 11 / Microsoft Edge).
 
 ## Build from source
 
-Windows (PowerShell):
+Kōrero is built and tested on Windows only.
+
+Prerequisites: Rust (stable), Bun, Visual Studio 2022 Build Tools (C++ x64), LLVM, and CMake, plus the
+[Tauri prerequisites](https://tauri.app/start/prerequisites/).
 
 ```powershell
-# installer (NSIS .exe) + standard portable (model downloads on first run)
-powershell -NoProfile -ExecutionPolicy Bypass -File .\korero-build.ps1 -Mode all
+bun install
 
-# fully-offline portable with Parakeet V3 pre-installed (no download)
-powershell -NoProfile -ExecutionPolicy Bypass -File .\korero-build.ps1 -Mode portable -OfflineModel
+# live dev (hot reload)
+bun run tauri dev
 
-# live dev (HMR)
-powershell -NoProfile -ExecutionPolicy Bypass -File .\korero-build.ps1 -Mode dev
+# tests
+bun run test:unit
+cd src-tauri; cargo test --locked; cd ..
+
+# installer, built the way CI builds it (unsigned, no update files)
+bun run tauri build --bundles nsis --config .github/ci-no-updater.json
 ```
 
-Prerequisites: Rust, Bun, Visual Studio 2022 Build Tools (C++ x64), LLVM, and CMake.
+The installer lands in `src-tauri\target\release\bundle\nsis\`. A plain `bun run tauri build` also writes
+update-signature files, so it needs the release signing key; use the `--config` line above instead.
+
 MSI is intentionally not built — WiX 3 can't handle the macron in the product name — so the
-NSIS `.exe` is the installer.
+NSIS `.exe` is the installer. [`BUILD.md`](BUILD.md) is upstream Handy's guide; it also covers macOS
+and Linux, which Kōrero doesn't test.
 
 ## Licence & attribution
 
