@@ -506,6 +506,29 @@ pub struct AppSettings {
     pub autostart_enabled: bool,
     #[serde(default = "default_update_checks_enabled")]
     pub update_checks_enabled: bool,
+
+    // ---- Kōrero (v1.40.0, M1e): accuracy-round knobs. No UI. Each is a
+    // serde-default setting so the measured code path IS the shipped code
+    // path — an A/B winner ships by changing the default, nothing else.
+    /// Shape of the Whisper `initial_prompt` (custom words + corrections).
+    #[serde(default)]
+    pub bias_prompt_shape: BiasPromptShape,
+    /// Custom-word matcher policy on Whisper engines.
+    #[serde(default)]
+    pub whisper_custom_word_matching: WordMatching,
+    /// Korero (v1.40.0, R1.1): the whole New Zealand English pass -- the static
+    /// macron tables, the curated lexicon AND NZ spelling correction. Named for
+    /// what it actually gates; `reo_lexicon_enabled` below gates only the
+    /// curated rows, so an A/B on one does not silently move the other.
+    #[serde(default = "default_nz_english_pass_enabled")]
+    pub nz_english_pass_enabled: bool,
+    /// Korero (1.41.0, F13): set once `ensure_nz_locale_default` has run on
+    /// this install, so a user who switches back to plain English keeps it.
+    #[serde(default)]
+    pub nz_locale_default_applied: bool,
+    /// Curated `reo_lexicon` rows only. The static tables are unaffected.
+    #[serde(default = "default_reo_lexicon_enabled")]
+    pub reo_lexicon_enabled: bool,
     #[serde(default = "default_model")]
     pub selected_model: String,
     #[serde(default = "default_always_on_microphone")]
@@ -642,10 +665,69 @@ fn default_update_checks_enabled() -> bool {
     true
 }
 
+fn default_reo_lexicon_enabled() -> bool {
+    true
+}
+
+fn default_nz_english_pass_enabled() -> bool {
+    true
+}
+
+/// Kōrero (v1.40.0): shape of the Whisper `initial_prompt`. `List` is the
+/// byte-identical v1.19.1 behaviour and the default until a paired-bootstrap
+/// comparison says otherwise. `Probe` exists only for the eval harness.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BiasPromptShape {
+    #[default]
+    List,
+    Sentence,
+    Off,
+    Probe,
+}
+
+/// Kōrero (v1.40.0): custom-word matcher policy on Whisper. `Exact` is the
+/// v1.30.0 behaviour (item 7) and stays the default until measured.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WordMatching {
+    #[default]
+    Exact,
+    Fuzzy,
+}
+
 fn default_selected_language() -> String {
     // Kōrero: default to English. "auto" was upstream default but caused
     // mistriggers on NZ accents in early testing.
-    "en".to_string()
+    //
+    // Kōrero (1.41.0, F13): New Zealand English, not plain "en". The NZ pass
+    // (macrons, NZ place names, NZ spelling) only runs when the language is
+    // "en-NZ" (`is_nz_locale`), so with an "en" default the product's headline
+    // feature never ran for anyone who had not found the "New Zealand English"
+    // switch. The engine still receives "en": `fold_locale_for_engine` folds
+    // the locale before transcription, so recognition itself is unchanged.
+    "en-NZ".to_string()
+}
+
+/// Kōrero (1.41.0, F13): one-time switch of an inherited "en" to "en-NZ".
+///
+/// Changing the default alone would reach only NEW installs: every existing
+/// install has "en" saved from the old default, so the NZ pass would stay off
+/// for exactly the users who already have Kōrero. This runs once per install
+/// (the flag records that it ran), converts only a plain "en" (never "auto",
+/// never another language), and leaves the "New Zealand English" switch in
+/// Settings as the way to opt back out — which then sticks, because the flag
+/// stops this from ever running again.
+fn ensure_nz_locale_default(settings: &mut AppSettings) -> bool {
+    if settings.nz_locale_default_applied {
+        return false;
+    }
+    settings.nz_locale_default_applied = true;
+    if settings.selected_language == "en" {
+        settings.selected_language = "en-NZ".to_string();
+        log::info!("settings: switched the inherited language \"en\" to \"en-NZ\" (one-time, F13)");
+    }
+    true
 }
 
 fn default_overlay_position() -> OverlayPosition {
@@ -1072,7 +1154,7 @@ fn default_post_process_prompts() -> Vec<LLMPrompt> {
             // boundaries without conflicting with the earlier "do not reorder" guard.
             // Migration in ensure_post_process_defaults() upgrades existing installs
             // that still carry the v1.6.0 default text.
-            prompt: "Clean this transcript using NZ English spelling (colour, organise, whānau, etc.):\n1. Fix spelling, capitalisation, and punctuation errors\n2. Convert number words to digits (twenty-five → 25, ten percent → 10%, five dollars → $5)\n3. Replace spoken punctuation with symbols (period → ., comma → ,, question mark → ?)\n4. Remove filler words and false starts (um, uh, er, like as filler), and resolve self-corrections by keeping only the final intended wording (for example 'send it to, uh, send it to Sarah' becomes 'send it to Sarah', and 'meet on Tuesday, no, Wednesday' becomes 'meet on Wednesday') without changing the meaning\n5. Preserve te reo Māori words exactly as spoken\n6. Do NOT add, invent, or insert any speaker labels. ONLY if the transcript already begins lines with speaker labels (e.g. \"You:\" or a name): keep every existing label exactly as written, never merge, move, drop, or reassign text across speakers, and tidy wording only WITHIN each speaker's turn (join broken fragments inside a turn, never across a label). If the text has NO speaker labels — e.g. single-speaker dictation — return clean prose with no \"You:\" or name prefixes added.\n\nPreserve exact meaning. Do not add content or invent details. Use NZ English throughout.\n\nReturn ONLY the cleaned transcript — no preamble, notes, headings, or repetition of these instructions. Never write a lead-in such as \"Here is the cleaned transcript\".\n\nTranscript:\n${output}".to_string(),
+            prompt: "Clean this transcript using NZ English spelling (colour, organise, whānau, etc.):\n1. Fix spelling, capitalisation, and punctuation errors\n2. Convert number words to digits (twenty-five → 25, ten percent → 10%, five dollars → $5)\n3. Replace spoken punctuation with symbols (period → ., comma → ,, question mark → ?)\n4. Remove filler words and false starts (um, uh, er, like as filler), and resolve self-corrections by keeping only the final intended wording (for example 'send it to, uh, send it to Sarah' becomes 'send it to Sarah', and 'meet on Tuesday, no, Wednesday' becomes 'meet on Wednesday') without changing the meaning\n5. Preserve te reo Māori words exactly as spoken\n5b. PRESERVE EXISTING STRUCTURE. If the text already contains line breaks or lines beginning with '- ', keep every one of them exactly as they are. They were produced deliberately before you saw this text, from cues the speaker actually said. Never merge structured lines back into a paragraph.\n5c. Format a spoken list as a bulleted list. If the speaker enumerated items — by ordinals ('first… second… third'), by counting ('number one… number two'), or simply by listing several parallel actions or things — put each item on its own line beginning with '- '. Drop the spoken enumerator itself ('First, call the plumber' becomes '- call the plumber'). Use a numbered list ('1. ') ONLY when the order genuinely matters, such as steps that must happen in sequence. If the text is ordinary prose, leave it as prose — do not invent a list where the speaker did not make one.\n6. Do NOT add, invent, or insert any speaker labels. ONLY if the transcript already begins lines with speaker labels (e.g. \"You:\" or a name): keep every existing label exactly as written, never merge, move, drop, or reassign text across speakers, and tidy wording only WITHIN each speaker's turn (join broken fragments inside a turn, never across a label). If the text has NO speaker labels — e.g. single-speaker dictation — return clean prose with no \"You:\" or name prefixes added.\n\nPreserve exact meaning. Do not add content or invent details. Use NZ English throughout.\n\nReturn ONLY the cleaned transcript — no preamble, notes, headings, or repetition of these instructions. Never write a lead-in such as \"Here is the cleaned transcript\".\n\nTranscript:\n${output}".to_string(),
         },
         LLMPrompt {
             id: "korero_client_email".to_string(),
@@ -1234,7 +1316,18 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
                         // correction cleanup.
                         || existing
                             .prompt
-                            .contains("4. Remove filler words (um, uh, like as filler)"))
+                            .contains("4. Remove filler words (um, uh, like as filler)")
+                        // Kōrero (UX round, 2026-09-02): upgrade installs whose
+                        // prompt predates rules 5b/5c. 5b is the CONTRACT with the
+                        // new deterministic formatting pass -- without it the LLM
+                        // happily merges the bullets that pass just produced back
+                        // into a paragraph, and the two layers fight. 5c is the
+                        // list formatting itself. Sentinel: the rule 5 line with
+                        // no 5b following it.
+                        || (existing
+                            .prompt
+                            .contains("5. Preserve te reo Māori words exactly as spoken")
+                            && !existing.prompt.contains("5b. PRESERVE EXISTING STRUCTURE")))
                 {
                     debug!("Migrating korero_clean_transcript prompt to current default (no-invent speaker labels)");
                     existing.prompt = default_prompt.prompt.clone();
@@ -1261,15 +1354,24 @@ fn default_custom_words() -> Vec<String> {
         // Kōrero (2026-05-30): personal People + Companies/clients entries were
         // removed from this shipped default so the public build / installer never
         // discloses the maintainer's contacts. Add your own via Settings -> Custom Words.
-        // Generic tooling / product terms (no personal data)
-        "Monday.com", "Copilot", "M365", "OneDrive", "Replit",
-        "Cowork", "Fireflies", "Tauri", "MCP", "Anthropic", "Kōrero",
+        //
+        // Kōrero (backlog T5, 2026-08-26): ORDER IS LOAD-BEARING. This list is
+        // also the Whisper bias prompt, which is capped at 64 terms / 700 chars
+        // and drops from the TAIL — so whatever sits last is what falls off the
+        // budget once a user has taught a few corrections. Te reo and macron-
+        // bearing terms therefore lead: they are the ones the decoder cannot
+        // produce unaided. `build_bias_prompt` also sorts macron-bearing terms
+        // ahead of ASCII ones at runtime, so this ordering and that rule agree
+        // rather than one silently undoing the other.
         // Te reo Māori
         "whānau", "mihi", "kōrero", "mahi", "Aotearoa",
-        "Tāmaki", "iwi", "hapū", "tangata",
+        "Tāmaki", "iwi", "hapū", "tangata", "Kōrero",
         // NZ-isms / acronyms
         "GST", "IRD", "ACC", "EPA", "FY26", "FY27",
         "KiwiSaver", "Plunket", "Te Whatu Ora",
+        // Generic tooling / product terms (no personal data)
+        "Monday.com", "Copilot", "M365", "OneDrive", "Replit",
+        "Cowork", "Fireflies", "Tauri", "MCP", "Anthropic",
     ]
     .into_iter()
     .map(String::from)
@@ -1364,6 +1466,11 @@ pub fn get_default_settings() -> AppSettings {
         start_hidden: default_start_hidden(),
         autostart_enabled: default_autostart_enabled(),
         update_checks_enabled: default_update_checks_enabled(),
+        bias_prompt_shape: BiasPromptShape::default(),
+        whisper_custom_word_matching: WordMatching::default(),
+        nz_english_pass_enabled: default_nz_english_pass_enabled(),
+        nz_locale_default_applied: false,
+        reo_lexicon_enabled: default_reo_lexicon_enabled(),
         selected_model: "".to_string(),
         always_on_microphone: false,
         selected_microphone: None,
@@ -1481,7 +1588,8 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
         default_settings
     };
 
-    if ensure_post_process_defaults(&mut settings) {
+    // Korero (1.41.0, F13): `|` not `||` — both one-shot migrations must run.
+    if ensure_post_process_defaults(&mut settings) | ensure_nz_locale_default(&mut settings) {
         store.set("settings", serde_json::to_value(&settings).unwrap());
     }
 
@@ -1591,7 +1699,8 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
         default_settings
     };
 
-    if ensure_post_process_defaults(&mut settings) {
+    // Korero (1.41.0, F13): `|` not `||` — both one-shot migrations must run.
+    if ensure_post_process_defaults(&mut settings) | ensure_nz_locale_default(&mut settings) {
         store.set("settings", serde_json::to_value(&settings).unwrap());
     }
 
@@ -1603,7 +1712,26 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
     settings
 }
 
+/// Kōrero (v1.40.0, SEC-01): set once by an evaluation run before the Tauri
+/// builder. While true, `write_settings` is a no-op — startup paths such as
+/// `auto_select_model_if_needed` and the HandyKeys fallback call it with no
+/// user action, and an eval override must never reach the live store.
+pub static EVAL_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static EVAL_WRITE_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn write_settings(app: &AppHandle, settings: AppSettings) {
+    if EVAL_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+        if !EVAL_WRITE_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            log::warn!("EVAL_MODE: settings write suppressed (evaluation runs never persist)");
+        }
+        // Keep the in-memory cache coherent for this process only.
+        if let Some(cache) = app.try_state::<crate::SettingsCache>() {
+            if let Ok(mut guard) = cache.0.write() {
+                *guard = settings;
+            }
+        }
+        return;
+    }
     // Kōrero (v1.11.0): keep the denoiser's process-global flag in sync with the
     // persisted setting on every write (read before `settings` is moved below).
     crate::denoise::set_enabled(settings.denoise_enabled);
@@ -1671,4 +1799,131 @@ pub fn get_history_limit(app: &AppHandle) -> usize {
 
 pub fn get_recording_retention_period(app: &AppHandle) -> RecordingRetentionPeriod {
     get_settings(app).recording_retention_period
+}
+
+#[cfg(test)]
+mod eval_knob_tests {
+    use super::*;
+
+    /// The three upstream fields with no serde default; everything else must
+    /// fall back on its own default when absent from an older store.
+    const MINIMAL: &str = r#"{"bindings":{},"push_to_talk":false,"audio_feedback":false}"#;
+
+    /// Kōrero (v1.40.0): the three accuracy-round knobs must default correctly
+    /// when absent from an older settings_store.json, and round-trip when set.
+    #[test]
+    fn serde_default_eval_knobs_absent_means_shipped_behaviour() {
+        let s: AppSettings = serde_json::from_str(MINIMAL).expect("minimal object must deserialise");
+        assert_eq!(s.bias_prompt_shape, BiasPromptShape::List);
+        assert_eq!(s.whisper_custom_word_matching, WordMatching::Exact);
+        assert!(s.reo_lexicon_enabled);
+        // Korero (v1.40.0, R1.1): the NZ pass is a separate knob and defaults on,
+        // so an older settings_store.json keeps exactly the shipped behaviour.
+        assert!(s.nz_english_pass_enabled);
+    }
+
+    /// R1.1: the two knobs must be independently settable -- that is the whole
+    /// point of the split, and a single-knob regression would silently return.
+    #[test]
+    fn serde_nz_pass_and_lexicon_are_independent() {
+        let s: AppSettings = serde_json::from_str(
+            r#"{"bindings":{},"push_to_talk":false,"audio_feedback":false,"reo_lexicon_enabled":false}"#,
+        )
+        .unwrap();
+        assert!(!s.reo_lexicon_enabled);
+        assert!(s.nz_english_pass_enabled, "lexicon off must not imply pass off");
+        let s: AppSettings = serde_json::from_str(
+            r#"{"bindings":{},"push_to_talk":false,"audio_feedback":false,"nz_english_pass_enabled":false}"#,
+        )
+        .unwrap();
+        assert!(!s.nz_english_pass_enabled);
+        assert!(s.reo_lexicon_enabled, "pass off must not imply lexicon off");
+    }
+
+    #[test]
+    fn serde_default_eval_knobs_round_trip() {
+        let s: AppSettings = serde_json::from_str(
+            r#"{"bindings":{},"push_to_talk":false,"audio_feedback":false,"bias_prompt_shape":"sentence","whisper_custom_word_matching":"fuzzy","reo_lexicon_enabled":false}"#,
+        )
+        .unwrap();
+        assert_eq!(s.bias_prompt_shape, BiasPromptShape::Sentence);
+        assert_eq!(s.whisper_custom_word_matching, WordMatching::Fuzzy);
+        assert!(!s.reo_lexicon_enabled);
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"bias_prompt_shape\":\"sentence\""));
+    }
+
+    /// RT-code #8 (Ship-first): the meaningful test for the update-check gate
+    /// is the serde default, not a tautological helper.
+    #[test]
+    fn serde_default_update_checks_enabled() {
+        let s: AppSettings = serde_json::from_str(MINIMAL).unwrap();
+        assert!(s.update_checks_enabled);
+        let s: AppSettings = serde_json::from_str(
+            r#"{"bindings":{},"push_to_talk":false,"audio_feedback":false,"update_checks_enabled":false}"#,
+        )
+        .unwrap();
+        assert!(!s.update_checks_enabled);
+    }
+}
+
+/// Kōrero (1.41.0, F13): New Zealand English is ON out of the box, for new
+/// installs AND for existing ones that inherited the old "en" default.
+#[cfg(test)]
+mod korero_f13_nz_default_tests {
+    use super::*;
+
+    const MINIMAL: &str = r#"{"bindings":{},"push_to_talk":false,"audio_feedback":false}"#;
+
+    #[test]
+    fn default_settings_run_the_nz_pass() {
+        // The whole of F13 in one assertion: the pass runs only when BOTH the
+        // knob is on AND the language is the NZ locale. Before 1.41.0 the
+        // second half was false for every default install.
+        let s = get_default_settings();
+        assert!(s.nz_english_pass_enabled);
+        assert!(
+            crate::audio_toolkit::is_nz_locale(&s.selected_language),
+            "default language {:?} does not run the NZ pass",
+            s.selected_language
+        );
+    }
+
+    #[test]
+    fn an_older_store_without_a_language_gets_en_nz() {
+        let s: AppSettings = serde_json::from_str(MINIMAL).unwrap();
+        assert!(crate::audio_toolkit::is_nz_locale(&s.selected_language));
+        assert!(!s.nz_locale_default_applied, "an older store has never run the switch");
+    }
+
+    #[test]
+    fn an_inherited_en_is_switched_once_and_only_once() {
+        let mut s: AppSettings = serde_json::from_str(
+            r#"{"bindings":{},"push_to_talk":false,"audio_feedback":false,"selected_language":"en"}"#,
+        )
+        .unwrap();
+        assert!(ensure_nz_locale_default(&mut s), "first run must report a change");
+        assert_eq!(s.selected_language, "en-NZ");
+        assert!(s.nz_locale_default_applied);
+
+        // The user then turns "New Zealand English" OFF. That choice must stick.
+        s.selected_language = "en".to_string();
+        assert!(!ensure_nz_locale_default(&mut s), "second run must be a no-op");
+        assert_eq!(s.selected_language, "en");
+
+        // And the flag survives a save/load round trip.
+        let back: AppSettings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(back.nz_locale_default_applied);
+    }
+
+    #[test]
+    fn other_languages_and_auto_are_never_touched() {
+        for lang in ["auto", "mi", "fr", "zh-Hans", "en-NZ"] {
+            let mut s: AppSettings = serde_json::from_str(MINIMAL).unwrap();
+            s.selected_language = lang.to_string();
+            ensure_nz_locale_default(&mut s);
+            assert_eq!(s.selected_language, lang, "{lang} was changed");
+            assert!(s.nz_locale_default_applied);
+        }
+    }
 }

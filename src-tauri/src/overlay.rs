@@ -31,24 +31,42 @@ tauri_panel! {
     })
 }
 
-// Korero (v2 pill fix, 2026-05-17 PM): 320x64 gives 55px horizontal slack each
-// side so the 210-280px auto-sized pill renders with its 32px shadow halo and
-// per-state glow intact, AND has headroom for longer localised state labels.
-// v1 of this patch used 240x60 which was geometrically insufficient (shadow
-// clipped on right). CSS body{display:flex} centres the pill in the window.
-const OVERLAY_WIDTH: f64 = 320.0;
-const OVERLAY_HEIGHT: f64 = 64.0;
+// Korero (2026-08-26): 336x96, DERIVED from the CSS rather than asserted.
+//
+// The previous 320x64 came from a comment claiming a "32px shadow halo" that
+// had never been measured. Rendered at the real window size with the real
+// markup, the transcribing pill paints 222x84 - so 6px of halo was sliced off
+// the top and 14px off the bottom, cutting a hard horizontal line through a
+// glow meant to be a rounded halo, while 49px of unused width sat idle each
+// side. The contract now has one source:
+//
+//     width  = pill max-width 280 + 2 * halo 28 = 336
+//     height = pill height     40 + 2 * halo 28 =  96
+//
+// --pill-h and --halo in src/overlay/RecordingOverlay.css are the other end of
+// it, and the `overlay-window-fits-the-halo` check pins both so they cannot
+// drift apart again. Evidence, regenerable: docs\design-2026\overlay\ renders
+// each state at the real window size and reports the painted alpha bounding box.
+// CSS body{display:flex} centres the pill in the window.
+const OVERLAY_WIDTH: f64 = 336.0;
+const OVERLAY_HEIGHT: f64 = 96.0;
+
+// Korero (2026-08-26): these are WINDOW offsets, and the window just grew 32px
+// taller - which moves the pill 16px inside it. The bottom values are reduced
+// by exactly that, so the pill lands where it does today rather than jumping.
+// The top value goes to 0 rather than -12: matching today exactly would need a
+// negative window Y, and 12px more clearance from the screen edge is the better
+// trade. macOS keeps the pill clear of the menu bar at its current position.
+#[cfg(target_os = "macos")]
+const OVERLAY_TOP_OFFSET: f64 = 30.0;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+const OVERLAY_TOP_OFFSET: f64 = 0.0;
 
 #[cfg(target_os = "macos")]
-const OVERLAY_TOP_OFFSET: f64 = 46.0;
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-const OVERLAY_TOP_OFFSET: f64 = 4.0;
-
-#[cfg(target_os = "macos")]
-const OVERLAY_BOTTOM_OFFSET: f64 = 15.0;
+const OVERLAY_BOTTOM_OFFSET: f64 = 0.0;
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-const OVERLAY_BOTTOM_OFFSET: f64 = 40.0;
+const OVERLAY_BOTTOM_OFFSET: f64 = 24.0;
 
 #[cfg(target_os = "linux")]
 fn update_gtk_layer_shell_anchors(overlay_window: &tauri::webview::WebviewWindow) {
@@ -216,12 +234,40 @@ fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64)> {
     let settings = settings::get_settings(app_handle);
 
     let x = monitor_x + (monitor_width - OVERLAY_WIDTH) / 2.0;
-    let y = match settings.overlay_position {
+    #[cfg_attr(target_os = "macos", allow(unused_mut))]
+    let mut y = match settings.overlay_position {
         OverlayPosition::Top => monitor_y + OVERLAY_TOP_OFFSET,
         OverlayPosition::Bottom | OverlayPosition::None => {
             monitor_y + monitor_height - OVERLAY_HEIGHT - OVERLAY_BOTTOM_OFFSET
         }
     };
+
+    // korero-overlay-work-area-clamp (2026-08-26): keep the whole window inside
+    // the work area. The maths above measures from the FULL monitor, so on
+    // Windows the bottom of the window sits underneath the taskbar - which is
+    // opaque and always-on-top, so it ate the bottom of the pill's halo on top
+    // of the clipping the window was already doing.
+    //
+    // Deliberately a CLAMP rather than a rewrite: it can only pull the window
+    // back into view, never move it somewhere new, and it is a no-op when there
+    // is no taskbar on that edge (auto-hidden, or docked left/right). Taskbar
+    // height is not guessed anywhere - the OS reports where the chrome is.
+    //
+    // macOS keeps monitor-based maths: work_area() there returns wrong
+    // coordinates for monitors at negative positions, which is the documented
+    // reason this function avoids it in the first place.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let area = monitor.work_area();
+        let work_top = area.position.y as f64 / scale;
+        let work_bottom = work_top + (area.size.height as f64 / scale);
+        if y + OVERLAY_HEIGHT > work_bottom {
+            y = work_bottom - OVERLAY_HEIGHT;
+        }
+        if y < work_top {
+            y = work_top;
+        }
+    }
 
     Some((x, y))
 }

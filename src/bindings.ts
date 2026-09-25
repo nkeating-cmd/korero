@@ -682,7 +682,7 @@ async meetingStartCapture() : Promise<Result<boolean, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async meetingStopCapture() : Promise<Result<{ you: string; others: string; segments: Array<{ source: string; text: string }>; mic_path: string | null; system_path: string | null }, string>> {
+async meetingStopCapture() : Promise<Result<{ you: string; others: string; segments: Array<{ source: string; text: string }>; mic_path: string | null; system_path: string | null; warnings: string[] }, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("meeting_stop_capture") };
 } catch (e) {
@@ -1079,6 +1079,15 @@ async deleteHistoryEntry(id: number) : Promise<Result<null, string>> {
 async retryHistoryEntryTranscription(id: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("retry_history_entry_transcription", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+// Kōrero (v1.40.0, M5): run the korero_reo_blend prompt on one entry against a loopback Ollama.
+async tidyHistoryEntryReo(id: number) : Promise<Result<HistoryEntry, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("tidy_history_entry_reo", { id }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { commands, type HistoryEntry } from "../../../bindings";
+import i18n from "../../../i18n";
+import { formatRelativeTime } from "../../../utils/dateFormat";
 
 /**
  * Kōrero fork (v1.12.0): Home dashboard.
@@ -31,16 +33,32 @@ const greeting = () => {
   return "Good evening";
 };
 
+/**
+ * Kōrero (UX round, 2026-09-02): route through the SHARED formatter.
+ *
+ * This function used to hand-roll a relative-time ladder, and it produced three
+ * different formats inside one list — "5 min ago", "2 h ago", then a bare
+ * "18/08/2026" for anything older than a day. Three formats in one column is
+ * the most visible polish defect on the home screen.
+ *
+ * It was also the only date code in the app that was not localised. "min ago"
+ * and "h ago" were English string literals in a product that ships **20
+ * locales**, and the fallback called `toLocaleDateString()` with **no locale
+ * argument**, so it followed the operating system rather than the app's own
+ * language setting — a user running Kōrero in French on an English Windows got
+ * English dates.
+ *
+ * `formatRelativeTime` already solved all of it: a full second→year ladder on
+ * `Intl.RelativeTimeFormat`, with an absolute-time fallback if anything throws.
+ * It was sitting in `src/utils/dateFormat.ts`, unused by this file.
+ *
+ * ⚠ Contract: the shared formatter takes **seconds, as a string**. History
+ * timestamps arrive as seconds OR milliseconds, so the normalisation below is
+ * load-bearing — inverted, every timestamp reads as 1970.
+ */
 const relativeTime = (ts: number) => {
-  // History timestamps may be seconds or ms; normalise to ms.
-  const ms = ts < 1e12 ? ts * 1000 : ts;
-  const diff = Date.now() - ms;
-  const mins = Math.round(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins} min ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs} h ago`;
-  return new Date(ms).toLocaleDateString();
+  const seconds = ts < 1e12 ? ts : Math.floor(ts / 1000);
+  return formatRelativeTime(String(seconds), i18n.language);
 };
 
 const QuickAction: React.FC<{

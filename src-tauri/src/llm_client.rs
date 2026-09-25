@@ -592,7 +592,11 @@ pub async fn stream_chat_completion<F: FnMut(&str)>(
     let mut bytes: Vec<u8> = Vec::new();
     let mut full = String::new();
     let started = std::time::Instant::now();
-    loop {
+    // Kōrero (meetings reliability, 2026-09-25): why the stream ended, so a
+    // run cut off by `max_tokens` is not saved as if it were complete.
+    let mut meta = StreamMeta::default();
+    let mut done = false;
+    while !done {
         // Kōrero (v1.30.2): idle guard, not a deadline. The clock restarts on
         // every chunk, so a model that keeps producing tokens is never cut off.
         let chunk = match tokio::time::timeout(LLM_STREAM_IDLE_TIMEOUT, stream.next()).await {
@@ -633,16 +637,74 @@ pub async fn stream_chat_completion<F: FnMut(&str)>(
             // multi-byte sequence is split here.
             let frame = String::from_utf8_lossy(&bytes[..idx]).into_owned();
             bytes.drain(..idx + 2);
+            note_sse_meta(&frame, &mut meta);
             if consume_sse_frame(&frame, &mut full, &mut on_delta) {
-                return Ok(full);
+                done = true;
+                break;
             }
         }
     }
-    // Stream closed. Flush any trailing frame that arrived without a final
-    // blank-line terminator (some servers just close the socket after the last
-    // delta), so the closing tokens aren't lost.
-    let tail = String::from_utf8_lossy(&bytes).into_owned();
-    consume_sse_frame(&tail, &mut full, &mut on_delta);
+    if !done {
+        // Stream closed. Flush any trailing frame that arrived without a final
+        // blank-line terminator (some servers just close the socket after the
+        // last delta), so the closing tokens aren't lost.
+        let tail = String::from_utf8_lossy(&bytes).into_owned();
+        note_sse_meta(&tail, &mut meta);
+        consume_sse_frame(&tail, &mut full, &mut on_delta);
+    }
+    finish_stream(full, &meta)
+}
+
+/// Kōrero (meetings reliability, 2026-09-25): what the stream said about how
+/// it ended, gathered alongside the content deltas.
+#[derive(Debug, Default)]
+struct StreamMeta {
+    /// The last `finish_reason` any frame carried ("stop", "length", ...).
+    finish_reason: Option<String>,
+    /// Whether the model streamed reasoning ("thinking") deltas. Thinking
+    /// models (Gemma 4 via Ollama, for one) spend part of `max_tokens` on
+    /// these, which is how a run can end on "length" with no notes at all.
+    saw_reasoning: bool,
+}
+
+fn note_sse_meta(frame: &str, meta: &mut StreamMeta) {
+    for line in frame.lines() {
+        let Some(payload) = line.trim_start().strip_prefix("data:") else {
+            continue;
+        };
+        let payload = payload.trim();
+        if payload == "[DONE]" {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(payload) else {
+            continue;
+        };
+        let choice = &v["choices"][0];
+        if let Some(r) = choice["finish_reason"].as_str() {
+            meta.finish_reason = Some(r.to_string());
+        }
+        let delta = &choice["delta"];
+        if ["reasoning", "reasoning_content"]
+            .iter()
+            .any(|k| delta[*k].as_str().is_some_and(|s| !s.is_empty()))
+        {
+            meta.saw_reasoning = true;
+        }
+    }
+}
+
+/// Kōrero (meetings reliability, 2026-09-25): a generation that stopped on
+/// the token limit used to be saved as if it were complete — the notes simply
+/// ended mid-list. Keep what was written, and say it was cut short.
+fn finish_stream(full: String, meta: &StreamMeta) -> Result<String, String> {
+    if meta.finish_reason.as_deref() == Some("length") {
+        let why = if full.trim().is_empty() && meta.saw_reasoning {
+            "the model used its whole output allowance thinking before it wrote any notes"
+        } else {
+            "the model reached its output-length limit"
+        };
+        return partial_or_error(full, why);
+    }
     Ok(full)
 }
 
@@ -973,5 +1035,62 @@ mod egress_allowlist_tests {
             assert_endpoint_unmodified(&p).is_ok(),
             "an id with no built-in default has nothing to compare against"
         );
+    }
+}
+
+/// Kōrero (meetings reliability, 2026-09-25): how a stream ended.
+#[cfg(test)]
+mod korero_stream_end_tests {
+    use super::*;
+
+    fn frame(delta: &str, finish: Option<&str>) -> String {
+        let finish = finish.map(|f| format!("\"{f}\"")).unwrap_or_else(|| "null".into());
+        format!("data: {{\"choices\":[{{\"delta\":{delta},\"finish_reason\":{finish}}}]}}")
+    }
+
+    #[test]
+    fn a_normal_stop_is_returned_untouched() {
+        let mut meta = StreamMeta::default();
+        note_sse_meta(&frame(r#"{"content":"Notes."}"#, Some("stop")), &mut meta);
+        assert_eq!(finish_stream("Notes.".into(), &meta).unwrap(), "Notes.");
+    }
+
+    #[test]
+    fn notes_cut_off_by_the_token_limit_are_marked_incomplete() {
+        let mut meta = StreamMeta::default();
+        note_sse_meta(&frame(r#"{"content":"- item one"}"#, None), &mut meta);
+        note_sse_meta(&frame(r#"{}"#, Some("length")), &mut meta);
+        let out = finish_stream("- item one".into(), &meta).unwrap();
+        assert!(out.starts_with("- item one"), "{out}");
+        assert!(out.contains("incomplete") && out.contains("output-length limit"), "{out}");
+    }
+
+    #[test]
+    fn a_thinking_model_that_never_wrote_notes_gets_a_specific_error() {
+        let mut meta = StreamMeta::default();
+        note_sse_meta(&frame(r#"{"reasoning":"Let me think..."}"#, None), &mut meta);
+        note_sse_meta(&frame(r#"{}"#, Some("length")), &mut meta);
+        assert!(meta.saw_reasoning);
+        let err = finish_stream(String::new(), &meta).unwrap_err();
+        assert!(err.contains("thinking"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_stream_without_a_length_stop_still_reaches_the_fallback() {
+        // meeting_post_process retries non-streaming on an EMPTY Ok; that path
+        // must stay reachable for providers that ignore `stream: true`.
+        let meta = StreamMeta::default();
+        assert_eq!(finish_stream(String::new(), &meta).unwrap(), "");
+    }
+
+    #[test]
+    fn reasoning_content_spelling_is_recognised_too() {
+        let mut meta = StreamMeta::default();
+        note_sse_meta(&frame(r#"{"reasoning_content":"hmm"}"#, None), &mut meta);
+        assert!(meta.saw_reasoning);
+        let mut none = StreamMeta::default();
+        note_sse_meta("data: [DONE]", &mut none);
+        note_sse_meta("event: ping", &mut none);
+        assert!(!none.saw_reasoning && none.finish_reason.is_none());
     }
 }

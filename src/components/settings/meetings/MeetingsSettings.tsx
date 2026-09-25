@@ -47,10 +47,10 @@ import { commands, type ModelInfo } from "../../../bindings";
 import { useSettings } from "../../../hooks/useSettings";
 import {
   useMeetingJobs,
-  persistMeetingPatch,
-  persistNewMeeting,
-  type MeetingJobKind,
+  meetingsBridge,
+  type TranscriptPatch,
 } from "../../../stores/meetingJobsStore";
+import type { MeetingDoc } from "../../../stores/meetingsBridge";
 
 /**
  * Kōrero fork (v1.13.0): Meetings page.
@@ -314,12 +314,10 @@ export const MeetingsSettings: React.FC = () => {
   const [recording, setRecording] = useState(false);
   // v1.19.0: pause state for a live meeting.
   const [paused, setPaused] = useState(false);
-  const [recProcessing, setRecProcessing] = useState(false);
-  // v1.19.0: chunked-transcription progress for imports / re-transcribes.
-  const [transcribeProgress, setTranscribeProgress] = useState<{
-    window: number;
-    total: number | null;
-  } | null>(null);
+  // Kōrero (meetings reliability, 2026-09-25): `recProcessing` (Stop in
+  // progress) and the chunked-transcription progress used to be component
+  // state here. They are now read from `useMeetingJobs`, which owns the work,
+  // so both survive leaving and re-entering the tab (derived further down).
   // v1.13.3: set when the Rust capture worker reports a disk-write failure
   // mid-meeting (meeting-capture-error event) — e.g. disk full.
   const [captureError, setCaptureError] = useState<string | null>(null);
@@ -345,10 +343,17 @@ export const MeetingsSettings: React.FC = () => {
   // UI hookup and its result with it. `liveProcessed` below is now DERIVED from
   // the module-level store, so returning to the tab shows the text generated
   // while you were away.
+  //
+  // Kōrero (meetings reliability, 2026-09-25): the same now holds for ALL
+  // long work — Stop, transcription, import, recover, refine. This view only
+  // READS the store to draw its controls; actions are called through
+  // `useMeetingJobs.getState()` at click time, and every result reaches this
+  // view (or disk, if it has gone) through `meetingsBridge`.
   const job = useMeetingJobs((s) => s.job);
-  const startJob = useMeetingJobs((s) => s.start);
-  const consumeJob = useMeetingJobs((s) => s.consume);
-  const clearJob = useMeetingJobs((s) => s.clear);
+  const task = useMeetingJobs((s) => s.task);
+  const stopping = useMeetingJobs((s) => s.stopping);
+  const recProcessing = stopping !== null;
+  const transcribeProgress = task?.progress ?? null;
   // v1.21.0: local audio-brief (Qwen3-TTS) state. briefBusy spans a multi-minute
   // GPU render; briefUrl is an asset:// URL for the produced MP3.
   const [briefBusy, setBriefBusy] = useState(false);
@@ -359,7 +364,7 @@ export const MeetingsSettings: React.FC = () => {
   const [editingNotes, setEditingNotes] = useState(false);
   const [notesDraft, setNotesDraft] = useState("");
   const [feedback, setFeedback] = useState("");
-  const [refining, setRefining] = useState(false);
+  const refining = job?.kind === "refine";
   const [editingSegIdx, setEditingSegIdx] = useState<number | null>(null);
   // Kōrero (v1.27.0): drafts for the mm:ss.s in/out fields. Held separately
   // from the markers so a half-typed "1:" never becomes a live trim, and so an
@@ -369,42 +374,39 @@ export const MeetingsSettings: React.FC = () => {
   const [trimError, setTrimError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [systemCaptured, setSystemCaptured] = useState<boolean | null>(null);
-  // v1.30.2: `localBusy` covers only the work this component owns end to end
-  // (re-transcription). Post-processing is owned by the store, so the busy
-  // state the UI renders is DERIVED — otherwise returning to the tab mid-run
-  // showed idle buttons over a model that was still generating, and a second
-  // click would have queued a duplicate run.
-  const [localBusy, setLocalBusy] = useState<null | "transcribe" | "both">(
-    null,
-  );
-  // Declared here (not with the rest of the import workflow) because the
-  // derived `busy` below needs it.
-  const [importBusy, setImportBusy] = useState(false);
-  const jobRunningHere =
-    job?.status === "running" && job.meetingId === activeId ? job : null;
-  // Deliberately keyed off ANY running job, not just one for the meeting on
-  // screen: the store holds a single job slot, so allowing a second start while
-  // one is in flight would silently orphan the first (its result would arrive
-  // to a slot that no longer belongs to it). Disabling the controls everywhere
-  // makes "one job at a time" visible instead of a latent data-loss path.
-  //
-  // Review follow-up: `importBusy` and `refining` are folded in. They were
-  // separate flags, so an import or a Refine could be started while a store job
-  // was running — and the store, correctly, refused the second run. The user
-  // got no notes and no message. Two flags for one mutually-exclusive resource
-  // is the bug; one derived answer is the fix.
-  const busy: null | "transcribe" | "post" | "both" =
-    localBusy ??
-    (job?.status === "running" ? job.kind : null) ??
-    (importBusy || refining ? "post" : null);
+  // v1.30.2 / 2026-09-25: the busy state the UI renders is DERIVED from the
+  // store — otherwise returning to the tab mid-run showed idle buttons over
+  // work that was still running, and a second click queued a duplicate run.
+  const importBusy = task?.kind === "import";
+  const jobRunningHere = job && job.meetingId === activeId ? job : null;
+  // Deliberately keyed off ANY running work, not just work for the meeting on
+  // screen: the transcription engine and the local model are single shared
+  // resources, and the store runs one thing at a time. Disabling the controls
+  // everywhere makes "one job at a time" visible instead of a surprise refusal.
+  const busy: null | "transcribe" | "post" | "both" | "other" =
+    task?.kind === "transcribe"
+      ? "transcribe"
+      : task?.kind === "both"
+        ? "both"
+        : task
+          ? "other" // import / recover: no button of THIS meeting is working
+          : job
+            ? job.kind === "both"
+              ? "both"
+              : "post"
+            : null;
+  // The meeting the running work belongs to (null for import/recover).
+  const busyMeetingId = task ? task.meetingId : (job?.meetingId ?? null);
   // The streamed preview belongs to the meeting being generated, never to
   // whichever meeting happens to be selected.
   const liveProcessed = jobRunningHere ? jobRunningHere.live : "";
-  // Title of the meeting a job is running for, when that is NOT the one on
-  // screen — so the disabled controls can say whose work is blocking them.
+  // What is running, when it is NOT this meeting — so the disabled controls
+  // can say whose work is blocking them.
   const elsewhereJobTitle =
-    job?.status === "running" && job.meetingId !== activeId
-      ? (meetings.find((m) => m.id === job.meetingId)?.title ?? "another meeting")
+    busy && busyMeetingId !== activeId
+      ? busyMeetingId
+        ? (meetings.find((m) => m.id === busyMeetingId)?.title ?? "another meeting")
+        : (task?.label ?? "another job")
       : null;
   // v1.25.0 (UX batch, audit #5): elapsed-time feedback for long operations —
   // a spinner alone reads as "frozen" after ~30 s on a 2-minute transcription.
@@ -412,7 +414,7 @@ export const MeetingsSettings: React.FC = () => {
   // v1.30.2: anchored to the job's own start time when the store owns the run,
   // so the counter continues from where it was rather than restarting at 0 the
   // moment you navigate back.
-  const busyStartedAt = jobRunningHere?.startedAt ?? null;
+  const busyStartedAt = task?.startedAt ?? job?.startedAt ?? null;
   useEffect(() => {
     if (!busy) {
       setBusyElapsed(0);
@@ -434,7 +436,7 @@ export const MeetingsSettings: React.FC = () => {
   const [importPromptId, setImportPromptId] = useState<string>("custom");
   const [providerLocal, setProviderLocal] = useState<boolean | null>(null);
   const [recordings, setRecordings] = useState<RecordingFile[] | null>(null);
-  const [busyFile, setBusyFile] = useState<string | null>(null);
+  const busyFile = task?.kind === "recover" ? (task.path ?? null) : null;
   const [copied, setCopied] = useState(false);
   // v1.22.0: last exported file path — surfaced as a copyable + "Show in folder"
   // row (replaces the old ephemeral, non-selectable "Exported to <path>" toast).
@@ -564,9 +566,49 @@ export const MeetingsSettings: React.FC = () => {
     }
   };
 
+  // Kōrero (meetings reliability, 2026-09-25): this view's handle on
+  // `meetingsBridge`. `meetingsRef` mirrors the committed list AND, eagerly,
+  // every delivery the bridge makes into it — the unmount flush writes the
+  // ref, so a result that lands in the same tick as a tab change is saved
+  // instead of vanishing with the discarded state update.
+  const meetingsRef = useRef<Meeting[]>([]);
+  useEffect(() => {
+    meetingsRef.current = meetings;
+  }, [meetings]);
+  const storeReadyRef = useRef(false);
+  // v1.30.2: the payload that actually reached disk, so the unmount flush can
+  // tell "unsaved changes" from "nothing changed".
+  const lastSavedRef = useRef<string>("");
+
   // v1.13.4: load from disk; migrate the legacy localStorage store once, and
   // only clear the legacy copy after a verified round-trip to disk.
   useEffect(() => {
+    // Kōrero (meetings reliability, 2026-09-25): attach BEFORE loading. Work
+    // that finishes while the load is in flight then WAITS for this view,
+    // instead of being written to disk under the list it is about to read
+    // (and then overwritten by this view's first autosave).
+    const token = meetingsBridge.attach({
+      applyPatch: (id, patch) => {
+        if (!meetingsRef.current.some((m) => m.id === id)) return "missing";
+        const apply = (list: Meeting[]) =>
+          list.map((m) => (m.id === id ? { ...m, ...(patch as Partial<Meeting>) } : m));
+        meetingsRef.current = apply(meetingsRef.current);
+        setMeetings(apply);
+        return activeIdRef.current === id ? "shown" : "view";
+      },
+      addMeeting: (doc, select) => {
+        const [m] = normaliseMeetings([doc]);
+        if (!meetingsRef.current.some((x) => x.id === m.id)) {
+          meetingsRef.current = [m, ...meetingsRef.current];
+          setMeetings((prev) => (prev.some((x) => x.id === m.id) ? prev : [m, ...prev]));
+        }
+        if (select) {
+          activeIdRef.current = m.id;
+          setActiveId(m.id);
+        }
+        return activeIdRef.current === m.id ? "shown" : "view";
+      },
+    });
     (async () => {
       let list: Meeting[] = [];
       // v1.29.0 (R-02). THE MOST DESTRUCTIVE BUG THIS FILE HAS HAD.
@@ -584,9 +626,11 @@ export const MeetingsSettings: React.FC = () => {
       // The rule now: we only ever save a store we successfully READ.
       let loadFailure: string | null = null;
       try {
-        const res = await commands.meetingsStoreLoad();
-        if (res.status === "error") {
-          loadFailure = String(res.error ?? "could not read the meetings store");
+        // Through the bridge: queued behind any background write still in
+        // flight, so this never reads a file that is about to change.
+        const res = await meetingsBridge.load();
+        if (!res.ok) {
+          loadFailure = res.error || "could not read the meetings store";
         } else if (res.data.trim()) {
           list = normaliseMeetings(JSON.parse(res.data));
         }
@@ -602,7 +646,10 @@ export const MeetingsSettings: React.FC = () => {
         setMeetings([]);
         setActiveId(null);
         // Deliberately NOT setStoreReady(true): leaving it false is what keeps
-        // the autosave effect from committing this empty list to disk.
+        // the autosave effect from committing this empty list to disk. Detach,
+        // too: a view that could not load must not receive results it cannot
+        // save (they go to the bridge's own read-modify-write instead).
+        meetingsBridge.detach(token);
         return;
       }
 
@@ -611,12 +658,10 @@ export const MeetingsSettings: React.FC = () => {
         if (legacy.length > 0) {
           list = legacy;
           try {
-            const saved = await commands.meetingsStoreSave(
-              JSON.stringify(legacy),
-            );
-            if (saved.status === "ok") {
-              const check = await commands.meetingsStoreLoad();
-              if (check.status === "ok" && check.data.trim()) {
+            const saved = await meetingsBridge.save(JSON.stringify(legacy));
+            if (saved.ok) {
+              const check = await meetingsBridge.load();
+              if (check.ok && check.data.trim()) {
                 localStorage.removeItem(STORE_KEY);
               }
             }
@@ -625,61 +670,51 @@ export const MeetingsSettings: React.FC = () => {
           }
         }
       }
+      meetingsRef.current = list;
+      activeIdRef.current = list[0]?.id ?? null;
       setMeetings(list);
       setActiveId(list[0]?.id ?? null);
+      storeReadyRef.current = true;
       setStoreReady(true);
+      // Results that arrived while we loaded are applied now, onto `list`.
+      meetingsBridge.markReady(token);
     })();
+    return () => {
+      // v1.30.2 unmount flush, now routed through the bridge: whatever this
+      // view holds that has not reached disk is written BEFORE any result
+      // still queued for disk. Leaving the tab within the 500 ms autosave
+      // debounce used to throw the last edit away.
+      let finalSave: string | undefined;
+      if (storeReadyRef.current) {
+        const payload = JSON.stringify(meetingsRef.current);
+        if (payload !== lastSavedRef.current) finalSave = payload;
+      }
+      storeReadyRef.current = false;
+      meetingsBridge.detach(token, finalSave);
+    };
   }, []);
 
   // v1.13.4: debounced save to disk — replaces the per-change localStorage
   // stringify (≈5 MB quota silently dropped writes; main-thread jank on
   // large transcripts). storeReady gates it so the initial empty state can
   // never overwrite a populated store before the load completes.
-  // v1.30.2: `lastSavedRef` records the payload that was actually written, so
-  // the unmount flush below can tell "a save is pending" from "nothing changed".
-  const lastSavedRef = useRef<string>("");
-  const pendingSaveRef = useRef<{ payload: string; ready: boolean }>({
-    payload: "",
-    ready: false,
-  });
+  // 2026-09-25: through `meetingsBridge`, so autosaves and background results
+  // share one FIFO queue to disk. The flush-on-unmount lives in the load
+  // effect's cleanup above (it has to run with the bridge detach, in order).
   useEffect(() => {
     if (!storeReady) return;
     const payload = JSON.stringify(meetings);
-    pendingSaveRef.current = { payload, ready: true };
     const t = window.setTimeout(() => {
-      commands
-        .meetingsStoreSave(payload)
-        .then((r) => {
-          if (r.status === "error") {
-            toast.error(`Couldn't save meetings: ${r.error}`);
-          } else {
-            lastSavedRef.current = payload;
-          }
-        })
-        .catch(() => {});
+      void meetingsBridge.save(payload).then((r) => {
+        if (!r.ok) {
+          toast.error(`Couldn't save meetings: ${r.error}`);
+        } else {
+          lastSavedRef.current = payload;
+        }
+      });
     }, 500);
     return () => window.clearTimeout(t);
   }, [meetings, storeReady]);
-
-  // v1.30.2: flush on unmount.
-  //
-  // The debounce above cancels its own timer in cleanup, and that cleanup runs
-  // when the component UNMOUNTS as well as when `meetings` changes. Leaving the
-  // Meetings tab within 500 ms of any edit therefore threw the edit away — a
-  // rename, a trim, an edited note, or freshly generated post-process output.
-  // Silent, and easy to mistake for "the app cancelled my job".
-  //
-  // This is a separate mount-scoped effect on purpose: putting the flush in the
-  // debounce's own cleanup would fire it on every dependency change too, which
-  // would write the whole document on every keystroke and defeat the debounce.
-  useEffect(
-    () => () => {
-      const { payload, ready } = pendingSaveRef.current;
-      if (!ready || !payload || payload === lastSavedRef.current) return;
-      void commands.meetingsStoreSave(payload);
-    },
-    [],
-  );
 
   useEffect(() => {
     if (recording) {
@@ -744,52 +779,13 @@ export const MeetingsSettings: React.FC = () => {
   // tab, so the preview you returned to was missing everything generated while
   // you were away — and the run's only in-memory record went with it.
   //
-  // v1.30.2: adopt a finished run. The store holds the result until a mounted
-  // view claims it; if nothing claims it in time the store writes it to disk
-  // itself. Either way the notes survive leaving the tab.
-  useEffect(() => {
-    // `storeReady` is not optional here. Adopting before the async store load
-    // finishes would put the notes into a `meetings` array that `setMeetings`
-    // is about to replace wholesale — the patch would be silently overwritten,
-    // which is the same class of bug this whole change is closing.
-    if (!storeReady) return;
-    if (!job || job.status !== "done" || job.consumed) return;
-    const result = consumeJob(job.meetingId);
-    if (!result) return;
-    patchMeeting(job.meetingId, result);
-    if (job.meetingId !== activeId) {
-      toast.success("Meeting notes finished while you were away.");
-    }
-    // Ownership has transferred to `meetings`; the store must not hold a second
-    // copy that a later mount could re-apply over a newer edit.
-    clearJob();
-  }, [job, activeId, consumeJob, clearJob, storeReady]);
-
-  // v1.30.2: surface a failure that landed while the tab was closed, once.
-  //
-  // Review follow-up: the previous guard was a `useRef`, which dies with the
-  // component while the store's job does not — so every return to Meetings
-  // re-fired the same failure toast, forever. The job is now CLEARED after
-  // reporting, which both makes the report once-only for real and releases the
-  // single job slot so the next run is not refused.
-  useEffect(() => {
-    if (!job || job.status !== "error" || !job.error) return;
-    toast.error(`Post-processing failed: ${job.error}`);
-    clearJob();
-  }, [job, clearJob]);
-
-  // v1.19.0: chunked-transcription progress (imports + re-transcribes).
-  useEffect(() => {
-    const un = listen<{ id: string; window: number; total: number | null }>(
-      "meeting-transcribe-progress",
-      (e) => {
-        setTranscribeProgress({ window: e.payload.window, total: e.payload.total });
-      },
-    );
-    return () => {
-      un.then((f) => f());
-    };
-  }, []);
+  // 2026-09-25: the v1.30.2 "adopt a finished run" and "report a failure that
+  // landed while away" effects are gone. Results now arrive through
+  // `meetingsBridge` (the port attached in the load effect above), which
+  // applies them to this view's state while it is mounted and writes them to
+  // disk when it is not; failures are toasted by the store itself, wherever
+  // the user is. Transcription progress is tracked by the store as well, so
+  // the bar survives a tab change.
 
   // v1.14.2: restore the recording UI if a meeting is still running on the
   // backend (the page was unmounted mid-meeting). Without this, navigating
@@ -1113,53 +1109,40 @@ export const MeetingsSettings: React.FC = () => {
     if (recording) {
       setRecording(false);
       setPaused(false); // v1.19.0: clear pause state on stop
-      setRecProcessing(true);
-      try {
-        const res = await commands.meetingStopCapture();
-        if (res.status === "ok") {
-          const { you, others, segments, mic_path, system_path } = res.data;
-          if (!you.trim() && !others.trim() && !mic_path && !system_path) {
-            toast.message("No audio captured.");
-          } else {
-            const m: Meeting = {
-              id: newId(),
-              title: defaultMeetingTitle(Date.now()),
-              you,
-              others,
-              // v1.17.0: chronological, interleaved transcript from the backend.
-              transcript: segments ?? [],
-              processed: "",
-              processPrompt: "",
-              createdAt: Date.now(),
-              systemCaptured: systemCaptured ?? false,
-              micPath: mic_path,
-              systemPath: system_path,
-              youLabel: "You",
-              othersLabel: "Others",
-              imported: false,
-            };
-            setMeetings((prev) => [m, ...prev]);
-            setActiveId(m.id);
-            // v1.17.0: warm the local post-processing model now, so the first
-            // "Generate notes" doesn't pay the cold model-load cost.
-            if (you.trim() || others.trim()) {
-              commands.meetingPrewarmPostProcess().catch(() => {});
-            }
-            if (!you.trim() && !others.trim()) {
-              toast.message(
-                "Audio saved, but transcription was empty — you can re-transcribe it.",
-              );
-            }
-          }
-          loadRecordings();
-        } else {
-          toast.error(`Meeting stop failed: ${res.error}`);
-        }
-      } catch (e) {
-        toast.error(`Meeting stop failed: ${String(e)}`);
-      } finally {
-        setRecProcessing(false);
+      // Kōrero (meetings reliability, 2026-09-25): Stop is owned by the store.
+      // It used to run here, and turning the stopped recording into a meeting
+      // needed this view to still be mounted when `meetingStopCapture` returned
+      // — which, when live transcription had missed parts and Stop rebuilds
+      // them from the WAVs, can be minutes. Leave the tab in that window and
+      // the meeting was never created. The builder below is pure, so it is
+      // safe for the store to call after this view has gone.
+      const captured = systemCaptured ?? false;
+      await useMeetingJobs.getState().stopMeeting({
+        makeMeeting: ({ you, others, segments, mic_path, system_path }) => {
+          const now = Date.now();
+          const m: Meeting = {
+            id: newId(),
+            title: defaultMeetingTitle(now),
+            you,
+            others,
+            // v1.17.0: chronological, interleaved transcript from the backend.
+            transcript: segments ?? [],
+            processed: "",
+            processPrompt: "",
+            createdAt: now,
+            systemCaptured: captured,
+            micPath: mic_path,
+            systemPath: system_path,
+            youLabel: "You",
+            othersLabel: "Others",
+            imported: false,
+          };
+          return m as unknown as MeetingDoc;
+        },
+      });
+      if (mountedRef.current) {
         setSystemCaptured(null);
+        loadRecordings();
       }
     } else {
       try {
@@ -1218,88 +1201,26 @@ export const MeetingsSettings: React.FC = () => {
     }
   };
 
-  // ---- transcription / post-processing helpers ---------------------------
-  // v1.17.0: re-transcribe. For recorded WAV pairs, use the merge command so
-  // the rebuilt transcript stays chronological (interleaved). Non-WAV imports
-  // (m4a/mp3/…) fall back to per-file transcription with no ordered segments.
-  const doTranscribe = async (
-    m: Meeting,
-  ): Promise<{ you: string; others: string; transcript: TranscriptSeg[] }> => {
-    const isWav = (p: string | null) => !!p && /\.wav$/i.test(p);
-    if (isWav(m.micPath) || isWav(m.systemPath)) {
-      const r = await commands.meetingTranscribeMerge(
-        isWav(m.micPath) ? m.micPath : null,
-        isWav(m.systemPath) ? m.systemPath : null,
-      );
-      if (r.status !== "ok") throw new Error(r.error);
-      const transcript = r.data as TranscriptSeg[];
-      const join = (src: string) =>
-        transcript
-          .filter((s) => s.source === src)
-          .map((s) => s.text)
-          .join(" ");
-      const you = join("you");
-      const others = join("others");
-      applyTranscription(m.id, { you, others, transcript });
-      return { you, others, transcript };
-    }
-    const tx = async (path: string | null) => {
-      if (!path) return "";
-      const r = await commands.meetingTranscribeFile(path);
-      if (r.status === "ok") return r.data;
-      throw new Error(r.error);
-    };
-    const you = await tx(m.micPath);
-    const others = await tx(m.systemPath);
-    applyTranscription(m.id, { you, others, transcript: [] });
-    return { you, others, transcript: [] };
-  };
-
-  // Review follow-up: transcription is minutes of GPU on a long recording, and
-  // `patchMeeting` is a `setMeetings` that does nothing once this panel has
-  // unmounted. The v1.30.2 post-process fix did not cover this half, so leaving
-  // the tab during a re-transcribe still threw the result away. When the view
-  // is gone, write straight to the store instead.
-  const applyTranscription = (
-    id: string,
-    patch: { you: string; others: string; transcript: TranscriptSeg[] },
-  ) => {
-    if (mountedRef.current) {
-      patchMeeting(id, patch);
-      return;
-    }
-    void persistMeetingPatch(id, patch).then((ok) => {
-      if (ok) toast.success("Transcription finished and was saved.");
-    });
-  };
-
-  // Kōrero (v1.30.2): hands the run to the store and returns. The store owns
-  // the promise, the streamed text and the result from here, so none of it is
-  // tied to this component being mounted.
+  // ---- transcription / post-processing ------------------------------------
+  // Kōrero (meetings reliability, 2026-09-25): every action below hands its
+  // work to `useMeetingJobs` and returns. The store owns the run, the busy
+  // state, the progress and the result; the result reaches this view (or
+  // disk, if the view has gone) through `meetingsBridge`. The closures passed
+  // in are PURE, so the store may call them after this view has unmounted.
   //
-  // Kōrero (v1.27.0): `m` is the meeting as it was when the run STARTED, which
-  // is the window whose text was actually sent to the model — if the user moves
-  // the trim mid-run, the notes really are stale and should say so.
-  const doPostProcess = (m: Meeting, text: string, kind: MeetingJobKind) =>
-    startJob({
-      meetingId: m.id,
-      kind,
-      text,
-      prompt: customPrompt.trim(),
-      trimKey: trimKeyOf(m),
-    });
+  // (v1.17.0) Re-transcription of recorded WAV pairs uses the merge command so
+  // the rebuilt transcript stays chronological; non-WAV imports fall back to
+  // per-file transcription with no ordered segments. That logic lives in the
+  // store now (`transcribeAudio`).
 
   const onReTranscribe = async () => {
     if (!active || busy) return;
-    setLocalBusy("transcribe");
-    try {
-      const { you, others } = await doTranscribe(active);
-      if (!you.trim() && !others.trim()) toast.message("Still no speech found.");
-    } catch (e) {
-      toast.error(`Re-transcription failed: ${String(e)}`);
-    } finally {
-      setLocalBusy(null);
-    }
+    await useMeetingJobs.getState().transcribe({
+      meetingId: active.id,
+      title: titleOf(active),
+      micPath: active.micPath,
+      systemPath: active.systemPath,
+    });
   };
 
   const onPostProcess = async () => {
@@ -1324,43 +1245,44 @@ export const MeetingsSettings: React.FC = () => {
       );
       return;
     }
-    // Failure is reported by the store-error effect above, so it surfaces even
-    // if the run finishes while this tab is closed.
-    void doPostProcess(active, text, "post");
+    // Kōrero (v1.27.0): the trim key is the window as it was when the run
+    // STARTED, which is the text actually sent to the model — if the user
+    // moves the trim mid-run, the notes really are stale and should say so.
+    await useMeetingJobs.getState().start({
+      meetingId: active.id,
+      kind: "post",
+      text,
+      prompt: customPrompt.trim(),
+      trimKey: trimKeyOf(active),
+    });
   };
 
   const onBoth = async () => {
     if (!active || busy) return;
-    // "both" for the whole span, so the button the user pressed is the one that
-    // shows the spinner through the transcription half as well.
-    setLocalBusy("both");
-    try {
-      const { you, others, transcript } = await doTranscribe(active);
-      // Kōrero (v1.27.0): the freshly transcribed segments are not on `active`
-      // yet (that setState hasn't flushed), so the window is applied to a
-      // throwaway meeting-shaped value carrying the SAME markers. `start_ms`
-      // is file-absolute and the audio has not changed, so a marker set before
-      // the re-transcribe still points at the same moment afterwards.
-      const text = combine(
-        you,
-        others,
-        active.youLabel,
-        active.othersLabel,
-        visibleSegs({ ...active, transcript }),
-      );
-      if (!text.trim()) {
-        toast.message("No speech found to post-process.");
-        return;
-      }
-      // v1.30.2: hand off to the store, then release the local (transcription)
-      // busy flag. The button stays disabled because the derived `busy` picks
-      // up the store's running job — but the job now outlives this component.
-      void doPostProcess(active, text, "both");
-    } catch (e) {
-      toast.error(`Transcribe + post-process failed: ${String(e)}`);
-    } finally {
-      setLocalBusy(null);
-    }
+    const m = active;
+    await useMeetingJobs.getState().transcribe({
+      meetingId: m.id,
+      title: titleOf(m),
+      micPath: m.micPath,
+      systemPath: m.systemPath,
+      thenNotes: {
+        // Kōrero (v1.27.0): the freshly transcribed segments are not on `m`,
+        // so the window is applied to a throwaway meeting-shaped value
+        // carrying the SAME markers. `start_ms` is file-absolute and the audio
+        // has not changed, so a marker set before the re-transcribe still
+        // points at the same moment afterwards.
+        buildText: (t: TranscriptPatch) =>
+          combine(
+            t.you,
+            t.others,
+            m.youLabel,
+            m.othersLabel,
+            visibleSegs({ ...m, transcript: t.transcript as TranscriptSeg[] }),
+          ),
+        prompt: customPrompt.trim(),
+        trimKey: trimKeyOf(m),
+      },
+    });
   };
 
   // ---- import audio file -------------------------------------------------
@@ -1388,86 +1310,41 @@ export const MeetingsSettings: React.FC = () => {
 
   const runImport = async (alsoProcess: boolean) => {
     if (!importPath || importBusy) return;
-    setImportBusy(true);
-    setTranscribeProgress(null); // v1.19.0: reset the progress bar for this run
-    try {
-      const r = await commands.meetingTranscribeFile(importPath);
-      if (r.status !== "ok") {
-        toast.error(`Transcription failed: ${r.error}`);
-        return;
-      }
-      const transcript = r.data;
-      // Kōrero (v1.30.2): the meeting is created and saved the moment a
-      // transcript exists, BEFORE any post-processing.
-      //
-      // It used to be built last, after the model had finished writing the
-      // notes. On a 45-minute import that is several minutes during which the
-      // transcript existed only in a local variable inside this function — so
-      // leaving the Meetings tab (or a post-process failure returning early)
-      // threw away the whole import, transcription time included, not just the
-      // notes. Saving first means the worst case is "you have the transcript
-      // but no notes yet", which is recoverable with one button.
-      const m: Meeting = {
-        id: newId(),
-        title: `Imported · ${baseName(importPath)}`,
-        you: transcript,
-        others: "",
-        youLabel: "You",
-        othersLabel: "Others",
-        imported: true,
-        processed: "",
-        processPrompt: "",
-        // Kōrero (v1.27.0): a brand-new import is untrimmed, so its notes were
-        // generated under the untrimmed window. Stamping it here means the
-        // stale banner appears the moment the user first trims THIS meeting.
-        processedTrimKey: ":",
-        createdAt: Date.now(),
-        systemCaptured: false,
-        micPath: importPath,
-        systemPath: null,
-      };
-      // Review follow-up: the transcription itself takes minutes, so the view
-      // may already be gone by the time we get here. `setMeetings` would then
-      // discard the whole import — the exact loss the reorder above was meant
-      // to prevent. Write it to the store directly in that case.
-      if (mountedRef.current) {
-        setMeetings((prev) => [m, ...prev]);
-        setActiveId(m.id);
-        setImportPath(null);
-        toast.success("Imported audio transcribed.");
-      } else {
-        const ok = await persistNewMeeting(m as unknown as Record<string, unknown>);
-        toast[ok ? "success" : "error"](
-          ok
-            ? "Imported audio transcribed — open Meetings to see it."
-            : "Transcription finished but the meetings store could not be written. The audio file is untouched; try importing again.",
-        );
-        if (!ok) return;
-      }
-
-      if (alsoProcess && transcript.trim()) {
-        // Handed to the store like every other post-process run, so it keeps
-        // going — and lands — if you leave the tab while the model works.
-        const started = await startJob({
-          meetingId: m.id,
-          kind: "post",
-          text: transcript,
-          prompt: importPrompt.trim(),
-          trimKey: ":",
-        });
-        // A refusal here used to be swallowed: no notes, no message, ever.
-        if (!started) {
-          toast.message(
-            "Transcript saved. Notes were skipped because another post-process run is in progress — press Post-process when it finishes.",
-          );
-        }
-      }
-    } catch (e) {
-      toast.error(`Import failed: ${String(e)}`);
-    } finally {
-      setImportBusy(false);
-      setTranscribeProgress(null); // v1.19.0: clear the bar when done
-    }
+    const path = importPath;
+    // Kōrero (meetings reliability, 2026-09-25): owned by the store, so the
+    // import (and its notes) finishes and lands even if you leave the tab —
+    // including the case v1.30.2 missed, where you leave AND come back before
+    // it finishes. Korero (v1.30.2): the meeting is still created and saved
+    // the moment a transcript exists, BEFORE any post-processing, so the worst
+    // case is "transcript but no notes yet", never "nothing".
+    const ok = await useMeetingJobs.getState().importFile({
+      path,
+      label: baseName(path),
+      notesPrompt: alsoProcess ? importPrompt.trim() : null,
+      makeMeeting: (transcript) => {
+        const m: Meeting = {
+          id: newId(),
+          title: `Imported · ${baseName(path)}`,
+          you: transcript,
+          others: "",
+          youLabel: "You",
+          othersLabel: "Others",
+          imported: true,
+          processed: "",
+          processPrompt: "",
+          // Korero (v1.27.0): a brand-new import is untrimmed, so its notes were
+          // generated under the untrimmed window. Stamping it here means the
+          // stale banner appears the moment the user first trims THIS meeting.
+          processedTrimKey: ":",
+          createdAt: Date.now(),
+          systemCaptured: false,
+          micPath: path,
+          systemPath: null,
+        };
+        return m as unknown as MeetingDoc;
+      },
+    });
+    if (ok && mountedRef.current) setImportPath(null);
   };
 
   // ---- copy / export / delete -------------------------------------------
@@ -1542,69 +1419,27 @@ export const MeetingsSettings: React.FC = () => {
   // v1.22.0: refine the processed notes with free-text feedback to the model
   // (constrained to revise, not rewrite or invent). Undo restores the previous.
   const refineNotes = async () => {
-    // Review follow-up: `refining` alone was not enough. Refine calls the SAME
-    // Rust command as the store's job and it emits on the SAME global
-    // `meeting-postprocess-delta` channel, so running one during a job produced
-    // an interleaved live preview and two writers racing for `processed`.
-    // `busy` now includes both, so this is unreachable from the UI; the guard
-    // stays because "unreachable" is a claim about today's JSX.
-    if (!active || refining || busy) return;
+    // Review follow-up (v1.30.2): Refine calls the SAME Rust command as a notes
+    // run and emits on the SAME `meeting-postprocess-delta` channel, so it must
+    // share the one job slot. Kōrero (meetings reliability, 2026-09-25): it now
+    // IS a store job — it survives leaving the tab, streams into the preview,
+    // and its Undo works whether or not this view is open.
+    if (!active || busy) return;
     const fb = feedback.trim();
     if (!fb) {
       toast.message("Tell the AI what to improve.");
       return;
     }
-    const current = active.processed.trim();
-    if (!current) {
+    if (!active.processed.trim()) {
       toast.message("Generate notes first.");
       return;
     }
-    setRefining(true);
-    const prev = active.processed;
-    const id = active.id;
-    try {
-      const prompt =
-        "You are revising EXISTING meeting notes based on the reader's feedback. " +
-        "Apply the feedback faithfully, keep the same Markdown structure and headings where still appropriate, " +
-        "do not invent facts or add content not supported by the notes, and output ONLY the revised notes " +
-        'with no preamble or commentary. Feedback: "' +
-        fb +
-        '".';
-      const r = await commands.meetingPostProcess(current, prompt);
-      if (r.status !== "ok") throw new Error(r.error);
-      // Same unmount rule as everything else on this page.
-      if (mountedRef.current) {
-        patchMeeting(id, { processed: r.data });
-        setFeedback("");
-      } else {
-        const ok = await persistMeetingPatch(id, { processed: r.data });
-        if (!ok) {
-          toast.error("Notes were refined but could not be saved.");
-          return;
-        }
-      }
-      toast.success("Notes refined.", {
-        action: {
-          label: "Undo",
-          // The toast outlives this panel — `deleteMeeting` guards the same
-          // hazard at the confirm callback. Without this the user clicks Undo,
-          // is told nothing, and the refined notes stay.
-          onClick: () => {
-            if (mountedRef.current) {
-              patchMeeting(id, { processed: prev });
-            } else {
-              void persistMeetingPatch(id, { processed: prev }).then((ok) => {
-                if (!ok) toast.error("Could not undo — the store did not save.");
-              });
-            }
-          },
-        },
-      });
-    } catch (e) {
-      toast.error(`Refine failed: ${String(e)}`);
-    } finally {
-      setRefining(false);
-    }
+    const ok = await useMeetingJobs.getState().refine({
+      meetingId: active.id,
+      previous: active.processed,
+      feedback: fb,
+    });
+    if (ok && mountedRef.current) setFeedback("");
   };
 
   // v1.22.0: save an inline edit to a single transcript segment.
@@ -1815,7 +1650,8 @@ export const MeetingsSettings: React.FC = () => {
         // the emptied default folder. The autosave writing again is harmless
         // (atomic temp+rename).
         try {
-          await commands.meetingsStoreSave(JSON.stringify(next));
+          // Through the bridge so it is ordered with every other store write.
+          await meetingsBridge.save(JSON.stringify(next));
         } catch {
           /* autosave effect remains the fallback */
         }
@@ -1873,16 +1709,19 @@ export const MeetingsSettings: React.FC = () => {
   };
 
   const transcribeRecording = async (file: RecordingFile) => {
-    setBusyFile(file.path);
-    try {
-      const res = await commands.meetingTranscribeFile(file.path);
-      if (res.status === "ok") {
+    // Kōrero (meetings reliability, 2026-09-25): owned by the store. This was
+    // pure component state before, so leaving the tab while a recording was
+    // being recovered threw the whole transcript away.
+    await useMeetingJobs.getState().recover({
+      path: file.path,
+      label: file.file_name,
+      makeMeeting: (transcript) => {
         const isOthers = /others|system/i.test(file.file_name);
         const m: Meeting = {
           id: newId(),
           title: `Recovered · ${file.file_name}`,
-          you: isOthers ? "" : res.data,
-          others: isOthers ? res.data : "",
+          you: isOthers ? "" : transcript,
+          others: isOthers ? transcript : "",
           youLabel: "You",
           othersLabel: "Others",
           imported: true,
@@ -1893,17 +1732,9 @@ export const MeetingsSettings: React.FC = () => {
           micPath: isOthers ? null : file.path,
           systemPath: isOthers ? file.path : null,
         };
-        setMeetings((prev) => [m, ...prev]);
-        setActiveId(m.id);
-        toast.success("Recording transcribed and added to your meetings.");
-      } else {
-        toast.error(`Transcription failed: ${res.error}`);
-      }
-    } catch (e) {
-      toast.error(`Transcription failed: ${String(e)}`);
-    } finally {
-      setBusyFile(null);
-    }
+        return m as unknown as MeetingDoc;
+      },
+    });
   };
 
   const modelOptions: DropdownOption[] = (models ?? []).map((m) => ({

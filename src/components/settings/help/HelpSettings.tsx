@@ -214,10 +214,11 @@ export const HelpSettings: React.FC = () => {
         <Guide title="Pick the right model">
           <p>
             For everyday English the default Parakeet V3 is both the fastest and
-            among the most accurate. If you dictate te reo Māori or other
-            languages, switch to a Whisper model (Large or Turbo) in Settings →
-            Models — they cover far more languages and apply your custom words at
-            the moment of transcription.
+            among the most accurate. It has no te reo Māori support at all — no
+            macrons, no Māori vocabulary — so if you dictate te reo, or any other
+            language, switch to a Whisper model (Large or Turbo) in Settings →
+            Models. Whisper also applies your custom words at the moment of
+            transcription, which Parakeet cannot do.
           </p>
         </Guide>
         <Guide title="Teach it your words">

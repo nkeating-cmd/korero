@@ -157,6 +157,24 @@ pub fn glossary_block(corrections: &[TranscriptCorrection]) -> Option<String> {
 const BIAS_MAX_TERMS: usize = 64;
 const BIAS_MAX_CHARS: usize = 700;
 
+/// True when a term carries a te reo Māori macron.
+///
+/// Used only to prioritise the bias prompt (backlog T5): a macron-bearing term
+/// is one the decoder cannot produce without help, so it is worth more of the
+/// bounded prompt budget than an ASCII product name.
+fn has_macron(s: &str) -> bool {
+    s.chars().any(|c| {
+        matches!(
+            c,
+            '\u{101}' | '\u{100}'
+                | '\u{113}' | '\u{112}'
+                | '\u{12b}' | '\u{12a}'
+                | '\u{14d}' | '\u{14c}'
+                | '\u{16b}' | '\u{16a}'
+        )
+    })
+}
+
 /// v1.19.1: build the decode-time CONTEXT-BIASING prompt for the Whisper engine
 /// — the local equivalent of Deepgram/AssemblyAI "keyterm prompting". Seeds the
 /// decoder with the vocabulary the user actually cares about so the RIGHT
@@ -174,6 +192,66 @@ pub fn build_bias_prompt(
     custom_words: &[String],
     corrections: &[TranscriptCorrection],
 ) -> Option<String> {
+    build_bias_prompt_shaped(custom_words, corrections, crate::settings::BiasPromptShape::List)
+}
+
+/// Kōrero (v1.40.0, M1f / backlog T5): the nonsense token used by the eval
+/// harness's prompt-LEAKAGE probe. Deliberately not a word in any language.
+pub const BIAS_PROBE_TOKEN: &str = "zxqvorbital kelmurdine";
+
+/// Natural-language frame for `BiasPromptShape::Sentence`. Counted inside the
+/// `BIAS_MAX_CHARS` budget so whisper.cpp's own truncation never drops a term.
+const BIAS_SENTENCE_PREFIX: &str =
+    "Kōrero, dictated in New Zealand English with te reo Māori. Words used: ";
+const BIAS_SENTENCE_SUFFIX: &str = ".";
+
+/// Kōrero (v1.40.0, M1f): `build_bias_prompt` with an explicit shape.
+/// `List` is byte-identical to the v1.19.1 output (pinned by test).
+pub fn build_bias_prompt_shaped(
+    custom_words: &[String],
+    corrections: &[TranscriptCorrection],
+    shape: crate::settings::BiasPromptShape,
+) -> Option<String> {
+    use crate::settings::BiasPromptShape as S;
+    match shape {
+        S::Off => None,
+        S::Probe => Some(BIAS_PROBE_TOKEN.to_string()),
+        S::List => join_bias_terms(bias_terms(custom_words, corrections), 0),
+        S::Sentence => {
+            let frame = BIAS_SENTENCE_PREFIX.len() + BIAS_SENTENCE_SUFFIX.len();
+            join_bias_terms(bias_terms(custom_words, corrections), frame)
+                .map(|body| format!("{BIAS_SENTENCE_PREFIX}{body}{BIAS_SENTENCE_SUFFIX}"))
+        }
+    }
+}
+
+/// Bounded, comma-joined term list. `reserved` is subtracted from the char
+/// budget so a surrounding frame cannot push the prompt past `BIAS_MAX_CHARS`.
+fn join_bias_terms(terms: Vec<String>, reserved: usize) -> Option<String> {
+    if terms.is_empty() {
+        return None;
+    }
+    let budget = BIAS_MAX_CHARS.saturating_sub(reserved);
+    // Bound: corrections-first ordering means the most valuable terms survive
+    // the cap rather than being dropped by Whisper's own truncation.
+    let mut out = String::new();
+    for t in terms.into_iter().take(BIAS_MAX_TERMS) {
+        let sep = if out.is_empty() { "" } else { ", " };
+        if out.len() + sep.len() + t.len() > budget {
+            break;
+        }
+        out.push_str(sep);
+        out.push_str(&t);
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// The ordered, de-duplicated term list behind every prompt shape.
+fn bias_terms(custom_words: &[String], corrections: &[TranscriptCorrection]) -> Vec<String> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut terms: Vec<String> = Vec::new();
 
@@ -184,32 +262,72 @@ pub fn build_bias_prompt(
             terms.push(right.to_string());
         }
     }
-    // 2. Then the custom-words list.
-    for w in custom_words {
+    // 2. Then the custom-words list, macron-bearing terms FIRST.
+    //
+    // Kōrero (backlog T5, 2026-08-26): the cap below drops from the TAIL, and
+    // `default_custom_words()` historically listed ten tooling terms
+    // (Monday.com, Copilot, M365, ...) before every te reo entry — so for a user
+    // with many taught corrections, te reo was the first thing to fall off the
+    // end of the budget. A term carrying a macron is by definition one the
+    // decoder cannot produce unaided; an ASCII product name usually survives
+    // without biasing. Priority follows that asymmetry rather than whatever
+    // order the list happens to be in. Relative order is stable within each
+    // group, so a user's own ordering is otherwise respected.
+    let (macron_terms, plain_terms): (Vec<&String>, Vec<&String>) =
+        custom_words.iter().partition(|w| has_macron(w));
+    for w in macron_terms.into_iter().chain(plain_terms) {
         let w = w.trim();
         if !w.is_empty() && seen.insert(w.to_lowercase()) {
             terms.push(w.to_string());
         }
     }
-    if terms.is_empty() {
-        return None;
-    }
+    terms
+}
 
-    // Bound: corrections-first ordering means the most valuable terms survive
-    // the cap rather than being dropped by Whisper's own truncation.
-    let mut out = String::new();
-    for t in terms.into_iter().take(BIAS_MAX_TERMS) {
-        let sep = if out.is_empty() { "" } else { ", " };
-        if out.len() + sep.len() + t.len() > BIAS_MAX_CHARS {
-            break;
-        }
-        out.push_str(sep);
-        out.push_str(&t);
+/// Kōrero (v1.40.0, M3 echo guard): whisper.cpp's documented failure mode is
+/// to EMIT the `initial_prompt` at the start of the transcript. Strip a leading
+/// run of at least `MIN_ECHO_TOKENS` consecutive prompt tokens from `text`.
+/// A transcript that legitimately starts with ONE custom word ("Kōrero is…")
+/// is below the threshold and untouched. Returns the input unchanged when the
+/// prompt is `None`, empty, or does not lead the text.
+pub const MIN_ECHO_TOKENS: usize = 3;
+
+pub fn strip_prompt_echo(text: &str, prompt: Option<&str>) -> String {
+    let Some(prompt) = prompt else {
+        return text.to_string();
+    };
+    let norm = |s: &str| -> String {
+        s.chars()
+            .filter(|c| c.is_alphanumeric() || *c == '\'')
+            .collect::<String>()
+            .to_lowercase()
+    };
+    let prompt_tokens: Vec<String> = prompt
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .map(norm)
+        .filter(|t| !t.is_empty())
+        .collect();
+    if prompt_tokens.len() < MIN_ECHO_TOKENS {
+        return text.to_string();
     }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
+    let text_tokens: Vec<(usize, &str)> = text
+        .split_whitespace()
+        .map(|w| (w.as_ptr() as usize - text.as_ptr() as usize, w))
+        .collect();
+    // Count how many leading text tokens match the prompt token sequence.
+    let mut matched = 0usize;
+    for (i, (_, w)) in text_tokens.iter().enumerate() {
+        match prompt_tokens.get(i) {
+            Some(p) if *p == norm(w) => matched += 1,
+            _ => break,
+        }
+    }
+    if matched < MIN_ECHO_TOKENS {
+        return text.to_string();
+    }
+    match text_tokens.get(matched) {
+        Some((offset, _)) => text[*offset..].to_string(),
+        None => String::new(),
     }
 }
 
@@ -225,9 +343,88 @@ mod tests {
     }
 
     #[test]
+    fn bias_prompt_list_is_byte_identical_to_shaped_list() {
+        let custom = vec!["whānau".to_string(), "Copilot".to_string(), "kōrero".to_string()];
+        let corrections = vec![corr("fanau", "whānau"), corr("wakapapa", "whakapapa")];
+        assert_eq!(
+            build_bias_prompt(&custom, &corrections),
+            build_bias_prompt_shaped(&custom, &corrections, crate::settings::BiasPromptShape::List)
+        );
+        assert_eq!(
+            build_bias_prompt(&custom, &corrections).as_deref(),
+            Some("whānau, whakapapa, kōrero, Copilot")
+        );
+    }
+
+    #[test]
+    fn bias_prompt_shape_sentence_frames_terms_within_budget() {
+        let big: Vec<String> = (0..200).map(|i| format!("kupu{i:03}")).collect();
+        let p = build_bias_prompt_shaped(&big, &[], crate::settings::BiasPromptShape::Sentence).unwrap();
+        assert!(p.starts_with(BIAS_SENTENCE_PREFIX));
+        assert!(p.ends_with(BIAS_SENTENCE_SUFFIX));
+        assert!(p.len() <= BIAS_MAX_CHARS, "sentence prompt {} chars exceeds budget", p.len());
+        assert!(p.contains("kupu000"));
+    }
+
+    #[test]
+    fn bias_prompt_shape_off_and_probe() {
+        let custom = vec!["whānau".to_string()];
+        assert!(build_bias_prompt_shaped(&custom, &[], crate::settings::BiasPromptShape::Off).is_none());
+        assert_eq!(
+            build_bias_prompt_shaped(&custom, &[], crate::settings::BiasPromptShape::Probe).as_deref(),
+            Some(BIAS_PROBE_TOKEN)
+        );
+    }
+
+    #[test]
+    fn strip_prompt_echo_fires_on_echoed_list() {
+        let prompt = "whānau, kōrero, hapū, Copilot";
+        let text = "whānau kōrero hapū Copilot kia ora everyone";
+        assert_eq!(strip_prompt_echo(text, Some(prompt)), "kia ora everyone");
+    }
+
+    #[test]
+    fn strip_prompt_echo_fires_on_echoed_sentence_frame() {
+        let prompt = format!("{BIAS_SENTENCE_PREFIX}whānau, kōrero{BIAS_SENTENCE_SUFFIX}");
+        let text = "Kōrero, dictated in New Zealand English with te reo Māori. Words used: whānau, kōrero. Tēnā koutou";
+        assert_eq!(strip_prompt_echo(text, Some(&prompt)), "Tēnā koutou");
+    }
+
+    #[test]
+    fn strip_prompt_echo_leaves_single_custom_word_start() {
+        let prompt = "Kōrero, whānau, hapū";
+        let text = "Kōrero is a dictation app";
+        assert_eq!(strip_prompt_echo(text, Some(prompt)), text);
+        assert_eq!(strip_prompt_echo(text, None), text);
+    }
+
+    #[test]
     fn bias_prompt_none_when_empty() {
         assert!(build_bias_prompt(&[], &[]).is_none());
         assert!(build_bias_prompt(&["   ".to_string()], &[corr("", "")]).is_none());
+    }
+
+    #[test]
+    fn bias_prompt_puts_macron_terms_before_ascii_ones() {
+        // Backlog T5: the budget is spent from the front, so the terms the
+        // decoder cannot produce unaided must not sit behind product names.
+        let custom = vec![
+            "Monday.com".to_string(),
+            "Copilot".to_string(),
+            "wh\u{101}nau".to_string(),
+            "GST".to_string(),
+            "hap\u{16b}".to_string(),
+        ];
+        let p = build_bias_prompt(&custom, &[]).unwrap();
+        let macron_at = p.find("wh\u{101}nau").expect("macron term present");
+        let ascii_at = p.find("Monday.com").expect("ascii term present");
+        assert!(
+            macron_at < ascii_at,
+            "macron-bearing terms must lead the prompt: {p}"
+        );
+        // Relative order WITHIN each group is preserved.
+        assert!(p.find("wh\u{101}nau").unwrap() < p.find("hap\u{16b}").unwrap(), "{p}");
+        assert!(p.find("Monday.com").unwrap() < p.find("Copilot").unwrap(), "{p}");
     }
 
     #[test]

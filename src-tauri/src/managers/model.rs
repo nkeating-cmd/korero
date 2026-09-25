@@ -96,9 +96,10 @@ pub struct ModelManager {
 impl ModelManager {
     pub fn new(app_handle: &AppHandle) -> Result<Self> {
         // Create models directory in app data
-        let models_dir = crate::portable::app_data_dir(app_handle)
-            .map_err(|e| anyhow::anyhow!("Failed to get app data dir: {}", e))?
-            .join("models");
+        // Kōrero (v1.40.0): eval runs sandbox the data dir but must still see
+        // the real models — portable::models_dir honours that override.
+        let models_dir = crate::portable::models_dir(app_handle)
+            .map_err(|e| anyhow::anyhow!("Failed to get app data dir: {}", e))?;
 
         if !models_dir.exists() {
             fs::create_dir_all(&models_dir)?;
@@ -109,7 +110,8 @@ impl ModelManager {
         // Whisper supported languages (99 languages from tokenizer)
         // Including zh-Hans and zh-Hant variants to match frontend language codes
         let whisper_languages: Vec<String> = vec![
-            "en", "zh", "zh-Hans", "zh-Hant", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl",
+            "en", "en-NZ", "zh", "zh-Hans", "zh-Hant", "de", "es", "ru", "ko", "fr", "ja", "pt",
+            "tr", "pl",
             "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs",
             "ro", "da", "hu", "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy",
             "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is",

@@ -430,6 +430,8 @@
       "deleteError": "Failed to delete entry. Please try again.",
       "retranscribe": "Re-transcribe",
       "retranscribeError": "Failed to re-transcribe. Please try again.",
+      "tidyReo": "Tidy te reo (local model)",
+      "tidyReoError": "Could not tidy te reo: {{error}}",
       "transcribing": "Transcribing...",
       "transcriptionFailed": "Transcription failed. You can re-transcribe using the retry icon."
     },

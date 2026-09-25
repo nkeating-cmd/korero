@@ -264,11 +264,13 @@ export const ModelsSettings: React.FC = () => {
         <p>
           <span className="font-medium text-text">Parakeet V3</span> (the default)
           is the fastest, and among the most accurate for English and European
-          languages — best for everyday dictation. For{" "}
+          languages — but it has no te reo Māori support at all, and it cannot
+          use your custom words while it listens. For{" "}
           <span className="font-medium text-text">te reo Māori</span> or other
           languages, choose a <span className="font-medium text-text">Whisper</span>{" "}
           model (Large or Turbo): they cover 99 languages and apply your custom
-          words at the moment of transcription, sharpening names and jargon.
+          words at the moment of transcription, so macrons and names come out
+          right first time instead of being repaired afterwards.
           Larger models are more accurate but slower — pick the smallest that
           reads your speech correctly.
         </p>

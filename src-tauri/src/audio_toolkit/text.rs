@@ -192,8 +192,70 @@ fn build_match_key(word: &str) -> String {
 }
 
 /// True when `key` is an ordinary English word.
-fn is_common_en(key: &str) -> bool {
+pub(crate) fn is_common_en(key: &str) -> bool {
     COMMON_EN.binary_search(&key).is_ok()
+}
+
+/// Korero (backlog T1, 2026-08-26): te reo Maori forms whose MACRON-FREE
+/// spelling is ITSELF a valid, distinct word -- overwhelmingly the singular of
+/// a pair whose plural is marked by lengthening the first vowel.
+///
+/// `strip_macrons` in `apply_custom_words` normalises only the CUSTOM-WORD
+/// side, so a custom word carrying a macron has a macron-free key, a spoken
+/// macron-free token matches it at distance 0, and the ordinary-English veto
+/// exempts exact matches unconditionally. Result: every singular becomes a
+/// plural. The macron-free form is not a mis-spelling here; it is a different
+/// word.
+///
+/// Sorted, ASCII-lowercase, MACRON-FREE keys, queried with `binary_search`.
+///
+/// FAIL-SAFE BY CONSTRUCTION: a listed word is simply not auto-macronised, and
+/// a taught correction still repairs it deterministically. An omission costs a
+/// convenience, never correctness -- so additions are cheap and deletions need
+/// a reason.
+///
+/// NOT REVIEWED BY A TE REO SPEAKER. Deliberately conservative. See
+/// docs/KORERO_REO_REVIEW_2026-08-26.md.
+// Kōrero (v1.40.0, M4): the list now lives in audio_toolkit/reo_lexicon/ambiguous.tsv,
+// the single source of truth shared with the NZ-English lexicon. See reo_lexicon::is_ambiguous_bare.
+
+/// Macron folding for the T1 guard.
+///
+/// Deliberately a SECOND copy of the v1.3.0 nested `strip_macrons` rather than
+/// a promotion of it: that one lives inside `apply_custom_words`, and its patch
+/// entry is kept idempotent by a plain "is my Replace already in the file"
+/// substring test, so moving it would break that entry on every future run.
+fn strip_macrons_key(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\u{101}' | '\u{100}' => 'a',
+            '\u{113}' | '\u{112}' => 'e',
+            '\u{12b}' | '\u{12a}' => 'i',
+            '\u{14d}' | '\u{14c}' => 'o',
+            '\u{16b}' | '\u{16a}' => 'u',
+            _ => c,
+        })
+        .collect()
+}
+
+/// True when the ONLY difference between what was spoken and the custom word is
+/// macron placement AND the spoken form is on the ambiguity list above.
+///
+/// Note the direction, as everywhere else in this file: the test is on the
+/// SPOKEN side. The custom word is never second-guessed.
+fn is_ambiguous_macron_rewrite(spoken_key: &str, replacement: &str) -> bool {
+    if spoken_key.is_empty() {
+        return false;
+    }
+    let repl_key = build_match_key(replacement);
+    if spoken_key == repl_key {
+        return false; // identical -- nothing is being rewritten
+    }
+    let bare = strip_macrons_key(spoken_key);
+    if bare != strip_macrons_key(&repl_key) {
+        return false; // more than a macron differs -- not this guard to decide
+    }
+    crate::audio_toolkit::reo_lexicon::is_ambiguous_bare(&bare)
 }
 
 /// True when EVERY token of the n-gram is an ordinary English word -- i.e. what
@@ -394,6 +456,16 @@ pub fn apply_custom_words(text: &str, custom_words: &[String], threshold: f64) -
                     if n >= 2 && is_common_en(&build_match_key(ngram_words[n - 1])) {
                         continue;
                     }
+                } else if is_ambiguous_macron_rewrite(&ngram, replacement) {
+                    // Korero (backlog T1, 2026-08-26): an EXACT match differing
+                    // only in macrons is normally the whole point of this layer
+                    // -- it restores the user's own spelling. But in te reo the
+                    // macron IS the plural marker on a class of common nouns, so
+                    // the same mechanism turns a singular into a plural whenever
+                    // the plural is the custom word. Skip restoration for those
+                    // forms only; a taught correction remains the scoped,
+                    // deterministic tool for them.
+                    continue;
                 }
 
                 // Extract punctuation from first and last words of the n-gram
@@ -421,7 +493,13 @@ pub fn apply_custom_words(text: &str, custom_words: &[String], threshold: f64) -
 
 /// Preserves the case pattern of the original word when applying a replacement
 fn preserve_case_pattern(original: &str, replacement: &str) -> String {
-    if original.chars().all(|c| c.is_uppercase()) {
+    // Kōrero (1.41.0, F14): "all capitals" needs at least TWO letters. A lone
+    // capital is just the start of a word — when Parakeet split "whānau" into
+    // "W Nau", the single "W" was read as all-caps and the fix came out as
+    // "WHĀNAU" in the middle of a sentence. Punctuation no longer counts
+    // either way ("HAPU," is still all-caps).
+    let letters: Vec<char> = original.chars().filter(|c| c.is_alphabetic()).collect();
+    if letters.len() >= 2 && letters.iter().all(|c| c.is_uppercase()) {
         replacement.to_uppercase()
     } else if original.chars().next().map_or(false, |c| c.is_uppercase()) {
         let mut chars: Vec<char> = replacement.chars().collect();
@@ -611,6 +689,15 @@ mod tests {
         assert_eq!(preserve_case_pattern("HELLO", "world"), "WORLD");
         assert_eq!(preserve_case_pattern("Hello", "world"), "World");
         assert_eq!(preserve_case_pattern("hello", "WORLD"), "WORLD");
+    }
+
+    /// Kōrero (1.41.0, F14): a single capital letter is not "all capitals".
+    #[test]
+    fn korero_f14_a_lone_capital_is_not_shouting() {
+        assert_eq!(preserve_case_pattern("W", "whānau"), "Whānau");
+        assert_eq!(preserve_case_pattern("HAP", "hapū"), "HAPŪ");
+        assert_eq!(preserve_case_pattern("HAPU,", "hapū"), "HAPŪ");
+        assert_eq!(preserve_case_pattern("I", "iwi"), "Iwi");
     }
 
     #[test]
@@ -1029,6 +1116,73 @@ mod korero_v1_30_tests {
         assert!(low.contains("meeting"), "content must survive: {out:?}");
     }
 
+    /// Backlog T1. In te reo Maori the macron is the plural marker on a whole
+    /// class of nouns, so exact-match restoration must not turn a singular into
+    /// a plural. Fails on every build before 2026-08-26.
+    #[test]
+    fn korero_t1_a_singular_is_not_pluralised_by_macron_restoration() {
+        let words = vec!["w\u{101}hine".to_string()];
+        let out = apply_custom_words("one wahine spoke", &words, EXACT_MATCH_ONLY);
+        assert!(
+            !out.contains("w\u{101}hine"),
+            "a singular must not be pluralised by macron restoration: {out:?}"
+        );
+        assert!(
+            out.contains("wahine"),
+            "and the word itself must survive: {out:?}"
+        );
+    }
+
+    #[test]
+    fn korero_t1_unambiguous_macron_restoration_still_works() {
+        for (spoken, custom, expected) in [
+            ("our whanau", "wh\u{101}nau", "wh\u{101}nau"),
+            ("the hapu", "hap\u{16b}", "hap\u{16b}"),
+            ("a good korero", "k\u{14d}rero", "k\u{14d}rero"),
+        ] {
+            let words = vec![custom.to_string()];
+            let out = apply_custom_words(spoken, &words, EXACT_MATCH_ONLY);
+            assert!(
+                out.contains(expected),
+                "unambiguous restoration must not regress: {spoken} -> {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn korero_t1_ambiguity_list_is_sorted_lowercase_and_macron_free() {
+        // Kōrero (v1.40.0, M4): the list is parsed from reo_lexicon/ambiguous.tsv.
+        let keys = crate::audio_toolkit::reo_lexicon::ambiguous_keys();
+        for pair in keys.windows(2) {
+            assert!(pair[0] < pair[1], "ambiguity keys must be sorted for binary_search: {pair:?}");
+        }
+        for w in keys {
+            assert!(!w.is_empty(), "empty entry in ambiguity list");
+            assert_eq!(*w, w.to_lowercase(), "entries must be lowercase: {w}");
+            assert_eq!(strip_macrons_key(w), *w, "entries are lookup keys and must be stored macron-free: {w}");
+        }
+    }
+
+    #[test]
+    fn korero_t1_guard_fires_only_on_macron_only_differences() {
+        assert!(
+            is_ambiguous_macron_rewrite("wahine", "w\u{101}hine"),
+            "the whole point of the guard"
+        );
+        assert!(
+            !is_ambiguous_macron_rewrite("wahine", "wahine"),
+            "identical strings rewrite nothing"
+        );
+        assert!(
+            !is_ambiguous_macron_rewrite("whanau", "wh\u{101}nau"),
+            "whanau is not a word without its macron -- restoration must apply"
+        );
+        assert!(
+            !is_ambiguous_macron_rewrite("wahine", "wahines"),
+            "a non-macron difference is not this guard to decide"
+        );
+    }
+
     #[test]
     fn korero_item7_exact_match_restores_macrons() {
         let words = vec!["whanau".to_string()];
@@ -1064,5 +1218,31 @@ mod korero_v1_30_tests {
             inert, "whanau",
             "threshold 0.0 accepts nothing (strict <), which is why EXACT_MATCH_ONLY is an epsilon"
         );
+    }
+}
+
+#[cfg(test)]
+mod reo_lexicon_veto_tests {
+    use super::*;
+
+    /// BUILD-PLAN M4: every ambiguity pair, custom-word side. Teaching the macronised
+    /// form as a custom word must not rewrite the bare form (it is a different word).
+    #[test]
+    fn ambiguous_pair_custom_words_never_macronise_bare_form() {
+        const EXACT_MATCH_ONLY: f64 = 1e-9;
+        let pairs = crate::audio_toolkit::reo_lexicon::ambiguous_pairs();
+        assert!(pairs.len() >= 15);
+        for (bare, macronised) in pairs {
+            let words = vec![macronised.clone()];
+            let spoken = format!("one {bare} here");
+            assert_eq!(
+                apply_custom_words(&spoken, &words, EXACT_MATCH_ONLY),
+                spoken,
+                "custom word '{macronised}' must not rewrite bare '{bare}'"
+            );
+        }
+        // ...and a non-ambiguous macron word still IS restored by the same mechanism.
+        let words = vec!["whānau".to_string()];
+        assert_eq!(apply_custom_words("our whanau", &words, EXACT_MATCH_ONLY), "our whānau");
     }
 }

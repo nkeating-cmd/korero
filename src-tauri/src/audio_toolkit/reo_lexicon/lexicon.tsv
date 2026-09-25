@@ -1,0 +1,8 @@
+# Kōrero curated macron-restoration lexicon (v1.40.0, M4 step 3).
+# status: draft
+# Rows are INERT until the header reads `# status: reviewed` (a te reo speaker has read this file
+# AND ambiguous.tsv) — see SOURCES.md for per-source licence status. Rows whose bare key appears in
+# ambiguous.tsv, in text.rs COMMON_EN, or collides with another row's bare key are DROPPED by the
+# parser and logged once; the committed file must produce zero drops (test).
+# Columns: bare<TAB>canonical<TAB>kind<TAB>source      kind ∈ common | proper
+bare	canonical	kind	source

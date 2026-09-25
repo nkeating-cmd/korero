@@ -62,8 +62,31 @@ impl Drop for LoadingGuard {
     }
 }
 
+/// Kōrero (v1.40.0, M1d): what the engine said versus what the user gets.
+/// `raw` is the engine text before `collapse_repeats`; `text` is the final
+/// output of the same post-engine chain dictation uses.
+#[derive(Debug, Clone, Default)]
+pub struct TranscribeTrace {
+    pub raw: String,
+    pub text: String,
+    /// The exact `initial_prompt` handed to whisper.cpp (None on Parakeet).
+    pub initial_prompt: Option<String>,
+    /// The language the engine was actually asked for ("auto" when detected).
+    pub effective_language: String,
+    /// True when the M3 echo guard removed a leading prompt echo.
+    pub echo_stripped: bool,
+}
+
 #[derive(Clone)]
 pub struct TranscriptionManager {
+    /// Kōrero (v1.40.0, M1d): traces from `transcribe_traced`, drained once by
+    /// the eval harness so callers through `transcribe()` stay unchanged.
+    ///
+    /// A Vec, not a slot: `transcribe_wav_chunked` splits at 300 s
+    /// (`meeting.rs` CHUNK_SAMPLES), so a ~10-minute evaluation take calls
+    /// `transcribe()` twice and a single slot would keep only the last chunk —
+    /// halving the raw text the macron-restored metric is computed from.
+    traces: Arc<Mutex<Vec<TranscribeTrace>>>,
     engine: Arc<Mutex<Option<LoadedEngine>>>,
     model_manager: Arc<ModelManager>,
     app_handle: AppHandle,
@@ -87,6 +110,7 @@ impl TranscriptionManager {
             watcher_handle: Arc::new(Mutex::new(None)),
             is_loading: Arc::new(Mutex::new(false)),
             loading_condvar: Arc::new(Condvar::new()),
+            traces: Arc::new(Mutex::new(Vec::new())),
         };
 
         // Start the idle watcher
@@ -469,7 +493,53 @@ impl TranscriptionManager {
         current_model.clone()
     }
 
-    pub fn transcribe(&self, mut audio: Vec<f32>) -> Result<String> {
+    pub fn transcribe(&self, audio: Vec<f32>) -> Result<String> {
+        self.transcribe_traced(audio).map(|t| t.text)
+    }
+
+    /// Kōrero (v1.40.0, M1d): drain the accumulated traces, merged into one
+    /// (eval harness only). `raw` and `text` are the chunks joined in order —
+    /// so a multi-chunk file yields the WHOLE raw transcript, not the tail.
+    /// `initial_prompt` and `effective_language` come from the first chunk
+    /// (they are identical across chunks of one run); `echo_stripped` is true
+    /// if the guard fired on any chunk.
+    pub fn take_traces(&self) -> Option<TranscribeTrace> {
+        let mut guard = self
+            .traces
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let all = std::mem::take(&mut *guard);
+        if all.is_empty() {
+            return None;
+        }
+        let chunks = all.len();
+        let echo_stripped = all.iter().any(|t| t.echo_stripped);
+        let initial_prompt = all[0].initial_prompt.clone();
+        let effective_language = all[0].effective_language.clone();
+        let join = |parts: Vec<String>| -> String {
+            parts
+                .into_iter()
+                .filter(|p| !p.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let raw = join(all.iter().map(|t| t.raw.clone()).collect());
+        let text = join(all.iter().map(|t| t.text.clone()).collect());
+        if chunks > 1 {
+            log::info!("eval: merged {chunks} chunk traces");
+        }
+        Some(TranscribeTrace {
+            raw,
+            text,
+            initial_prompt,
+            effective_language,
+            echo_stripped,
+        })
+    }
+
+    /// Kōrero (v1.40.0, M1d): the body of `transcribe`, returning the raw engine
+    /// text and the prompt/language actually used alongside the final text.
+    pub fn transcribe_traced(&self, mut audio: Vec<f32>) -> Result<TranscribeTrace> {
         // Korero (v1.22.0): loudness-normalise quiet recordings before ASR.
         crate::corrections::normalize_for_asr(&mut audio);
         #[cfg(debug_assertions)]
@@ -489,7 +559,7 @@ impl TranscriptionManager {
         if audio.is_empty() {
             debug!("Empty audio vector");
             self.maybe_unload_immediately("empty audio");
-            return Ok(String::new());
+            return Ok(TranscribeTrace::default());
         }
 
         // Check if model is loaded, if not try to load it
@@ -511,7 +581,24 @@ impl TranscriptionManager {
 
         // Validate selected language against the model's supported languages.
         // If the language isn't supported, fall back to "auto" to prevent errors.
-        let validated_language = if settings.selected_language == "auto" {
+        //
+        // Korero (P0-NZ / D-2, 2026-09-02): the SHAPE check below runs first and is
+        // deliberately independent of the model. This block used to fail open twice --
+        // an unknown model id fell to .unwrap_or(true), and a registered model with an
+        // empty supported_languages (every custom .bin Whisper model) satisfied
+        // is_empty() -- so an arbitrary string could reach the engine. whisper.cpp does
+        // not reject it: whisper_lang_id misses g_lang and returns -1, and
+        // whisper_token_lang(ctx, -1) is token_sot, so the start token is emitted twice
+        // in the language slot, silently.
+        let validated_language = if !crate::audio_toolkit::is_well_formed_locale(
+            &settings.selected_language,
+        ) {
+            warn!(
+                "Language '{}' is not a well-formed locale code, falling back to auto-detect",
+                settings.selected_language
+            );
+            "auto".to_string()
+        } else if settings.selected_language == "auto" {
             "auto".to_string()
         } else {
             let is_supported = self
@@ -535,6 +622,22 @@ impl TranscriptionManager {
                 "auto".to_string()
             }
         };
+
+        // Korero (P0-NZ / D-9, 2026-09-02): fold a Korero locale tag to a bare engine language
+        // HERE, once, rather than inside a single match arm. Shadowing the binding means every
+        // engine arm below is structurally incapable of seeing "en-NZ".
+        let validated_language =
+            crate::audio_toolkit::fold_locale_for_engine(&validated_language).to_string();
+
+        // Kōrero (v1.40.0, M1d/M1e): the prompt is built ONCE here so the trace
+        // records exactly what the engine was given, shaped by the setting.
+        let bias_prompt: Option<String> = crate::corrections::build_bias_prompt_shaped(
+            &settings.custom_words,
+            &settings.transcript_corrections,
+            settings.bias_prompt_shape,
+        );
+        let effective_language = validated_language.clone();
+        let mut trace_prompt: Option<String> = None;
 
         // Perform transcription with the appropriate engine.
         // We use catch_unwind to prevent engine panics from poisoning the mutex,
@@ -580,12 +683,10 @@ impl TranscriptionManager {
                                 // Korero (v1.19.1): closed-loop context biasing -- seed the
                                 // decoder with custom words AND taught corrections (deduped +
                                 // bounded). See corrections::build_bias_prompt.
-                                initial_prompt: crate::corrections::build_bias_prompt(
-                                    &settings.custom_words,
-                                    &settings.transcript_corrections,
-                                ),
+                                initial_prompt: bias_prompt.clone(),
                                 ..Default::default()
                             };
+                            trace_prompt = bias_prompt.clone();
 
                             whisper_engine
                                 .transcribe_with(&audio, &params)
@@ -722,6 +823,7 @@ impl TranscriptionManager {
         // the DICTATION path. This ran on meetings only; a model emitting a
         // repeated n-gram instead of speech went straight into the user's
         // document. Deliberately first, on raw engine output.
+        let raw_engine_text = result.text.clone();
         let result_text = crate::meeting::collapse_repeats(&result.text);
 
         // Apply word correction if custom words are configured.
@@ -742,9 +844,30 @@ impl TranscriptionManager {
         // the phonetic discount applies, both orders of magnitude above it.
         const EXACT_MATCH_ONLY: f64 = 1e-9;
 
+        // Kōrero (v1.40.0, M3 echo guard): strip a leading prompt echo BEFORE
+        // custom-word matching so an echoed term list is not "corrected" into
+        // the transcript. Whisper branch only (Parakeet has no prompt).
+        let (result_text, echo_stripped) = if is_whisper {
+            let stripped =
+                crate::corrections::strip_prompt_echo(&result_text, trace_prompt.as_deref());
+            let fired = stripped.len() != result_text.len();
+            if fired {
+                info!("Prompt echo stripped from the start of the transcript");
+            }
+            (stripped, fired)
+        } else {
+            (result_text, false)
+        };
+
+        // Kōrero (v1.40.0, M1e): the Whisper matcher policy is a setting so the
+        // fuzzy-vs-exact trade (backlog item 7) can be measured, not assumed.
+        let whisper_exact = matches!(
+            settings.whisper_custom_word_matching,
+            crate::settings::WordMatching::Exact
+        );
         let corrected_result = if settings.custom_words.is_empty() {
             result_text
-        } else if is_whisper {
+        } else if is_whisper && whisper_exact {
             // Whisper already gets the custom words as initial_prompt, so fuzzy
             // correction would fight the decoder. Exact matching does not: it is
             // a deterministic normaliser that restores the user's own spelling
@@ -758,12 +881,51 @@ impl TranscriptionManager {
             )
         };
 
-        // Filter out filler words and hallucinations
+        // Filter out filler words and hallucinations.
+        //
+        // Korero (D-1, 2026-09-02): this passed settings.app_language, the i18n UI
+        // locale, not the dictation language. The NZ tag-particle protection therefore
+        // held only while the interface was English; changing the UI language silently
+        // changed what was deleted from transcripts.
         let filtered_result = filter_transcription_output(
             &corrected_result,
-            &settings.app_language,
+            &settings.selected_language,
             &settings.custom_filler_words,
         );
+
+        // Korero (P0-NZ, 2026-09-02): the New Zealand English locale pass -- macron
+        // restoration, NZ place names, NZ spelling. Deterministic, offline, and applied
+        // for EVERY engine, which is the whole point: Parakeet accepts no bias prompt
+        // and no language hint, so this is the only NZ machinery that can reach it.
+        // Gated on the RAW selected_language, mirroring maybe_convert_chinese_variant.
+        //
+        // custom_words is passed in so the user's own vocabulary SUPPRESSES this pass
+        // (D-8). Round one claimed a user's corrections always win; that was true of
+        // transcript_corrections and false of custom_words, which apply_custom_words
+        // restores above only for this pass to overwrite -- so a user named Awhina got
+        // macronised with no way to opt out.
+        let filtered_result =
+            if settings.nz_english_pass_enabled
+                && crate::audio_toolkit::is_nz_locale(&settings.selected_language)
+            {
+                // Korero (v1.40.0, R1.1): the pass is gated by
+                // `nz_english_pass_enabled`; only the curated lexicon rows are
+                // gated by `reo_lexicon_enabled`, so the A/B on one does not
+                // silently move NZ spelling with it.
+                crate::audio_toolkit::apply_nz_english_opts(
+                    &filtered_result,
+                    &settings.custom_words,
+                    settings.reo_lexicon_enabled,
+                )
+            } else {
+                filtered_result
+            };
+
+        // Korero (UX round, 2026-09-02): deterministic dictation formatting.
+        // Only what a spoken cue makes unambiguous -- it never guesses, and it
+        // returns the input verbatim when nothing matched. The LLM layer infers
+        // the lists that were not cued; this is the floor, not the ceiling.
+        let filtered_result = crate::audio_toolkit::apply_dictation_format(&filtered_result);
 
         // Korero (v1.15.0): deterministic user-taught corrections (wrong -> right),
         // applied last so they win over fuzzy matching and filtering.
@@ -794,7 +956,22 @@ impl TranscriptionManager {
 
         self.maybe_unload_immediately("transcription");
 
-        Ok(final_result)
+        let trace = TranscribeTrace {
+            raw: raw_engine_text,
+            text: final_result,
+            initial_prompt: trace_prompt,
+            effective_language,
+            echo_stripped,
+        };
+        // Korero (v1.40.0, R1.6): only `eval::run` ever drains this stash, so
+        // pushing on every dictation left every transcript of the session
+        // resident in a tray process that runs for days. Eval runs only.
+        if crate::settings::EVAL_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Ok(mut slot) = self.traces.lock() {
+                slot.push(trace.clone());
+            }
+        }
+        Ok(trace)
     }
 }
 
@@ -915,5 +1092,76 @@ impl Drop for TranscriptionManager {
                 debug!("Idle watcher thread joined successfully");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod trace_merge_tests {
+    use super::TranscribeTrace;
+
+    /// VERIFY-M1 DEFECT-2: `transcribe_wav_chunked` splits at 300 s, so a
+    /// ~10-minute evaluation take produces several traces. Merging must yield
+    /// the WHOLE raw transcript — the earlier single-slot stash kept only the
+    /// last chunk, silently halving the macron-restored evidence.
+    ///
+    /// The merge is exercised here on the same shape `take_traces` builds,
+    /// without needing an engine or an AppHandle.
+    fn merge(all: Vec<TranscribeTrace>) -> Option<TranscribeTrace> {
+        if all.is_empty() {
+            return None;
+        }
+        let echo_stripped = all.iter().any(|t| t.echo_stripped);
+        let initial_prompt = all[0].initial_prompt.clone();
+        let effective_language = all[0].effective_language.clone();
+        let join = |parts: Vec<String>| -> String {
+            parts
+                .into_iter()
+                .filter(|p| !p.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        Some(TranscribeTrace {
+            raw: join(all.iter().map(|t| t.raw.clone()).collect()),
+            text: join(all.iter().map(|t| t.text.clone()).collect()),
+            initial_prompt,
+            effective_language,
+            echo_stripped,
+        })
+    }
+
+    fn t(raw: &str, text: &str, echo: bool) -> TranscribeTrace {
+        TranscribeTrace {
+            raw: raw.to_string(),
+            text: text.to_string(),
+            initial_prompt: Some("whanau, korero".to_string()),
+            effective_language: "en".to_string(),
+            echo_stripped: echo,
+        }
+    }
+
+    #[test]
+    fn traces_merge_keeps_every_chunk_not_just_the_last() {
+        let merged = merge(vec![
+            t("chunk one raw", "chunk one text", false),
+            t("chunk two raw", "chunk two text", false),
+        ])
+        .unwrap();
+        assert_eq!(merged.raw, "chunk one raw chunk two raw");
+        assert_eq!(merged.text, "chunk one text chunk two text");
+        assert_eq!(merged.effective_language, "en");
+        assert!(!merged.echo_stripped);
+    }
+
+    #[test]
+    fn traces_merge_flags_echo_from_any_chunk_and_skips_empties() {
+        let merged = merge(vec![
+            t("first", "first", false),
+            t("", "", false),
+            t("third", "third", true),
+        ])
+        .unwrap();
+        assert_eq!(merged.raw, "first third");
+        assert!(merged.echo_stripped, "echo on any chunk must survive the merge");
+        assert!(merge(vec![]).is_none());
     }
 }

@@ -15,6 +15,7 @@ mod meeting_capture; // Kōrero (v1.13.2, Phase A): streaming-to-disk meeting ca
 #[cfg(windows)]
 mod meeting_capture_wasapi; // Kōrero (v1.13.6): native WASAPI loopback for "Others"
 mod denoise; // Kōrero (v1.11.0): optional RNNoise mic denoiser (nnnoiseless)
+mod eval; // Kōrero (v1.40.0): --eval-transcribe entry point (accuracy harness)
 mod helpers;
 mod input;
 mod llm_client;
@@ -460,6 +461,24 @@ pub fn run(cli_args: CliArgs) {
     // function doc comment for why this exists.
     migrate_legacy_app_data();
 
+    // Kōrero (v1.40.0, SEC-01 / RT #2): an evaluation run never touches the
+    // live install. Set EVAL_MODE (write_settings becomes a no-op) and seed the
+    // data-dir lock with a per-process temp dir BEFORE portable::init(), so no
+    // marker file is involved and the installed app's next launch is unaffected.
+    if cli_args.is_eval() {
+        settings::EVAL_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
+        let sandbox = eval::sandbox_dir();
+        if !portable::set_data_dir_override(sandbox.clone()) {
+            eprintln!("[eval] could not sandbox data dir at {}", sandbox.display());
+        }
+        match &cli_args.models_dir {
+            Some(dir) => {
+                portable::set_models_dir_override(dir.clone());
+            }
+            None => eprintln!("[eval] --models-dir not given: models will not be found (exit 3)"),
+        }
+    }
+
     // Detect portable mode before anything else
     portable::init();
 
@@ -627,6 +646,7 @@ pub fn run(cli_args: CliArgs) {
             commands::history::get_audio_file_path,
             commands::history::delete_history_entry,
             commands::history::retry_history_entry_transcription,
+            commands::history::tidy_history_entry_reo, // Kōrero (v1.40.0, M5)
             commands::history::update_history_limit,
             commands::history::update_recording_retention_period,
             commands::ollama::pull_ollama_model,
@@ -686,8 +706,11 @@ pub fn run(cli_args: CliArgs) {
         builder = builder.plugin(tauri_nspanel::init());
     }
 
-    builder
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+    // Kōrero (v1.40.0, M1b): the single-instance plugin would forward an
+    // eval run's args to the daily-driver instance and exit. Register it only
+    // for normal launches.
+    if cli_args.eval_transcribe.is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if args.iter().any(|a| a == "--toggle-transcription") {
                 signal_handle::send_transcription_input(app, "transcribe", "CLI");
             } else if args.iter().any(|a| a == "--toggle-post-process") {
@@ -697,7 +720,10 @@ pub fn run(cli_args: CliArgs) {
             } else {
                 show_main_window(app);
             }
-        }))
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
         // Kōrero (v1.18.0): updater plugin RESTORED — endpoint locked to the
@@ -720,7 +746,30 @@ pub fn run(cli_args: CliArgs) {
         // restore_state call after window build below is required because
         // Kōrero builds its main window programmatically (not via tauri.conf
         // declarative windows), so the plugin's auto-restore hook doesn't fire.
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        //
+        // ⚠ Kōrero (v1.34.1, 2026-08-27): THE RECORDING OVERLAY IS DENY-LISTED,
+        // and the comment above is why this took three months to find. It says
+        // the auto-restore hook "doesn't fire" for programmatic windows. That is
+        // true of the MAIN window. It is NOT true of the overlay: measured on a
+        // running v1.34.0 build, the `Recording` window was 142x29 — byte-for-byte
+        // the geometry saved in .window-state.json — while overlay.rs asked for
+        // 336x96. The persisted state was silently overriding inner_size() on
+        // every launch, so a 180x40 pill was being drawn into a 142x29 viewport
+        // and the user saw a clipped sliver.
+        //
+        // That also means the 172x36 -> 240x60 -> 320x64 -> 336x96 window bumps
+        // were ALL inert for anyone who had ever run the app before. Four rounds
+        // of "fixing" a geometry the app was not using. 142x29 is 172x36 at 125%
+        // scaling, i.e. the saved entry predates 2026-05-17.
+        //
+        // The overlay's size and position are COMPUTED, never user-chosen — there
+        // is nothing about it worth persisting. Deny-listing stops both the save
+        // and the restore, so inner_size() is authoritative again.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_denylist(&["recording_overlay"])
+                .build(),
+        )
         .manage(cli_args.clone())
         .setup(move |app| {
             specta_builder.mount_events(app);
@@ -780,9 +829,18 @@ pub fn run(cli_args: CliArgs) {
             // so subsequent launches restore normally — the user's own resize choices
             // accumulate in a fresh file and persist from that point forward.
             // Failure is non-fatal: if we can't delete, restore_state handles it.
+            //
+            // Kōrero (v1.40.0, VERIFY-M1 DEFECT-1): this used `app.path()`
+            // directly, which is the WRONG directory in portable mode (the
+            // migration then checked and wrote beside %APPDATA% instead of the
+            // portable Data dir) and, in an evaluation run, wrote its marker
+            // into the LIVE app data despite the sandbox. `portable::app_data_dir`
+            // is correct for all three modes. The whole block is additionally
+            // skipped for an eval run: a benchmark must neither consume nor
+            // mutate the user's window state.
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            {
-                if let Ok(data_dir) = app.path().app_data_dir() {
+            if !cli_args.is_eval() {
+                if let Ok(data_dir) = portable::app_data_dir(&app.handle()) {
                     let marker = data_dir.join(".korero-window-reset-v190");
                     if !marker.exists() {
                         let state_file = data_dir.join(".window-state.json");
@@ -810,8 +868,10 @@ pub fn run(cli_args: CliArgs) {
             // launches at the inner_size defaults above and a fresh state
             // file is written on next close.
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            if let Err(err) = main_window.restore_state(StateFlags::all()) {
-                log::warn!("window-state: failed to restore main window state: {err}");
+            if !cli_args.is_eval() {
+                if let Err(err) = main_window.restore_state(StateFlags::all()) {
+                    log::warn!("window-state: failed to restore main window state: {err}");
+                }
             }
 
             let mut settings = get_settings(&app.handle());
@@ -820,6 +880,12 @@ pub fn run(cli_args: CliArgs) {
             if cli_args.debug {
                 settings.debug_mode = true;
                 settings.log_level = settings::LogLevel::Trace;
+            }
+            // Kōrero (v1.40.0, M1b): eval overrides ride the same runtime-only
+            // path as --debug; the SettingsCache below carries them and
+            // EVAL_MODE guarantees they are never written.
+            if cli_args.is_eval() {
+                eval::apply_overrides(&mut settings, &cli_args);
             }
 
             let tauri_log_level: tauri_plugin_log::LogLevel = settings.log_level.into();
@@ -843,11 +909,14 @@ pub fn run(cli_args: CliArgs) {
             meeting::cleanup_old_recordings(app.handle());
             // Kōrero (v1.16.0): one-shot update notification (fork repo only;
             // delayed 8 s; silent on any failure).
-            update_check::spawn_update_check(app.handle().clone());
+            // Kōrero (v1.40.0): an eval run makes no network request at all.
+            if !cli_args.is_eval() {
+                update_check::spawn_update_check(app.handle().clone());
+            }
             // Kōrero (v1.17.0): if post-processing runs on local Ollama,
             // quietly make sure it's actually up (PC optimisers and reboots
             // routinely leave it stopped). Best-effort; never blocks startup.
-            {
+            if !cli_args.is_eval() {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let _ = tauri::async_runtime::spawn_blocking(|| {
@@ -874,6 +943,35 @@ pub fn run(cli_args: CliArgs) {
             app.manage(SettingsCache(Arc::new(RwLock::new(settings.clone()))));
 
             initialize_core_logic(&app_handle);
+
+            // Kōrero (v1.40.0, M1b): evaluation run — no tray, no window; run
+            // the harness on a std thread (block_on bridges the async import
+            // path, RT #7) and exit with its code.
+            if cli_args.is_eval() {
+                tray::set_tray_visibility(&app_handle, false);
+                let handle = app_handle.clone();
+                let args = cli_args.clone();
+                std::thread::spawn(move || {
+                    let code = tauri::async_runtime::block_on(eval::run(handle.clone(), args));
+                    // `AppHandle::exit(code)` does NOT propagate the code on Windows.
+                    // Measured on a Windows 11 machine (1.40.0, NSIS build): a run that correctly
+                    // refused a missing model, wrote its error JSON and returned 3
+                    // still left the process with exit status 0.
+                    //
+                    // That is not cosmetic. `run.ps1` gates on `$p.ExitCode -ne 0` and
+                    // checks.json treats the exit code as the gate, so a swallowed code
+                    // turns every failure into a silent success: the harness would score
+                    // an empty transcript and report a real-looking 0.0 accuracy.
+                    //
+                    // The result JSON is already written and closed by this point, and
+                    // an eval run holds nothing needing unwinding, so exit directly.
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                    let _ = std::io::stderr().flush();
+                    std::process::exit(code);
+                });
+                return Ok(());
+            }
 
             // Pre-warm GPU/accelerator enumeration on a background thread.
             // The first call into transcribe_rs::whisper_cpp::gpu::list_gpu_devices

@@ -2,9 +2,60 @@ fn main() {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     build_apple_intelligence_bridge();
 
+    emit_git_sha();
+
     generate_tray_translations();
 
     tauri_build::build()
+}
+
+/// Korero (v1.40.0, R1.3): stamp the build with its commit, so an eval result
+/// can be tied back to a tree. `eval.rs` reads it via
+/// `option_env!("KORERO_GIT_SHA")`; nothing ever set it, so every run recorded
+/// "unknown" and RT #6's `release-eval-result-fresh` gate could never pass.
+/// Falls back to "unknown" when git is unavailable (e.g. a source tarball).
+fn emit_git_sha() {
+    use std::process::Command;
+    println!("cargo:rerun-if-changed=../.git/HEAD");
+    let sha = Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    // Scoped to the paths that actually determine the binary's behaviour.
+    // A whole-tree check reported "dirty" on a clean CI checkout - generated
+    // schemas under src-tauri/gen and EOL normalisation on a Windows runner
+    // (this repo deliberately carries mixed EOLs and has no .gitattributes)
+    // both show up in `git status` without a line of source having changed.
+    let dirty = Command::new("git")
+        .args([
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+            "--",
+            "../src",
+            "src",
+            "Cargo.toml",
+            "Cargo.lock",
+            "tauri.conf.json",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false);
+    // The sha stays a BARE sha. RT #6's release-eval-result-fresh gate compares
+    // git_sha against the tagged commit, so a "-dirty" suffix welded onto the
+    // identifier would fail that comparison on every build. Dirtiness is real
+    // information, so it travels as its own field rather than corrupting this one.
+    println!(
+        "cargo:rustc-env=KORERO_GIT_SHA={}",
+        sha.unwrap_or_else(|| "unknown".to_string())
+    );
+    println!("cargo:rustc-env=KORERO_GIT_DIRTY={}", if dirty { "1" } else { "0" });
 }
 
 /// Generate tray menu translations from frontend locale files.

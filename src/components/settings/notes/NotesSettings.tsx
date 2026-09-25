@@ -24,6 +24,8 @@ import {
   type Correction,
 } from "../../ui/Corrections";
 import { commands, type ModelInfo } from "../../../bindings";
+import i18n from "../../../i18n";
+import { formatRelativeTime } from "../../../utils/dateFormat";
 import { useSettings } from "../../../hooks/useSettings";
 
 /**
@@ -86,7 +88,7 @@ const fmtTime = (s: number) => {
 };
 
 export const NotesSettings: React.FC = () => {
-  const { settings } = useSettings();
+  const { settings, postProcessModelOptions } = useSettings();
   const ppEnabled = settings?.post_process_enabled ?? false;
 
   const [notes, setNotes] = useState<Note[]>(() => loadNotes());
@@ -443,7 +445,14 @@ export const NotesSettings: React.FC = () => {
   ];
 
   // AI model for processing: "" = the model configured for the provider under
-  // Post Process; otherwise one of the provider's suggested models.
+  // Post Process; otherwise another model available on that provider.
+  //
+  // Korero (v1.35.0): this list used to be built purely from the provider's
+  // static suggested_models, which for a local provider (Ollama) meant it
+  // offered models that are not installed and hid the ones that are -- the
+  // same fault as the Post Process model dropdown, independently coded here.
+  // Fetched models now win; suggestions are a fallback for remote providers
+  // only, where every catalogue entry is genuinely usable with a valid key.
   const activeProvider = settings?.post_process_providers?.find(
     (p) => p.id === settings?.post_process_provider_id,
   );
@@ -451,6 +460,14 @@ export const NotesSettings: React.FC = () => {
     (settings?.post_process_models ?? {})[
       settings?.post_process_provider_id ?? ""
     ] ?? "";
+  const fetchedPpModels =
+    postProcessModelOptions[settings?.post_process_provider_id ?? ""] ?? [];
+  const ppModelCandidates =
+    fetchedPpModels.length > 0
+      ? fetchedPpModels
+      : activeProvider?.is_local_provider
+        ? []
+        : (activeProvider?.suggested_models ?? []);
   const ppModelOptions: DropdownOption[] = [
     {
       value: "",
@@ -458,7 +475,7 @@ export const NotesSettings: React.FC = () => {
         ? `Default (${configuredPpModel})`
         : "Provider default",
     },
-    ...(activeProvider?.suggested_models ?? [])
+    ...ppModelCandidates
       .filter((m) => m && m !== configuredPpModel)
       .map((m) => ({ value: m, label: m })),
   ];
@@ -525,7 +542,27 @@ export const NotesSettings: React.FC = () => {
                   </button>
                 </div>
                 <span className="text-xs text-text-subtle">
-                  {new Date(n.updatedAt).toLocaleDateString()}
+                  {/* Korero (UX round, 2026-09-02): the shared formatter, not
+                      toLocaleDateString(). Called bare, that follows the
+                      OPERATING SYSTEM locale rather than the app's own language
+                      setting -- Korero in French on an English Windows showed
+                      English dates.
+
+                      RELATIVE, not absolute, and that is the whole point of the
+                      round. A first pass used formatDate() here, which left the
+                      app with TWO date treatments -- relative in History, a long
+                      absolute date in Notes -- which is the defect this work
+                      exists to remove. "2 hours ago" is also the more useful
+                      answer for "when did I last touch this note", and it is far
+                      shorter than "2 September 2026" in a narrow list column
+                      where a wrap would make every row a different height.
+
+                      Contract: the formatter takes SECONDS as a string;
+                      updatedAt is Date.now() milliseconds (see the Note type). */}
+                  {formatRelativeTime(
+                    String(Math.floor(n.updatedAt / 1000)),
+                    i18n.language,
+                  )}
                 </span>
               </div>
             );
