@@ -41,6 +41,10 @@ Current version: **v1.41.0**.
 - **Latch / hands-free mode** — double-tap a shortcut to lock recording on for long dictation; tap once to stop.
 
 ### Reliability
+- **Meetings keep working when you leave the tab** (v1.41). Stop, re-transcribe, import, recover, notes and refine all run in the background, and the spinner and progress are still there when you come back. One queue now handles every read and write of the meetings store, so a page you return to can no longer save its older copy over a finished result.
+- **Capture warnings while there's still time to fix them** (v1.41). If the microphone hears nothing for two minutes, or almost nothing comes through from the computer's audio output after 90 seconds, Kōrero warns you mid-meeting with a toast and a taskbar flash. Stop explains why a side came back empty.
+- **Missed speech is rebuilt from the recording** (v1.41). If live transcription falls behind or hits an error, Stop re-transcribes that speaker from the saved audio. The speech engine reloads itself after a failure. Re-transcribe reports the real error and keeps your existing transcript.
+- **Honest notes** (v1.41). Notes for a transcript cut at the 48,000-character limit say what share of it they cover, and notes cut short by the model's length limit are labelled incomplete.
 - **Work finishes even if you leave the tab** (v1.30.3). Meeting post-processing runs in a store that outlives the view, so navigating away no longer discards the result — it lands whether or not you are watching, and returning mid-run shows the spinner and the text generated while you were gone. Transcriptions, imports and note refinements write straight to disk when no view is mounted, and both the Meetings and Notes autosaves now flush on the way out instead of cancelling, so an edit made in the last half-second before you switch tabs survives.
 - **Long generations are no longer cut off at five minutes** (v1.30.3). The stream is bounded by silence between tokens rather than a total deadline, and output that stops early is kept and labelled as incomplete instead of being thrown away.
 - **Macrons survive the stream** (v1.30.3). Generated notes are decoded at SSE frame boundaries rather than per network chunk, so a *whānau* split across two packets no longer arrives as a replacement character.
@@ -61,7 +65,7 @@ Current version: **v1.41.0**.
 - **Curated default prompts** — clean transcript, client email, Slack/WhatsApp, meeting note, red-team, and **NZ English + te reo Māori** (restores macrons, never translates te reo, fixes common mis-hearings like "far no" → *whānau*).
 
 ### Localisation & defaults
-- **NZ English** default language (Handy defaults to auto-detect).
+- **New Zealand English on by default** (v1.41; Handy defaults to auto-detect). Macrons, NZ place names and NZ spelling apply out of the box. An existing plain "English" setting switches over once; turn it off in Settings → General and it stays off.
 - **NZ + te reo Māori custom dictionary** seeded by default, with **macron-aware matching** so words like *whānau* / *hapū* resolve correctly.
 - **Teachable corrections** (v1.15) — select a mis-transcribed word anywhere and teach the right one. Fixed deterministically in every future transcription, fed to the AI clean-up as a glossary, and the Notes clean-up even **suggests corrections** it noticed itself.
 - Sensible defaults: trailing space on insert, 15-minute model unload timeout.
