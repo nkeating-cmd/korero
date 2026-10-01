@@ -811,6 +811,24 @@ body {
     background: rgba(90, 176, 255, 0.08);
   }
 
+  /* ---- Labelled fields (a label above each control, wrapping by column) -- */
+  .kx-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    gap: 10px 12px;
+    align-items: end;
+  }
+  .kx-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+  }
+  .kx-field .kx-select {
+    width: 100%;
+    min-width: 0;
+  }
+
   /* ---- Select and menu (Dropdown) ----------------------------------------- */
   .kx-select {
     min-width: 200px;
@@ -913,6 +931,16 @@ body {
   background: var(--kx-surface);
   background-image: none;
   border: 1px solid var(--kx-hairline);
+  border-radius: var(--kx-r-card);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+/* The active choice (e.g. the speech model in use): selected, not glowing. */
+.glass-card-selected {
+  background: var(--kx-selected);
+  background-image: none;
+  border: 1px solid var(--kx-accent);
   border-radius: var(--kx-r-card);
   -webkit-backdrop-filter: none;
   backdrop-filter: none;

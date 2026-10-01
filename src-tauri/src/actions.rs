@@ -174,11 +174,13 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
         .unwrap_or_default();
 
     // Disable reasoning for providers where post-processing rarely benefits from it.
-    // - custom: top-level reasoning_effort (works for local OpenAI-compat servers)
+    // - custom, ollama: top-level reasoning_effort (works for local OpenAI-compat
+    //   servers; Ollama maps it to think:false). Kōrero 1.42 added ollama: see
+    //   `llm_client::default_reasoning_effort`.
     // - openrouter: nested reasoning object; exclude:true also keeps reasoning text
     //   out of the response so it can't pollute structured-output JSON parsing
     let (reasoning_effort, reasoning) = match provider.id.as_str() {
-        "custom" => (Some("none".to_string()), None),
+        "custom" | "ollama" => (Some("none".to_string()), None),
         "openrouter" => (
             None,
             Some(crate::llm_client::ReasoningConfig {

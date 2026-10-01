@@ -14,7 +14,7 @@ import { goTo } from "./goTo";
  */
 
 const timeOf = (at: number) =>
-  new Date(at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 
 const Outcome: React.FC<{ item: ActivityItem }> = ({ item }) => {
   const icon =

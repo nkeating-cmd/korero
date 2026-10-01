@@ -425,55 +425,68 @@ export const NotesSettings: React.FC = () => {
             </p>
           )}
 
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="kx-meta">Speech model</span>
-            <Dropdown
-              options={modelOptions}
-              selectedValue={currentModel}
-              onSelect={changeModel}
-              disabled={!models || models.length === 0 || recording}
-            />
+          {/* 1.42 polish: labelled fields that wrap as whole columns, instead of
+              labels and dropdowns wrapping onto separate lines. */}
+          <div className="kx-fields">
+            <div className="kx-field">
+              <span className="kx-overline">Speech model</span>
+              <Dropdown
+                className="w-full"
+                options={modelOptions}
+                selectedValue={currentModel}
+                onSelect={changeModel}
+                disabled={!models || models.length === 0 || recording}
+              />
+            </div>
             {ppEnabled && (
               <>
-                <span className="kx-meta ml-2">Prompt</span>
-                <Dropdown
-                  options={promptOptions}
-                  selectedValue={promptId}
-                  onSelect={setPromptId}
-                  disabled={!!processing}
-                />
-                <span className="kx-meta ml-2">AI model</span>
-                <Dropdown
-                  options={ppModelOptions}
-                  selectedValue={ppModel}
-                  onSelect={setPpModel}
-                  disabled={!!processing}
-                />
-                <Button
-                  variant="secondary"
-                  onClick={() =>
-                    useNotes.getState().processNote({
-                      noteId: activeNote.id,
-                      content: activeNote.content,
-                      prompt: effectivePrompt(),
-                      model: ppModel.trim() ? ppModel.trim() : null,
-                      onSuggest: suggest,
-                    })
-                  }
-                  disabled={!!processing || finishing || recording || !activeNote.content.trim()}
-                  title="Run the selected prompt and AI model over the whole note (Undo available)"
-                >
-                  {processingHere ? (
-                    <>
-                      <Loader2 size={15} className="animate-spin" /> Processing…{" "}
-                      <span className="kx-mono">{processElapsed}s</span>
-                    </>
-                  ) : (
-                    <>
-                      <Wand2 size={15} /> Process note
-                    </>
-                  )}
-                </Button>
+                <div className="kx-field">
+                  <span className="kx-overline">Prompt</span>
+                  <Dropdown
+                    className="w-full"
+                    options={promptOptions}
+                    selectedValue={promptId}
+                    onSelect={setPromptId}
+                    disabled={!!processing}
+                  />
+                </div>
+                <div className="kx-field">
+                  <span className="kx-overline">AI model</span>
+                  <Dropdown
+                    className="w-full"
+                    options={ppModelOptions}
+                    selectedValue={ppModel}
+                    onSelect={setPpModel}
+                    disabled={!!processing}
+                  />
+                </div>
+                <div className="kx-field items-start">
+                  <Button
+                    variant="secondary"
+                    onClick={() =>
+                      useNotes.getState().processNote({
+                        noteId: activeNote.id,
+                        content: activeNote.content,
+                        prompt: effectivePrompt(),
+                        model: ppModel.trim() ? ppModel.trim() : null,
+                        onSuggest: suggest,
+                      })
+                    }
+                    disabled={!!processing || finishing || recording || !activeNote.content.trim()}
+                    title="Run the selected prompt and AI model over the whole note (Undo available)"
+                  >
+                    {processingHere ? (
+                      <>
+                        <Loader2 size={15} className="animate-spin" /> Processing…{" "}
+                        <span className="kx-mono">{processElapsed}s</span>
+                      </>
+                    ) : (
+                      <>
+                        <Wand2 size={15} /> Process note
+                      </>
+                    )}
+                  </Button>
+                </div>
               </>
             )}
           </div>

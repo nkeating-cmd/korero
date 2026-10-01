@@ -179,7 +179,7 @@ export const MeetingsLibrary: React.FC<{ c: MeetingsController; wide?: boolean }
                         <span className="shrink-0">
                           {new Date(m.createdAt).toLocaleString(undefined, {
                             ...(g.label === "Today" || g.label === "Yesterday"
-                              ? { hour: "2-digit", minute: "2-digit" }
+                              ? { hour: "numeric", minute: "2-digit" }
                               : { day: "numeric", month: "short" }),
                           })}
                           {d ? ` · ${fmtDuration(d)}` : m.imported ? " · imported" : ""}

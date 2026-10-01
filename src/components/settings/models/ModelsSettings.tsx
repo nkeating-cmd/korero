@@ -437,13 +437,13 @@ export const ModelsSettings: React.FC = () => {
           <p>
             <span className="font-medium text-text">Cloud provider</span> — fast
             and nothing to download; you just paste an API key. Pick the provider
-            and key in <span className="font-medium text-text">Post Process</span>.
+            and key in <span className="font-medium text-text">AI clean-up &amp; notes</span>.
           </p>
           <p>
             <span className="font-medium text-text">Fully local (Ollama)</span> —
             no API key, and nothing leaves your machine. Install Ollama, then pull
             a model from{" "}
-            <span className="font-medium text-text">Post Process</span>, where the
+            <span className="font-medium text-text">AI clean-up &amp; notes</span>, where the
             model picker and a one-click pull live.
           </p>
         </div>

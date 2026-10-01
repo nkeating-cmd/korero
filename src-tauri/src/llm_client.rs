@@ -199,6 +199,23 @@ fn create_client(provider: &PostProcessProvider, api_key: &str) -> Result<reqwes
         .map_err(|e| format!("Failed to build HTTP client: {}", e))
 }
 
+/// Kōrero 1.42: thinking off by default for local and self-hosted providers.
+///
+/// Thinking models (gemma4, qwen3 and others) think by default in Ollama. For
+/// clean-up and notes that blows every time budget: measured on legion,
+/// gemma4:12b ran past 120 s with thinking on, and answered in 20–30 s with it
+/// off, fixing the same transcript error. Ollama's OpenAI-compatible endpoint
+/// maps `reasoning_effort: "none"` to `think: false`, and a model without
+/// thinking accepts it unchanged (checked against Ollama 0.34.4, HTTP 200).
+/// `custom` already sent this on the dictation path; meetings, notes, Ask and
+/// History re-runs now do the same. A caller's explicit value always wins.
+pub fn default_reasoning_effort(provider: &PostProcessProvider) -> Option<String> {
+    match provider.id.as_str() {
+        "ollama" | "custom" => Some("none".to_string()),
+        _ => None,
+    }
+}
+
 /// Send a chat completion request to an OpenAI-compatible API
 /// Returns Ok(Some(content)) on success, Ok(None) if response has no content,
 /// or Err on actual errors (HTTP, parsing, etc.)
@@ -327,7 +344,7 @@ pub async fn send_chat_completion_with_schema(
         model: model.to_string(),
         messages,
         response_format,
-        reasoning_effort,
+        reasoning_effort: reasoning_effort.or_else(|| default_reasoning_effort(provider)),
         reasoning,
         // Kōrero (v1.5.0): cap tokens to bound post-processing latency.
         max_tokens: Some(DEFAULT_PP_MAX_TOKENS),
@@ -416,7 +433,7 @@ pub async fn send_chat_completion_meeting(
         model: model.to_string(),
         messages,
         response_format: None,
-        reasoning_effort: None,
+        reasoning_effort: default_reasoning_effort(provider),
         reasoning: None,
         max_tokens: Some(MEETING_PP_MAX_TOKENS),
         stream: None,
@@ -523,7 +540,7 @@ pub async fn stream_chat_completion<F: FnMut(&str)>(
         model: model.to_string(),
         messages,
         response_format: None,
-        reasoning_effort: None,
+        reasoning_effort: default_reasoning_effort(provider),
         reasoning: None,
         max_tokens: Some(MEETING_PP_MAX_TOKENS),
         stream: Some(true),
@@ -1092,5 +1109,40 @@ mod korero_stream_end_tests {
         note_sse_meta("data: [DONE]", &mut none);
         note_sse_meta("event: ping", &mut none);
         assert!(!none.saw_reasoning && none.finish_reason.is_none());
+    }
+}
+
+#[cfg(test)]
+mod korero_142_thinking_off_tests {
+    use super::*;
+    use crate::settings::get_default_settings;
+
+    fn provider(id: &str) -> PostProcessProvider {
+        get_default_settings()
+            .post_process_providers
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap_or_else(|| panic!("built-in provider {id} missing"))
+    }
+
+    #[test]
+    fn korero_142_ollama_and_custom_default_to_no_thinking() {
+        assert_eq!(default_reasoning_effort(&provider("ollama")).as_deref(), Some("none"));
+        assert_eq!(default_reasoning_effort(&provider("custom")).as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn korero_142_cloud_providers_are_left_alone() {
+        // OpenRouter uses its own nested `reasoning` object (set by the
+        // dictation path); the others never had a reasoning field.
+        for id in ["openai", "anthropic", "openrouter"] {
+            if let Some(p) = get_default_settings()
+                .post_process_providers
+                .into_iter()
+                .find(|p| p.id == id)
+            {
+                assert_eq!(default_reasoning_effort(&p), None, "{id}");
+            }
+        }
     }
 }

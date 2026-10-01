@@ -346,7 +346,10 @@ export const TodayPage: React.FC = () => {
                       </span>
                       <span className="kx-meta">
                         Dictation · {relative(r.at)}
-                        {r.entry.post_process_requested ? " · cleaned up" : ""}
+                        {r.entry.post_processed_text ? " · cleaned up" : ""}
+                        {r.entry.post_process_requested && !r.entry.post_processed_text && (
+                          <span className="text-[var(--kx-warn)]"> · clean-up failed, pasted as spoken</span>
+                        )}
                       </span>
                     </span>
                     <button

@@ -79,7 +79,7 @@ export const MeetingView: React.FC<{ c: MeetingsController; onBack?: () => void 
               weekday: "short",
               day: "numeric",
               month: "short",
-              hour: "2-digit",
+              hour: "numeric",
               minute: "2-digit",
             })}
           </p>
@@ -126,13 +126,14 @@ export const MeetingView: React.FC<{ c: MeetingsController; onBack?: () => void 
               <Scissors size={11} /> Trimmed · {hiddenCount(m)} hidden
             </span>
           )}
+          {/* About the notes model now; worded for whether notes exist yet. */}
           {c.providerLocal === false ? (
-            <span className="kx-chip kx-chip-warn" title="Notes are written by a cloud model">
-              <Cloud size={11} /> Notes by a cloud model
+            <span className="kx-chip kx-chip-warn" title="The notes model is a cloud service">
+              <Cloud size={11} /> {m.processed.trim() ? "Notes by a cloud model" : "Notes would use a cloud model"}
             </span>
           ) : c.providerLocal ? (
-            <span className="kx-chip kx-chip-ok">
-              <Lock size={11} /> Notes made on this computer
+            <span className="kx-chip kx-chip-ok" title="The notes model runs on this computer">
+              <Lock size={11} /> {m.processed.trim() ? "Notes made on this computer" : "Notes stay on this computer"}
             </span>
           ) : null}
         </div>

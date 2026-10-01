@@ -1,4 +1,10 @@
 /**
+ * Kōrero 1.42: plain "en" means the app's own English, which is New Zealand
+ * English, so dates read "1 October 2026, 11:04 pm" rather than US order.
+ */
+const dateLocale = (locale: string): string => (locale === "en" ? "en-NZ" : locale);
+
+/**
  * Format a date string or timestamp to a localized date and time string
  * @param timestamp - Unix timestamp in seconds (as string)
  * @param locale - BCP 47 language tag (e.g., 'en', 'es', 'fr')
@@ -15,11 +21,11 @@ export const formatDateTime = (timestamp: string, locale: string): string => {
       return timestamp; // Return original if invalid
     }
 
-    return new Intl.DateTimeFormat(locale, {
+    return new Intl.DateTimeFormat(dateLocale(locale), {
       year: "numeric",
       month: "long",
       day: "numeric",
-      hour: "2-digit",
+      hour: "numeric",
       minute: "2-digit",
     }).format(date);
   } catch (error) {
@@ -45,7 +51,7 @@ export const formatDate = (timestamp: string, locale: string): string => {
       return timestamp; // Return original if invalid
     }
 
-    return new Intl.DateTimeFormat(locale, {
+    return new Intl.DateTimeFormat(dateLocale(locale), {
       year: "numeric",
       month: "long",
       day: "numeric",

@@ -599,7 +599,7 @@ export const PostProcessingSettings: React.FC = () => {
     <div className="max-w-3xl w-full mx-auto space-y-6">
       {/* Korero (v1.2.0): enable/disable toggle surfaced here so the user can
           turn off post-processing without hunting through Advanced > Experimental. */}
-      <SettingsGroup title={t("settings.advanced.groups.experimental")}>
+      <SettingsGroup title="Clean-up">
         <PostProcessingToggle descriptionMode="tooltip" grouped={true} />
       </SettingsGroup>
 
