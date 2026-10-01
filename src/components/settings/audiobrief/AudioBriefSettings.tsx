@@ -92,13 +92,11 @@ export const AudioBriefSettings: React.FC = () => {
   const fieldLabel = "text-xs font-medium text-text-subtle";
 
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-6 px-6 py-6">
+    <div className="mx-auto w-full max-w-3xl space-y-6">
       {/* Header */}
-      <header className="space-y-2.5">
-        <h2 className="text-xl font-semibold tracking-tight text-text">
-          Audio brief
-        </h2>
-        <p className="max-w-prose text-sm leading-relaxed text-text-muted">
+      <header className="space-y-1">
+        <h1 className="kx-title">Audio briefs</h1>
+        <p className="max-w-prose kx-meta">
           Turn any text into a spoken brief — entirely on your device. The local
           model drafts a script you can edit, then the on-device voice reads it
           aloud. A draft or render keeps going if you switch tabs.

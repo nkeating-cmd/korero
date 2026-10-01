@@ -1,0 +1,982 @@
+/* ===========================================================================
+   Kōrero 1.42 — "Quiet surfaces, loud content".
+   ---------------------------------------------------------------------------
+   One system for every screen, from the design canvas's S1 board:
+
+   - ONE accent. #0b63ce is the FILL (white text 5.7:1, AA); #5ab0ff is the
+     same hue as INK (links, selected labels; 6.6–8.5:1 on every surface).
+     The old #0a84ff fill failed AA under white text at 3.65:1.
+   - TWO weights. Aptos ships Regular and Bold only (probe, v1.32.0), so the
+     system never asks for anything in between.
+   - OPAQUE surfaces for anything you read. Glass is gone from content.
+   - Colour carries meaning, never decoration, and always travels with an
+     icon or a word.
+
+   Loaded AFTER App.css (imported from App.tsx). Component classes live in
+   `@layer components` so Tailwind utilities can adjust them; the tokens and
+   the legacy re-skins at the bottom stay unlayered so they win.
+   =========================================================================== */
+
+:root {
+  --kx-ground: #0b0b0d;
+  --kx-sidebar: #101012;
+  --kx-surface: #141416;
+  --kx-raised: #1c1c1e;
+  --kx-raised-2: #252528;
+  --kx-hairline-soft: #1f1f23;
+  --kx-hairline: #2a2a2e;
+  --kx-control: #3a3a3f;
+
+  --kx-ink: #ffffff;
+  --kx-ink-read: #e6e6ea;
+  --kx-ink-soft: #c7c7cc;
+  --kx-ink-2: #9c9ca3;
+
+  --kx-accent: #0b63ce;
+  --kx-accent-hover: #0a58b8;
+  --kx-accent-ink: #5ab0ff;
+  --kx-accent-bright: #0a84ff; /* progress bars and focus only, never under text */
+  --kx-selected: #0f2338;
+  --kx-selected-ink: #b9cce0;
+
+  --kx-ok: #30d158;
+  --kx-ok-quiet: #10261a;
+  --kx-warn: #f5a020;
+  --kx-warn-quiet: #2f2517;
+  --kx-warn-border: #6b5124;
+  --kx-warn-ink: #d9c9ad;
+  --kx-alert: #ff7a8e;
+  --kx-alert-quiet: #3a1820;
+  --kx-danger: #b02a3f;
+  --kx-danger-hover: #9c2437;
+  --kx-info-quiet: #132132;
+  --kx-info-border: #1d3a5c;
+  --kx-info-ink: #c7d3e0;
+
+  --kx-mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  --kx-bold: 600; /* renders Aptos Bold — there is nothing between */
+
+  --kx-r-control: 8px;
+  --kx-r-card: 12px;
+  --kx-fast: 120ms;
+  --kx-base: 180ms;
+  --kx-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+html,
+body {
+  background: var(--kx-ground);
+}
+
+/* ---------------------------------------------------------------------------
+   The component classes sit in Tailwind's `components` layer, so a utility on
+   the same element wins (`kx-input pl-8`, `kx-card p-4`, `kx-btn -ml-2.5`),
+   which is how every 1.42 component is written. Tokens and the legacy
+   re-skins stay unlayered, because they must beat `@layer utilities`.
+   --------------------------------------------------------------------------- */
+@layer components {
+  /* ---- Type ---------------------------------------------------------------- */
+  .kx-display {
+    font-family: "Aptos Display", var(--font-sans);
+    font-size: 30px;
+    line-height: 1.12;
+    letter-spacing: -0.02em;
+    font-weight: var(--kx-bold);
+    color: var(--kx-ink);
+    text-wrap: balance;
+  }
+  .kx-title {
+    font-size: 21px;
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+    font-weight: var(--kx-bold);
+    color: var(--kx-ink);
+  }
+  .kx-heading {
+    font-size: 13.5px;
+    line-height: 1.3;
+    font-weight: var(--kx-bold);
+    color: var(--kx-ink);
+  }
+  .kx-body {
+    font-size: 14px;
+    line-height: 1.45;
+    color: var(--kx-ink);
+  }
+  .kx-read {
+    font-size: 15px;
+    line-height: 1.6;
+    color: var(--kx-ink-read);
+    max-width: 72ch;
+    text-wrap: pretty;
+  }
+  .kx-meta {
+    font-size: 12.5px;
+    line-height: 1.35;
+    color: var(--kx-ink-2);
+  }
+  .kx-overline {
+    font-size: 11px;
+    line-height: 1.3;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--kx-ink-2);
+    font-weight: 400;
+  }
+  .kx-mono {
+    font-family: var(--kx-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .kx-ink-2 {
+    color: var(--kx-ink-2);
+  }
+  .kx-accent-ink {
+    color: var(--kx-accent-ink);
+  }
+
+  /* ---- Surfaces ------------------------------------------------------------ */
+  .kx-card {
+    background: var(--kx-surface);
+    border: 1px solid var(--kx-hairline);
+    border-radius: var(--kx-r-card);
+  }
+  .kx-raised {
+    background: var(--kx-raised);
+    border: 1px solid #2f2f33;
+    border-radius: var(--kx-r-card);
+  }
+  .kx-divide > * + * {
+    border-top: 1px solid var(--kx-hairline-soft);
+  }
+  .kx-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--kx-hairline);
+  }
+
+  /* ---- Buttons ------------------------------------------------------------- */
+  .kx-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-height: 36px;
+    padding: 0 14px;
+    border-radius: 9px;
+    border: 1px solid transparent;
+    font: inherit;
+    font-size: 13px;
+    font-weight: var(--kx-bold);
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      background-color var(--kx-fast) var(--kx-ease),
+      border-color var(--kx-fast) var(--kx-ease),
+      color var(--kx-fast) var(--kx-ease);
+  }
+  .kx-btn:disabled,
+  .kx-btn[aria-disabled="true"] {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .kx-btn-primary {
+    background: var(--kx-accent);
+    color: #ffffff;
+  }
+  .kx-btn-primary:not(:disabled):hover {
+    background: var(--kx-accent-hover);
+  }
+  .kx-btn-secondary {
+    background: var(--kx-raised);
+    border-color: var(--kx-control);
+    color: var(--kx-ink);
+  }
+  .kx-btn-secondary:not(:disabled):hover {
+    background: var(--kx-raised-2);
+  }
+  .kx-btn-quiet {
+    background: transparent;
+    color: var(--kx-accent-ink);
+    padding: 0 10px;
+  }
+  .kx-btn-quiet:not(:disabled):hover {
+    background: rgba(90, 176, 255, 0.1);
+  }
+  .kx-btn-ghost {
+    background: transparent;
+    color: var(--kx-ink-soft);
+  }
+  .kx-btn-ghost:not(:disabled):hover {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--kx-ink);
+  }
+  .kx-btn-danger {
+    background: var(--kx-danger);
+    color: #ffffff;
+  }
+  .kx-btn-danger:not(:disabled):hover {
+    background: var(--kx-danger-hover);
+  }
+  .kx-btn-warn {
+    background: var(--kx-warn);
+    color: #1b1406;
+  }
+  .kx-btn-sm {
+    min-height: 30px;
+    padding: 0 10px;
+    font-size: 12.5px;
+    border-radius: 8px;
+  }
+  .kx-btn-icon {
+    width: 34px;
+    min-height: 34px;
+    padding: 0;
+  }
+  .kx-btn-icon.kx-btn-sm {
+    width: 30px;
+    min-height: 30px;
+  }
+
+  /* One focus treatment for everything this system draws. */
+  .kx-btn:focus-visible,
+  .kx-input:focus-visible,
+  .kx-tab:focus-visible,
+  .kx-row:focus-visible,
+  .kx-nav-item:focus-visible,
+  .kx-chip-button:focus-visible {
+    outline: 2px solid var(--kx-accent-ink);
+    outline-offset: 2px;
+  }
+
+  /* ---- Chips, keys, dots --------------------------------------------------- */
+  .kx-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    line-height: 1.5;
+    padding: 1px 9px;
+    border-radius: 999px;
+    background: var(--kx-raised);
+    color: var(--kx-ink-soft);
+    white-space: nowrap;
+  }
+  .kx-chip-accent {
+    background: var(--kx-selected);
+    color: var(--kx-accent-ink);
+  }
+  .kx-chip-ok {
+    background: var(--kx-ok-quiet);
+    color: var(--kx-ok);
+  }
+  .kx-chip-warn {
+    background: var(--kx-warn-quiet);
+    color: var(--kx-warn);
+  }
+  .kx-chip-alert {
+    background: var(--kx-alert-quiet);
+    color: var(--kx-alert);
+  }
+  .kx-kbd {
+    font-family: var(--kx-mono);
+    font-size: 11px;
+    line-height: 1.4;
+    padding: 1px 6px;
+    border: 1px solid var(--kx-control);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    color: var(--kx-ink-read);
+    background: var(--kx-raised);
+    white-space: nowrap;
+  }
+  .kx-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    background: var(--kx-ink-2);
+  }
+  .kx-dot-ok {
+    background: var(--kx-ok);
+  }
+  .kx-dot-warn {
+    background: var(--kx-warn);
+    border-radius: 1px;
+    transform: rotate(45deg) scale(0.9);
+  }
+  .kx-dot-alert {
+    background: var(--kx-alert);
+  }
+  .kx-dot-accent {
+    background: var(--kx-accent-bright);
+  }
+  .kx-badge {
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    box-sizing: border-box;
+    border-radius: 9px;
+    background: var(--kx-accent);
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: var(--kx-bold);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* ---- Inputs -------------------------------------------------------------- */
+  .kx-input {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 36px;
+    padding: 0 11px;
+    border-radius: var(--kx-r-control);
+    border: 1px solid var(--kx-hairline);
+    background: var(--kx-surface);
+    color: var(--kx-ink);
+    font: inherit;
+    font-size: 13.5px;
+    transition: border-color var(--kx-fast) var(--kx-ease);
+  }
+  .kx-input::placeholder {
+    color: var(--kx-ink-2);
+  }
+  .kx-input:hover {
+    border-color: var(--kx-control);
+  }
+  .kx-input:focus {
+    border-color: var(--kx-accent-ink);
+    outline: none;
+  }
+  textarea.kx-input {
+    padding: 9px 11px;
+    line-height: 1.5;
+    resize: vertical;
+  }
+  .kx-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* ---- Banners ------------------------------------------------------------- */
+  .kx-banner {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 11px 14px;
+    border-radius: 10px;
+    border: 1px solid;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .kx-banner-info {
+    background: var(--kx-info-quiet);
+    border-color: var(--kx-info-border);
+    color: var(--kx-info-ink);
+  }
+  .kx-banner-info > svg {
+    color: var(--kx-accent-ink);
+  }
+  .kx-banner-warn {
+    background: var(--kx-warn-quiet);
+    border-color: var(--kx-warn-border);
+    color: var(--kx-warn-ink);
+  }
+  .kx-banner-warn > svg {
+    color: var(--kx-warn);
+  }
+  .kx-banner-bad {
+    background: var(--kx-alert-quiet);
+    border-color: #5a2430;
+    color: #f2d3d8;
+  }
+  .kx-banner-bad > svg {
+    color: var(--kx-alert);
+  }
+  .kx-banner > svg {
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .kx-banner strong {
+    color: var(--kx-ink);
+    font-weight: var(--kx-bold);
+  }
+
+  /* ---- Progress ------------------------------------------------------------ */
+  .kx-progress {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--kx-hairline);
+    overflow: hidden;
+  }
+  .kx-progress > span {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+    background: var(--kx-accent-bright);
+    transition: width var(--kx-base) var(--kx-ease);
+  }
+  .kx-progress-indeterminate > span {
+    width: 35%;
+    animation: kx-slide 1.4s var(--kx-ease) infinite;
+  }
+  @keyframes kx-slide {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(300%);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .kx-progress-indeterminate > span {
+      animation-duration: 3s;
+    }
+  }
+
+  /* ---- Rows, tabs, navigation --------------------------------------------- */
+  .kx-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    width: 100%;
+    padding: 11px 16px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color var(--kx-fast) var(--kx-ease);
+  }
+  .kx-row:hover {
+    background: rgba(255, 255, 255, 0.035);
+  }
+  .kx-list-item {
+    display: block;
+    width: 100%;
+    padding: 9px 10px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--kx-ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      background-color var(--kx-fast) var(--kx-ease),
+      border-color var(--kx-fast) var(--kx-ease);
+  }
+  .kx-list-item:hover {
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .kx-list-item[aria-current="true"] {
+    background: var(--kx-selected);
+    border-color: var(--kx-accent);
+  }
+
+  .kx-tabs {
+    display: flex;
+    gap: 2px;
+    border-bottom: 1px solid var(--kx-hairline);
+  }
+  .kx-tab {
+    min-height: 40px;
+    padding: 0 14px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    background: transparent;
+    color: var(--kx-ink-2);
+    font: inherit;
+    font-size: 13.5px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .kx-tab:hover {
+    color: var(--kx-ink);
+  }
+  .kx-tab[aria-selected="true"] {
+    color: var(--kx-ink);
+    font-weight: var(--kx-bold);
+    border-bottom-color: var(--kx-accent-ink);
+  }
+
+  .kx-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 36px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--kx-ink-soft);
+    font: inherit;
+    font-size: 13.5px;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      background-color var(--kx-fast) var(--kx-ease),
+      color var(--kx-fast) var(--kx-ease);
+  }
+  .kx-nav-item:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--kx-ink);
+  }
+  .kx-nav-item[aria-current="page"] {
+    background: var(--kx-selected);
+    color: var(--kx-accent-ink);
+    font-weight: var(--kx-bold);
+  }
+  .kx-nav-item > svg {
+    flex-shrink: 0;
+  }
+  .kx-nav-collapsed .kx-nav-item {
+    justify-content: center;
+    padding: 0;
+    min-height: 40px;
+  }
+
+  /* ---- Page frame ---------------------------------------------------------- */
+  .kx-page {
+    width: 100%;
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 26px 32px 32px;
+    box-sizing: border-box;
+  }
+  .kx-cq {
+    container-type: inline-size;
+  }
+  .kx-page-wide {
+    max-width: none;
+  }
+  .kx-page-header {
+    margin-bottom: 20px;
+  }
+  .kx-page-header p {
+    margin: 4px 0 0;
+  }
+
+  /* Generic pop-in for dialogs and drawers; no motion when reduced. */
+  @keyframes kx-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes kx-in-right {
+    from {
+      opacity: 0;
+      transform: translateX(16px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  .kx-pop {
+    animation: kx-in var(--kx-base) var(--kx-ease);
+  }
+  .kx-slide-in {
+    animation: kx-in-right var(--kx-base) var(--kx-ease);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .kx-pop,
+    .kx-slide-in {
+      animation: none;
+    }
+  }
+
+  /* ---- Today ---------------------------------------------------------------- */
+  .kx-today {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 22px;
+    align-content: start;
+  }
+  /* Responsive by the space the page actually has (sidebar open or not), not
+     by the window: `.kx-cq` wrappers are the containers. */
+  .kx-today-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  @container (min-width: 940px) {
+    .kx-today {
+      grid-template-columns: minmax(0, 1fr) 300px;
+      column-gap: 28px;
+    }
+  }
+  /* Squeezed (Activity open, small window): the three actions stay side by
+     side, without their descriptions; only very narrow stacks them. */
+  @container (max-width: 640px) {
+    .kx-today-actions .kx-action {
+      min-height: 0;
+      padding: 12px 14px;
+      gap: 6px;
+    }
+    .kx-today-actions .kx-action > :last-child {
+      display: none;
+    }
+  }
+  @container (max-width: 440px) {
+    .kx-today-actions {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .kx-action {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 9px;
+    min-height: 112px;
+    padding: 16px;
+    border-radius: var(--kx-r-card);
+    border: 1px solid var(--kx-hairline);
+    background: var(--kx-surface);
+    color: var(--kx-ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      background-color var(--kx-fast) var(--kx-ease),
+      border-color var(--kx-fast) var(--kx-ease);
+  }
+  .kx-action:hover {
+    background: var(--kx-raised);
+    border-color: var(--kx-control);
+  }
+  .kx-action-primary {
+    background: var(--kx-selected);
+    border-color: var(--kx-accent);
+  }
+  .kx-action-primary:hover {
+    background: #12294a;
+    border-color: var(--kx-accent-ink);
+  }
+  .kx-action:disabled {
+    opacity: 0.6;
+    cursor: progress;
+  }
+  .kx-action:focus-visible {
+    outline: 2px solid var(--kx-accent-ink);
+    outline-offset: 2px;
+  }
+
+  /* ---- Meetings ------------------------------------------------------------ */
+  .kx-live {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+    align-content: start;
+  }
+  @container (min-width: 980px) {
+    .kx-live {
+      grid-template-columns: minmax(0, 1fr) 320px;
+      column-gap: 24px;
+    }
+  }
+  .kx-live-line {
+    display: grid;
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 10px;
+    margin: 0 0 9px;
+    align-items: baseline;
+  }
+  .kx-live-who {
+    font-size: 12.5px;
+    font-weight: var(--kx-bold);
+  }
+  .kx-mark {
+    background: rgba(245, 160, 32, 0.26);
+    color: var(--kx-ink);
+    border-radius: 3px;
+    padding: 0 1px;
+  }
+  .kx-step {
+    width: 26px;
+    height: 26px;
+    border-radius: 13px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+  }
+  .kx-step-done {
+    background: var(--kx-ok-quiet);
+    color: var(--kx-ok);
+  }
+  .kx-step-warn {
+    background: var(--kx-warn-quiet);
+    color: var(--kx-warn);
+  }
+  .kx-step-running {
+    background: var(--kx-selected);
+    color: var(--kx-accent-ink);
+  }
+  .kx-step-todo {
+    border: 2px solid var(--kx-control);
+    color: var(--kx-ink-2);
+  }
+  .kx-library {
+    width: 292px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--kx-hairline-soft);
+    background: #0e0e10;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .kx-seg {
+    position: relative;
+    display: grid;
+    grid-template-columns: 7rem minmax(0, 1fr);
+    column-gap: 10px;
+    align-items: start;
+    padding: 3px 8px;
+    border-radius: 6px;
+    border-left: 2px solid transparent;
+  }
+  .kx-seg:hover {
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .kx-seg-out {
+    opacity: 0.4;
+    border-left-color: rgba(156, 156, 163, 0.4);
+  }
+  .kx-seg-flag {
+    border-left-color: var(--kx-warn);
+  }
+  /* A small toolbar that floats over the line's top-right corner on hover or
+     keyboard focus, so it never takes width from the text. */
+  .kx-seg-actions {
+    position: absolute;
+    top: -12px;
+    right: 6px;
+    z-index: 2;
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--kx-raised);
+    border: 1px solid var(--kx-hairline);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--kx-fast) var(--kx-ease);
+  }
+  .kx-seg:hover .kx-seg-actions,
+  .kx-seg:focus-within .kx-seg-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .kx-seg-actions button {
+    font-size: 11.5px;
+    color: var(--kx-ink-2);
+    padding: 2px 5px;
+    border-radius: 5px;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+  }
+  .kx-seg-actions button:hover {
+    color: var(--kx-accent-ink);
+    background: rgba(90, 176, 255, 0.08);
+  }
+
+  /* ---- Select and menu (Dropdown) ----------------------------------------- */
+  .kx-select {
+    min-width: 200px;
+    max-width: 100%;
+    min-height: 34px;
+    padding: 0 10px 0 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    text-align: start;
+    font-size: 13.5px;
+    color: var(--kx-ink);
+    background: var(--kx-raised);
+    border: 1px solid var(--kx-hairline);
+    border-radius: var(--kx-r-control);
+    cursor: pointer;
+    transition:
+      background-color var(--kx-fast) ease-out,
+      border-color var(--kx-fast) ease-out;
+  }
+  .kx-select:hover:not(:disabled) {
+    background: var(--kx-raised-2);
+    border-color: var(--kx-control);
+  }
+  .kx-select[aria-expanded="true"] {
+    border-color: var(--kx-accent);
+  }
+  .kx-select:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .kx-select:focus-visible {
+    outline: 2px solid var(--kx-accent-ink);
+    outline-offset: 2px;
+  }
+  .kx-menu {
+    max-height: 248px;
+    overflow-y: auto;
+    padding: 4px;
+    background: var(--kx-raised);
+    border: 1px solid var(--kx-control);
+    border-radius: 10px;
+    box-shadow:
+      0 8px 24px rgba(0, 0, 0, 0.55),
+      0 2px 6px rgba(0, 0, 0, 0.4);
+    animation: kx-in 120ms ease-out;
+  }
+  .kx-menu-item {
+    width: 100%;
+    min-height: 32px;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    text-align: start;
+    font-size: 13.5px;
+    color: var(--kx-ink-read);
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .kx-menu-item > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .kx-menu-item:hover,
+  .kx-menu-item:focus-visible {
+    background: var(--kx-raised-2);
+    outline: none;
+  }
+  .kx-menu-item[aria-selected="true"],
+  .kx-menu-item[aria-current="true"] {
+    background: var(--kx-selected);
+    color: var(--kx-accent-ink);
+    font-weight: var(--kx-bold);
+  }
+  .kx-menu-item:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .kx-menu {
+      animation: none;
+    }
+  }
+
+}
+
+/* ===========================================================================
+   Re-skin of the legacy surfaces, so every older settings page matches the
+   new system without touching each file. The legacy classes live in
+   `@layer utilities` in App.css; these unlayered rules win.
+   =========================================================================== */
+.glass-card,
+.glass-card-thin,
+.glass-card-vibrant,
+.glass-card-hero {
+  background: var(--kx-surface);
+  background-image: none;
+  border: 1px solid var(--kx-hairline);
+  border-radius: var(--kx-r-card);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+.glass-card-thick {
+  background: var(--kx-raised);
+  background-image: none;
+  border: 1px solid #2f2f33;
+  border-radius: var(--kx-r-card);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.6),
+    0 24px 56px rgba(0, 0, 0, 0.5);
+}
+.surface-content,
+.k-card {
+  background: var(--kx-surface);
+  border: 1px solid var(--kx-hairline);
+  border-radius: var(--kx-r-card);
+  box-shadow: none;
+}
+.k-card-action {
+  background: var(--kx-surface);
+  border: 1px solid var(--kx-hairline);
+  border-radius: var(--kx-r-card);
+  box-shadow: none;
+}
+.k-card-action:hover {
+  background: var(--kx-raised);
+  border-color: var(--kx-control);
+  box-shadow: none;
+  transform: none;
+}
+.glass-pill-accent {
+  background: var(--kx-selected);
+  border-color: transparent;
+  color: var(--kx-accent-ink);
+}
+.k-accent-text {
+  color: var(--kx-accent-ink);
+}
+.kx-danger-ghost {
+  color: var(--kx-alert);
+}
+
+/* `.md-body` (App.css, unlayered) would otherwise out-rank the layered
+   reading style on notes and answers. */
+.md-body.kx-read {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--kx-ink-read);
+}
+.md-body.kx-read strong {
+  color: var(--kx-ink);
+}
+.md-body.kx-read a {
+  color: var(--kx-accent-ink);
+}
+.md-body.kx-read h1,
+.md-body.kx-read h2,
+.md-body.kx-read h3 {
+  color: var(--kx-ink);
+}
+
+/* A field that IS its container (the Ctrl K palette): the container shows
+   focus, so the global focus ring (App.css, !important) is suppressed here. */
+.kx-bare-input:focus-visible,
+.kx-bare-input:focus {
+  outline: none !important;
+  box-shadow: none;
+}

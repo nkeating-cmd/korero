@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "recorder",
+  "description": "Kōrero 1.42: the pop-out meeting recorder. It only mirrors the main window over events and asks it to act, so it gets events, its own window controls, and nothing else.",
+  "windows": [
+    "recorder"
+  ],
+  "permissions": [
+    "core:event:default",
+    "core:window:default",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-close"
+  ]
+}

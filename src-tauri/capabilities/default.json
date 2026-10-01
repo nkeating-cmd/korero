@@ -5,6 +5,9 @@
   "windows": ["main", "recording_overlay"],
   "permissions": [
     "core:default",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
     "opener:default",
     "opener:allow-reveal-item-in-dir",
     "store:default",

@@ -7,10 +7,9 @@ interface SettingsGroupProps {
 }
 
 /**
- * Kōrero fork: replaced upstream's solid-bg card with a frosted glass-card
- * surface matching the Daily Brief Dashboard aesthetic.
- * - .glass-card adds backdrop-filter blur + 1px white border at 10% opacity.
- * - Section title remains uppercase letter-spaced muted text.
+ * Kōrero 1.42: settings groups sit on the same opaque card as everything
+ * else (kx system). The overline title and hairline dividers match Today,
+ * Meetings and the Activity panel, so every page reads as one product.
  */
 export const SettingsGroup: React.FC<SettingsGroupProps> = ({
   title,
@@ -18,23 +17,16 @@ export const SettingsGroup: React.FC<SettingsGroupProps> = ({
   children,
 }) => {
   return (
-    <div className="space-y-2">
+    <section className="space-y-2">
       {title && (
-        <div className="px-4">
-          <h2 className="text-xs font-semibold text-text-muted uppercase tracking-wider">
-            {title}
-          </h2>
-          {description && (
-            <p className="text-xs text-text-subtle mt-1">{description}</p>
-          )}
+        <div className="px-1">
+          <h2 className="kx-overline">{title}</h2>
+          {description && <p className="kx-meta mt-1">{description}</p>}
         </div>
       )}
-      {/* Kōrero fork: glass-card wrapper with no inner padding so child
-          SettingContainer components retain their own px-4 p-2 layout.
-          Forcing padding via [&>*] broke alignment for stacked-layout settings. */}
-      <div className="glass-card overflow-visible p-1.5">
-        <div className="divide-y divide-glass-border">{children}</div>
+      <div className="kx-card overflow-visible p-1">
+        <div className="kx-divide">{children}</div>
       </div>
-    </div>
+    </section>
   );
 };

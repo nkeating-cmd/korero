@@ -1,171 +1,177 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
-// Kōrero (v1.21.0): curated, less-generic glyphs — swapped the default
-// gear/cpu/people/sparkles/waveform for more distinctive 2026 Lucide icons
-// (AudioLines, BrainCircuit, SlidersHorizontal, UsersRound, Wand2, Headphones).
 import {
-  AudioLines,
-  SlidersHorizontal,
-  FlaskConical,
-  History,
-  Info,
-  Wand2,
-  Boxes,
-  LifeBuoy,
-  NotebookPen,
   Home,
+  NotebookPen,
   UsersRound,
   Headphones,
+  History,
+  AudioLines,
+  Boxes,
+  Wand2,
+  SlidersHorizontal,
+  FlaskConical,
+  LifeBuoy,
+  PanelLeftClose,
+  PanelLeftOpen,
+  type LucideIcon,
 } from "lucide-react";
-// Korero fork: removed upstream HandyHand glyph + wordmark from the sidebar
-// header. The app icon + window title bar carry brand recognition; the
-// in-app wordmark just cost vertical space.
-
 import {
   GeneralSettings,
   AdvancedSettings,
   HistorySettings,
   DebugSettings,
-  AboutSettings,
   PostProcessingSettings,
   ModelsSettings,
 } from "./settings";
-// Kōrero fork: Help & Guide page imported directly from the overlay (not via the
-// upstream settings barrel) so adding it needs no patch to settings/index.ts.
-import { HelpSettings } from "./settings/help/HelpSettings";
 import { NotesSettings } from "./settings/notes/NotesSettings";
-import { HomeDashboard } from "./settings/home/HomeDashboard";
 import { MeetingsSettings } from "./settings/meetings/MeetingsSettings";
 import { AudioBriefSettings } from "./settings/audiobrief/AudioBriefSettings";
+import { TodayPage } from "./today/TodayPage";
+import { HelpAndAbout } from "./settings/help/HelpAndAbout";
+import ModelSelector from "./model-selector";
+import { useSettings } from "../hooks/useSettings";
+import { useNav, type Section } from "../stores/navStore";
+import { useRecorder } from "../stores/recorderStore";
 
-export type SidebarSection = keyof typeof SECTIONS_CONFIG;
+/**
+ * Kōrero 1.42 sidebar: grouped by what you are doing — capture, look back,
+ * set up — instead of a flat wall of eleven items. Collapses to an icon rail
+ * (remembered), and collapses on its own when the window is narrow.
+ */
 
-interface IconProps {
-  width?: number | string;
-  height?: number | string;
-  size?: number | string;
-  className?: string;
-  [key: string]: any;
-}
+export type SidebarSection = Section;
 
 interface SectionConfig {
   labelKey: string;
-  icon: React.ComponentType<IconProps>;
+  label: string;
+  icon: LucideIcon;
   component: React.ComponentType;
-  enabled: (settings: any) => boolean;
-  // Kōrero: optional literal fallback used as the i18n defaultValue, so a
-  // section can ship without adding a key to every locale file.
-  label?: string;
+  enabled: (settings: { debug_mode?: boolean } | null | undefined) => boolean;
 }
 
-export const SECTIONS_CONFIG = {
-  home: { labelKey: "sidebar.home", label: "Home", icon: Home, component: HomeDashboard, enabled: () => true },
-  // Kōrero (v1.21.0): ordered by task, not alphabetically — capture/use first
-  // (dictate, notes, meetings, audio brief, history), then configuration, then
-  // utility. Reduces the "flat wall of 12 items" feel (UX pass).
-  general: { labelKey: "sidebar.general", icon: AudioLines, component: GeneralSettings, enabled: () => true },
+export const SECTIONS_CONFIG: Record<Section, SectionConfig> = {
+  home: { labelKey: "sidebar.home", label: "Today", icon: Home, component: TodayPage, enabled: () => true },
   notes: { labelKey: "sidebar.notes", label: "Notes", icon: NotebookPen, component: NotesSettings, enabled: () => true },
   meetings: { labelKey: "sidebar.meetings", label: "Meetings", icon: UsersRound, component: MeetingsSettings, enabled: () => true },
-  audiobrief: { labelKey: "sidebar.audioBrief", label: "Audio brief", icon: Headphones, component: AudioBriefSettings, enabled: () => true },
-  history: { labelKey: "sidebar.history", icon: History, component: HistorySettings, enabled: () => true },
-  models: { labelKey: "sidebar.models", icon: Boxes, component: ModelsSettings, enabled: () => true },
-  // always visible — hiding it made the feature undiscoverable (its enable
-  // toggle lives inside the page). Label matches the Home "Post-processing" card.
-  postprocessing: { labelKey: "sidebar.postProcessing", label: "Post-processing", icon: Wand2, component: PostProcessingSettings, enabled: () => true },
-  advanced: { labelKey: "sidebar.advanced", icon: SlidersHorizontal, component: AdvancedSettings, enabled: () => true },
-  debug: { labelKey: "sidebar.debug", icon: FlaskConical, component: DebugSettings, enabled: (s) => s?.debug_mode ?? false },
-  help: { labelKey: "sidebar.help", label: "Help", icon: LifeBuoy, component: HelpSettings, enabled: () => true },
-  about: { labelKey: "sidebar.about", icon: Info, component: AboutSettings, enabled: () => true },
-} as const satisfies Record<string, SectionConfig>;
+  audiobrief: { labelKey: "sidebar.audioBrief", label: "Audio briefs", icon: Headphones, component: AudioBriefSettings, enabled: () => true },
+  history: { labelKey: "sidebar.history", label: "Dictation history", icon: History, component: HistorySettings, enabled: () => true },
+  general: { labelKey: "sidebar.general", label: "Dictation & sound", icon: AudioLines, component: GeneralSettings, enabled: () => true },
+  models: { labelKey: "sidebar.models", label: "Speech models", icon: Boxes, component: ModelsSettings, enabled: () => true },
+  postprocessing: { labelKey: "sidebar.postProcessing", label: "AI clean-up & notes", icon: Wand2, component: PostProcessingSettings, enabled: () => true },
+  advanced: { labelKey: "sidebar.advanced", label: "Advanced", icon: SlidersHorizontal, component: AdvancedSettings, enabled: () => true },
+  debug: { labelKey: "sidebar.debug", label: "Debug", icon: FlaskConical, component: DebugSettings, enabled: (s) => s?.debug_mode ?? false },
+  help: { labelKey: "sidebar.help", label: "Help & about", icon: LifeBuoy, component: HelpAndAbout, enabled: () => true },
+};
 
-interface SidebarProps {
-  activeSection: SidebarSection;
-  onSectionChange: (section: SidebarSection) => void;
-}
+const GROUPS: { title: string | null; items: Section[] }[] = [
+  { title: null, items: ["home"] },
+  { title: "Capture", items: ["notes", "meetings", "audiobrief"] },
+  { title: "Library", items: ["history"] },
+  { title: "Set up", items: ["general", "models", "postprocessing", "advanced", "debug"] },
+];
 
-import { useSettings } from "../hooks/useSettings";
+/** Window width, for the narrow-window auto-collapse. */
+export const useWindowWidth = (): number => {
+  const [w, setW] = React.useState(() => window.innerWidth);
+  React.useEffect(() => {
+    const on = () => setW(window.innerWidth);
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
+  }, []);
+  return w;
+};
 
-/**
- * Korero fork sidebar — aurora active state (was yellow).
- * Active nav item uses cyan #5DD8FF tint over glass + soft cyan shadow halo.
- */
-export const Sidebar: React.FC<SidebarProps> = ({ activeSection, onSectionChange }) => {
-  const { t } = useTranslation();
+export const AUTO_COLLAPSE_BELOW = 980;
+
+export const Sidebar: React.FC = () => {
+  const { t, i18n } = useTranslation();
   const { settings } = useSettings();
+  const section = useNav((s) => s.section);
+  const go = useNav((s) => s.go);
+  const userCollapsed = useNav((s) => s.sidebarCollapsed);
+  const toggle = useNav((s) => s.toggleSidebar);
+  const recording = useRecorder((s) => s.recording);
+  const width = useWindowWidth();
+  const narrow = width < AUTO_COLLAPSE_BELOW;
+  const collapsed = userCollapsed || narrow;
 
-  const availableSections = Object.entries(SECTIONS_CONFIG)
-    .filter(([_, config]) => config.enabled(settings))
-    .map(([id, config]) => ({ id: id as SidebarSection, ...config }));
+  const item = (id: Section) => {
+    const cfg = SECTIONS_CONFIG[id];
+    if (!cfg.enabled(settings)) return null;
+    const Icon = cfg.icon;
+    // 1.42 renamed several sections in plain English; other languages keep
+    // their translated names until those catch up.
+    const label = (i18n.language ?? "en").startsWith("en")
+      ? cfg.label
+      : t(cfg.labelKey, { defaultValue: cfg.label });
+    const isActive = section === id;
+    return (
+      <button
+        key={id}
+        type="button"
+        aria-current={isActive ? "page" : undefined}
+        aria-label={collapsed ? label : undefined}
+        title={collapsed ? label : undefined}
+        onClick={() => go(id)}
+        className="kx-nav-item relative"
+      >
+        <Icon size={17} />
+        {!collapsed && <span className="truncate">{label}</span>}
+        {id === "meetings" && recording && (
+          <span
+            className={`kx-dot kx-dot-alert ${collapsed ? "absolute top-2 right-2" : "ml-auto"}`}
+            aria-label="Recording"
+          />
+        )}
+      </button>
+    );
+  };
 
   return (
-    <div
-      className="flex flex-col w-44 h-full items-center px-3 py-2 border-e border-glass-border"
-      style={{
-        backgroundColor: "rgba(255, 255, 255, 0.04)",
-        backdropFilter: "blur(30px) saturate(180%)",
-        WebkitBackdropFilter: "blur(30px) saturate(180%)",
-        boxShadow: "inset -1px 0 0 0 rgba(255, 255, 255, 0.06)",
-      }}
+    <nav
+      aria-label="Main"
+      className={`${collapsed ? "kx-nav-collapsed w-[64px]" : "w-[228px]"} shrink-0 h-full flex flex-col px-2.5 py-3 gap-px border-e border-[var(--kx-hairline-soft)] bg-[var(--kx-sidebar)] transition-[width] duration-150`}
     >
-      {/* Kōrero: wordmark removed from sidebar header (2026-05-17).
-          The app icon in the taskbar + window title bar carry brand
-          recognition already; an in-app wordmark just costs vertical space. */}
-      <div className="flex flex-col w-full items-stretch gap-1 pt-3">
-        {availableSections.map((section) => {
-          const Icon = section.icon;
-          const isActive = activeSection === section.id;
-
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col gap-px">
+        {GROUPS.map((g, gi) => {
+          const items = g.items.map(item).filter(Boolean);
+          if (items.length === 0) return null;
           return (
-            <button
-              key={section.id}
-              type="button"
-              onClick={() => onSectionChange(section.id)}
-              /* v1.32.1: the active row now carries the ONE accent, tinted, and
-                 the label goes accent-coloured with it. The previous treatment
-                 was a neutral white lift plus a separate aurora-gradient icon
-                 tile — two competing active signals, neither of which read as
-                 "selected" at a glance. Min-height meets the 44px target. */
-              className={`group flex gap-2.5 items-center px-3 py-2 w-full min-h-[40px] rounded-[10px] text-left transition-colors duration-200 ${
-                isActive
-                  ? "k-accent-text font-semibold"
-                  : "text-text-muted hover:bg-white/8 hover:text-text"
-              }`}
-              style={
-                isActive
-                  ? { backgroundColor: "var(--k-accent-quiet)" }
-                  : undefined
-              }
-            >
-              {(() => {
-                const label = t(section.labelKey, {
-                  defaultValue: "label" in section ? section.label : undefined,
-                });
-                return (
-                  <>
-                    {/* Kōrero (v1.20.0): active tab icon picks up the brand
-                        aurora-cyan accent; all tab icons get a subtle springy
-                        lift on hover for a more modern, tactile feel. */}
-                    <span
-                      className={`korero-nav-tile ${
-                        isActive ? "korero-nav-tile-active" : ""
-                      }`}
-                    >
-                      <Icon
-                        width={17}
-                        height={17}
-                        className="korero-nav-icon shrink-0"
-                      />
-                    </span>
-                    <span className="text-sm truncate" title={label}>
-                      {label}
-                    </span>
-                  </>
-                );
-              })()}
-            </button>
+            <div key={gi} className="flex flex-col gap-px">
+              {g.title &&
+                (collapsed ? (
+                  <div className="my-2 mx-2 border-t border-[var(--kx-hairline-soft)]" aria-hidden="true" />
+                ) : (
+                  <div className="kx-overline px-2.5 pt-4 pb-1.5">{g.title}</div>
+                ))}
+              {items}
+            </div>
           );
         })}
       </div>
-    </div>
+
+      <div className="flex flex-col gap-px pt-2">
+        {item("help")}
+        <div className={`flex items-center gap-1 mt-1.5 pt-2 border-t border-[var(--kx-hairline-soft)] ${collapsed ? "flex-col" : ""}`}>
+          {!collapsed && (
+            <div className="flex-1 min-w-0 text-[12px] kx-sidebar-model">
+              <ModelSelector />
+            </div>
+          )}
+          {!narrow && (
+            <button
+              type="button"
+              onClick={toggle}
+              aria-label={collapsed ? "Expand the sidebar" : "Collapse the sidebar"}
+              title={collapsed ? "Expand the sidebar" : "Collapse the sidebar"}
+              className="kx-btn kx-btn-ghost kx-btn-icon kx-btn-sm shrink-0"
+            >
+              {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+            </button>
+          )}
+        </div>
+      </div>
+    </nav>
   );
 };

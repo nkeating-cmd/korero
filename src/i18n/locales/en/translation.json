@@ -198,7 +198,7 @@
       }
     },
     "models": {
-      "title": "Transcription Models",
+      "title": "Speech models",
       "description": "Select a transcription model or download additional models. Different models offer varying levels of accuracy and speed.",
       "yourModels": "Downloaded Models",
       "availableModels": "Available to Download",
@@ -609,6 +609,17 @@
   },
   "overlay": {
     "transcribing": "Transcribing...",
-    "processing": "Processing..."
+    "processing": "Processing...",
+    "cleaningUp": "Cleaning up",
+    "lockedOn": "Locked on",
+    "stop": "Stop",
+    "stopAndTranscribe": "Stop and transcribe",
+    "cancel": "Cancel recording",
+    "nzBadge": "New Zealand English is on",
+    "pasteCopied": "Couldn't paste · copied instead",
+    "noMic": "No microphone found",
+    "micBlocked": "Microphone is blocked",
+    "fix": "Fix",
+    "fixHint": "Open the microphone settings in Kōrero"
   }
 }

@@ -25,7 +25,7 @@ const ModelDropdown: React.FC<ModelDropdownProps> = ({
   };
 
   return (
-    <div className="absolute bottom-full start-0 mb-2 w-64 max-h-[60vh] overflow-y-auto bg-background border border-mid-gray/20 rounded-lg shadow-lg py-2 z-50">
+    <div className="kx-menu absolute bottom-full start-0 mb-2 w-64 max-h-[60vh] z-50">
       {downloadedModels.length > 0 ? (
         <div>
           {downloadedModels.map((model) => (
@@ -40,28 +40,25 @@ const ModelDropdown: React.FC<ModelDropdownProps> = ({
               }}
               tabIndex={0}
               role="button"
-              className={`w-full px-3 py-2 text-start hover:bg-mid-gray/10 transition-colors cursor-pointer focus:outline-none ${
-                currentModelId === model.id
-                  ? "bg-logo-primary/10 text-logo-primary"
-                  : ""
-              }`}
+              aria-current={currentModelId === model.id ? "true" : undefined}
+              className="kx-menu-item py-2"
             >
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm text-text/80">
+              <div className="flex items-center justify-between w-full min-w-0">
+                <div className="min-w-0">
+                  <div className="text-[13.5px]">
                     {getTranslatedModelName(model, t)}
                     {model.is_custom && (
-                      <span className="ms-1.5 text-[10px] font-medium text-text/40 uppercase">
+                      <span className="ms-1.5 kx-overline">
                         {t("modelSelector.custom")}
                       </span>
                     )}
                   </div>
-                  <div className="text-xs text-text/40 italic pe-4">
+                  <div className="kx-meta font-normal pe-4 whitespace-normal">
                     {getTranslatedModelDescription(model, t)}
                   </div>
                 </div>
                 {currentModelId === model.id && (
-                  <div className="text-xs text-logo-primary">
+                  <div className="text-[12px] kx-accent-ink shrink-0">
                     {t("modelSelector.active")}
                   </div>
                 )}
@@ -70,7 +67,7 @@ const ModelDropdown: React.FC<ModelDropdownProps> = ({
           ))}
         </div>
       ) : (
-        <div className="px-3 py-2 text-sm text-text/60">
+        <div className="px-3 py-2 kx-meta">
           {t("modelSelector.noModelsAvailable")}
         </div>
       )}

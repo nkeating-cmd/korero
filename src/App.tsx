@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { toast, Toaster } from "sonner";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
+import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { platform } from "@tauri-apps/plugin-os";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -11,30 +12,75 @@ import {
 } from "tauri-plugin-macos-permissions-api";
 import { ModelStateEvent, RecordingErrorEvent } from "./lib/types/events";
 import "./App.css";
+// Kōrero 1.42: the one design system. After App.css so it wins.
+import "./styles/kx.css";
 import AccessibilityPermissions from "./components/AccessibilityPermissions";
-import Footer from "./components/footer";
 import Onboarding, { AccessibilityOnboarding } from "./components/onboarding";
-import { Sidebar, SidebarSection, SECTIONS_CONFIG } from "./components/Sidebar";
-import { HomeDashboard } from "./components/settings/home/HomeDashboard";
+import { Sidebar, SECTIONS_CONFIG } from "./components/Sidebar";
+import { TopBar } from "./components/shell/TopBar";
+import { ActivityPanel } from "./components/shell/ActivityPanel";
+import { CommandPalette } from "./components/shell/CommandPalette";
+import { useNav, type Section } from "./stores/navStore";
+import { useRecorder } from "./stores/recorderStore";
+import { useAppStatus } from "./stores/appStatusStore";
+import { logActivity } from "./stores/activityStore";
 import { useSettings } from "./hooks/useSettings";
 import { useSettingsStore } from "./stores/settingsStore";
 import { commands } from "@/bindings";
 import { getLanguageDirection, initializeRTL } from "@/lib/utils/rtl";
 
+const RELEASES_PAGE = "https://github.com/nkeating-cmd/korero/releases/latest";
+
 type OnboardingStep = "accessibility" | "model" | "done";
 
-const renderSettingsContent = (
-  section: SidebarSection,
-  onNavigate: (section: SidebarSection) => void,
-) => {
-  // Kōrero (v1.12.0): the Home dashboard needs a navigation callback to switch
-  // sections from its quick-action cards; other sections take no props.
-  if (section === "home") {
-    return <HomeDashboard onNavigate={(s) => onNavigate(s as SidebarSection)} />;
+// Kōrero 1.42: pages that draw their own frame; the rest get the shared one
+// (title, one-line intro, the standard page width).
+const OWN_FRAME: Section[] = ["home", "notes", "meetings"];
+// Pages that bring their own title and intro but sit in the shared frame.
+const OWN_HEADER: Section[] = ["models", "help", "audiobrief"];
+const PAGE_INTRO: Partial<Record<Section, { title: string; intro: string }>> = {
+  general: {
+    title: "Dictation & sound",
+    intro: "Shortcuts, microphone and sounds for dictating in any app.",
+  },
+  history: {
+    title: "Dictation history",
+    intro: "Everything you have dictated, newest first, with the audio.",
+  },
+  postprocessing: {
+    title: "AI clean-up & notes",
+    intro: "The model that tidies dictations and writes meeting notes, and the prompts it follows.",
+  },
+  advanced: {
+    title: "Advanced",
+    intro: "Pasting, start-up, history and other fine-tuning.",
+  },
+  debug: { title: "Debug", intro: "Diagnostics for troubleshooting." },
+};
+
+const renderSection = (section: Section) => {
+  const cfg = SECTIONS_CONFIG[section] ?? SECTIONS_CONFIG.home;
+  const Page = cfg.component;
+  if (OWN_FRAME.includes(section)) return <Page />;
+  if (OWN_HEADER.includes(section)) {
+    return (
+      <div className="kx-page">
+        <Page />
+      </div>
+    );
   }
-  const ActiveComponent =
-    SECTIONS_CONFIG[section]?.component || SECTIONS_CONFIG.general.component;
-  return <ActiveComponent />;
+  const intro = PAGE_INTRO[section];
+  return (
+    <div className="kx-page">
+      {intro && (
+        <header className="max-w-3xl mx-auto kx-page-header">
+          <h1 className="kx-title">{intro.title}</h1>
+          <p className="kx-meta">{intro.intro}</p>
+        </header>
+      )}
+      <Page />
+    </div>
+  );
 };
 
 function App() {
@@ -45,8 +91,7 @@ function App() {
   // Track if this is a returning user who just needs to grant permissions
   // (vs a new user who needs full onboarding including model selection)
   const [isReturningUser, setIsReturningUser] = useState(false);
-  const [currentSection, setCurrentSection] =
-    useState<SidebarSection>("home");
+  const currentSection = useNav((s) => s.section);
   const { settings, updateSetting } = useSettings();
   const direction = getLanguageDirection(i18n.language);
   const refreshAudioDevices = useSettingsStore(
@@ -68,6 +113,7 @@ function App() {
     const un = listen<{ version: string; url: string }>(
       "korero://update-available",
       (e) => {
+        useAppStatus.getState().setUpdateAvailable(e.payload);
         toast.message(`Kōrero v${e.payload.version} is available`, {
           duration: 15000,
           action: {
@@ -91,6 +137,62 @@ function App() {
         });
       },
     );
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
+  // Kōrero 1.42: the dictation pill's Fix button asks for a settings page.
+  useEffect(() => {
+    const un = listen<string>("korero://open-section", (e) => {
+      const section = e.payload as Section;
+      if (section in SECTIONS_CONFIG) useNav.getState().go(section);
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
+  // Kōrero 1.42: "Check for updates" (tray menu and Ctrl K) emits this. The
+  // listener used to live in the footer's UpdateChecker, which 1.42 retired
+  // with the footer, so it is handled here and always mounted.
+  useEffect(() => {
+    const un = listen("check-for-updates", async () => {
+      const id = toast.loading("Checking for updates…");
+      try {
+        const update = await checkForUpdate();
+        if (!update) {
+          toast.success("Kōrero is up to date.", { id });
+          return;
+        }
+        const payload = { version: update.version, url: RELEASES_PAGE };
+        useAppStatus.getState().setUpdateAvailable(payload);
+        toast.message(`Kōrero v${update.version} is available`, {
+          id,
+          duration: 15000,
+          action: {
+            label: "Install now",
+            onClick: () => {
+              toast.promise(
+                commands.installUpdate().then((r) => {
+                  if (r.status === "error") throw new Error(r.error);
+                }),
+                {
+                  loading: "Downloading update…",
+                  success: "Update installed — restarting…",
+                  error: () => {
+                    openUrl(RELEASES_PAGE).catch(() => {});
+                    return "Install failed — opening the release page instead.";
+                  },
+                },
+              );
+            },
+          },
+        });
+      } catch (e) {
+        toast.error(`Couldn't check for updates: ${String(e)}`, { id });
+      }
+    });
     return () => {
       un.then((f) => f());
     };
@@ -157,8 +259,24 @@ function App() {
       });
       refreshAudioDevices();
       refreshOutputDevices();
+      // 1.42: a meeting still recording (the window was reloaded) is picked
+      // up by the recorder, so every page shows it, not just Meetings.
+      void useRecorder.getState().restore();
     }
   }, [onboardingStep, refreshAudioDevices, refreshOutputDevices]);
+
+  // 1.42: Ctrl K opens search from anywhere in the app.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        const nav = useNav.getState();
+        nav.setPaletteOpen(!nav.paletteOpen);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
 
   // Handle keyboard shortcuts for debug mode toggle
   useEffect(() => {
@@ -201,6 +319,11 @@ function App() {
         toast.error(t("errors.noInputDeviceTitle"), {
           description: t("errors.noInputDevice"),
         });
+        logActivity({
+          status: "failed",
+          title: "Dictation could not start: no microphone",
+          target: { section: "general" },
+        });
       } else {
         toast.error(
           t("errors.recordingFailed", { error: detail ?? "Unknown error" }),
@@ -217,9 +340,22 @@ function App() {
   // (see actions.rs `error!("Failed to paste transcription: ...")`),
   // so we show a localized, user-friendly message here instead of the raw error.
   useEffect(() => {
-    const unlisten = listen("paste-error", () => {
+    // Kōrero 1.42: the payload says whether Rust put the text on the
+    // clipboard instead (older builds sent nothing, which reads as false).
+    const unlisten = listen<boolean | null>("paste-error", (e) => {
+      const copied = e.payload === true;
       toast.error(t("errors.pasteFailedTitle"), {
-        description: t("errors.pasteFailed"),
+        description: copied
+          ? "It's on the clipboard instead — press Ctrl V where you want it."
+          : t("errors.pasteFailed"),
+      });
+      logActivity({
+        status: "attention",
+        title: "A dictation could not be pasted",
+        detail: copied
+          ? "It was copied to the clipboard instead, and it is in Dictation history."
+          : "It is in Dictation history.",
+        target: { section: "history" },
       });
     });
     return () => {
@@ -347,50 +483,48 @@ function App() {
     return <Onboarding onModelSelected={handleModelSelected} />;
   }
 
+  const fullBleed = currentSection === "meetings";
+
   return (
     <div
       dir={direction}
-      className="h-screen flex flex-col select-none cursor-default"
+      className="h-screen flex flex-col select-none cursor-default bg-[var(--kx-ground)]"
     >
-      {/* Kōrero fork: toasts use glass-card-thick material to stand out
-          over the dark backdrop without losing the liquid-glass aesthetic. */}
       <Toaster
         theme="dark"
         toastOptions={{
           unstyled: true,
           classNames: {
-            toast:
-              "glass-card-thick flex items-center gap-3 text-sm text-text",
+            toast: "glass-card-thick flex items-center gap-3 text-sm text-text px-4 py-3 w-[356px]",
             title: "font-semibold text-text",
-            description: "text-text-muted",
+            description: "text-[var(--kx-ink-2)]",
+            actionButton: "kx-btn kx-btn-secondary kx-btn-sm",
+            cancelButton: "kx-btn kx-btn-ghost kx-btn-sm",
           },
         }}
       />
-      {/* Main content area that takes remaining space */}
       <div className="flex-1 flex overflow-hidden">
-        <Sidebar
-          activeSection={currentSection}
-          onSectionChange={setCurrentSection}
-        />
-        {/* Scrollable content area */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="flex-1 overflow-y-auto">
-            <div className="flex flex-col items-center p-4 gap-4">
+        <Sidebar />
+        <div className="flex-1 min-w-0 flex flex-col">
+          <TopBar />
+          <div className="flex-1 min-h-0 flex">
+            <main
+              className={`flex-1 min-w-0 min-h-0 ${fullBleed ? "overflow-hidden flex flex-col" : "overflow-y-auto"}`}
+            >
               <AccessibilityPermissions />
-              {/* Kōrero (v1.12.0): keyed wrapper so switching sections replays a
-                  subtle fade/rise transition (honours prefers-reduced-motion). */}
+              {/* Keyed so switching sections replays the page transition. */}
               <div
                 key={currentSection}
-                className="korero-page w-full flex flex-col items-center gap-4"
+                className={`korero-page kx-cq ${fullBleed ? "flex-1 min-h-0 flex flex-col" : ""}`}
               >
-                {renderSettingsContent(currentSection, setCurrentSection)}
+                {renderSection(currentSection)}
               </div>
-            </div>
+            </main>
+            <ActivityPanel />
           </div>
         </div>
       </div>
-      {/* Fixed footer at bottom */}
-      <Footer />
+      <CommandPalette />
     </div>
   );
 }

@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tauri::Manager;
 use tauri::{AppHandle, Emitter};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 #[derive(Clone, serde::Serialize)]
 struct RecordingErrorEvent {
@@ -63,6 +64,47 @@ fn build_system_prompt(prompt_template: &str) -> String {
     prompt_template.replace("${output}", "").trim().to_string()
 }
 
+/// Which prompt post-processing will use.
+///
+/// Korero (v1.22.0, P2): per-app prompt routing. If the user configured routes
+/// and the foreground window's title matches one, use that route's prompt;
+/// otherwise fall back to the globally-selected prompt. Empty routes (the
+/// default) = no behaviour change.
+///
+/// Kōrero 1.42: lifted out of `post_process_transcription` so the dictation
+/// pill can name the prompt that will actually be used ("Cleaning up · …").
+fn resolve_prompt_id(settings: &AppSettings) -> Option<String> {
+    let routed_prompt_id = if settings.post_process_app_routes.is_empty() {
+        None
+    } else {
+        crate::window_info::active_window_title().and_then(|title| {
+            let title_l = title.to_lowercase();
+            settings.post_process_app_routes.iter().find_map(|entry| {
+                let (m, pid) = entry.split_once('=')?;
+                let m = m.trim().to_lowercase();
+                let pid = pid.trim();
+                if !m.is_empty() && !pid.is_empty() && title_l.contains(&m) {
+                    Some(pid.to_string())
+                } else {
+                    None
+                }
+            })
+        })
+    };
+    routed_prompt_id.or_else(|| settings.post_process_selected_prompt_id.clone())
+}
+
+/// Kōrero 1.42: the display name of the prompt `resolve_prompt_id` picks.
+fn resolve_prompt_name(settings: &AppSettings) -> Option<String> {
+    let id = resolve_prompt_id(settings)?;
+    settings
+        .post_process_prompts
+        .iter()
+        .find(|prompt| prompt.id == id)
+        .map(|prompt| prompt.name.trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
 async fn post_process_transcription(settings: &AppSettings, transcription: &str) -> Option<String> {
     let provider = match settings.active_post_process_provider().cloned() {
         Some(provider) => provider,
@@ -92,30 +134,7 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
         debug!("Post-processing skipped: transcription is empty");
         return None;
     }
-    // Korero (v1.22.0, P2): per-app prompt routing. If the user configured routes
-    // and the foreground window's title matches one, use that route's prompt;
-    // otherwise fall back to the globally-selected prompt. Empty routes (the
-    // default) = no behaviour change.
-    let routed_prompt_id = if settings.post_process_app_routes.is_empty() {
-        None
-    } else {
-        crate::window_info::active_window_title().and_then(|title| {
-            let title_l = title.to_lowercase();
-            settings.post_process_app_routes.iter().find_map(|entry| {
-                let (m, pid) = entry.split_once('=')?;
-                let m = m.trim().to_lowercase();
-                let pid = pid.trim();
-                if !m.is_empty() && !pid.is_empty() && title_l.contains(&m) {
-                    Some(pid.to_string())
-                } else {
-                    None
-                }
-            })
-        })
-    };
-    let selected_prompt_id = match routed_prompt_id
-        .or_else(|| settings.post_process_selected_prompt_id.clone())
-    {
+    let selected_prompt_id = match resolve_prompt_id(settings) {
         Some(id) => id,
         None => {
             debug!("Post-processing skipped because no prompt is selected");
@@ -500,7 +519,6 @@ impl ShortcutAction for TranscribeAction {
         } else {
             // Starting failed (for example due to blocked microphone permissions).
             // Revert UI state so we don't stay stuck in the recording overlay.
-            utils::hide_recording_overlay(app);
             change_tray_icon(app, TrayIconState::Idle);
             if let Some(err) = recording_error {
                 let error_type = if is_microphone_access_denied(&err) {
@@ -510,6 +528,15 @@ impl ShortcutAction for TranscribeAction {
                 } else {
                     "unknown"
                 };
+                // Kōrero 1.42: the two causes you can fix get a notice on the
+                // pill with a Fix button; anything else just clears it.
+                match error_type {
+                    "no_input_device" => utils::show_overlay_notice(app, "notice-no-mic", 7000),
+                    "microphone_permission_denied" => {
+                        utils::show_overlay_notice(app, "notice-mic-denied", 7000)
+                    }
+                    _ => utils::hide_recording_overlay(app),
+                }
                 let _ = app.emit(
                     "recording-error",
                     RecordingErrorEvent {
@@ -617,7 +644,8 @@ impl ShortcutAction for TranscribeAction {
                             );
 
                             if post_process {
-                                show_processing_overlay(&ah);
+                                let prompt_name = resolve_prompt_name(&get_settings(&ah));
+                                show_processing_overlay(&ah, prompt_name);
                             }
                             let processed =
                                 process_transcription_output(&ah, &transcription, post_process)
@@ -643,18 +671,38 @@ impl ShortcutAction for TranscribeAction {
                                 let ah_clone = ah.clone();
                                 let paste_time = Instant::now();
                                 let final_text = processed.final_text;
+                                // Kōrero 1.42: kept so a failed paste never loses the words.
+                                let fallback_text = final_text.clone();
                                 ah.run_on_main_thread(move || {
                                     match utils::paste(final_text, ah_clone.clone()) {
-                                        Ok(()) => debug!(
-                                            "Text pasted successfully in {:?}",
-                                            paste_time.elapsed()
-                                        ),
+                                        Ok(()) => {
+                                            debug!(
+                                                "Text pasted successfully in {:?}",
+                                                paste_time.elapsed()
+                                            );
+                                            utils::hide_recording_overlay(&ah_clone);
+                                        }
                                         Err(e) => {
                                             error!("Failed to paste transcription: {}", e);
-                                            let _ = ah_clone.emit("paste-error", ());
+                                            // Put the text on the clipboard and say so on the
+                                            // pill, which is what you are looking at; the main
+                                            // window is usually hidden in the tray.
+                                            let copied = ah_clone
+                                                .clipboard()
+                                                .write_text(fallback_text)
+                                                .is_ok();
+                                            let _ = ah_clone.emit("paste-error", copied);
+                                            if copied {
+                                                utils::show_overlay_notice(
+                                                    &ah_clone,
+                                                    "notice-paste-copied",
+                                                    3500,
+                                                );
+                                            } else {
+                                                utils::hide_recording_overlay(&ah_clone);
+                                            }
                                         }
                                     }
-                                    utils::hide_recording_overlay(&ah_clone);
                                     change_tray_icon(&ah_clone, TrayIconState::Idle);
                                 })
                                 .unwrap_or_else(|e| {

@@ -32,6 +32,7 @@ import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import { commands } from "@/bindings";
+import { logActivity } from "./activityStore";
 import {
   createMeetingsBridge,
   type DeliveryOutcome,
@@ -73,6 +74,8 @@ export type MeetingJobKind = "post" | "both" | "refine";
 
 export interface MeetingJob {
   meetingId: string;
+  /** 1.42: shown in Activity and Today while the job runs. */
+  title?: string;
   kind: MeetingJobKind;
   startedAt: number;
   /** Streamed tokens so far — the live preview, kept while the tab is closed. */
@@ -116,6 +119,7 @@ interface MeetingJobsState {
   /** Generate notes. Resolves false only if the run was REFUSED (busy). */
   start: (args: {
     meetingId: string;
+    title?: string;
     kind: "post" | "both";
     text: string;
     prompt: string;
@@ -126,6 +130,7 @@ interface MeetingJobsState {
    *  Resolves true when the refined notes landed. */
   refine: (args: {
     meetingId: string;
+    title?: string;
     previous: string;
     feedback: string;
   }) => Promise<boolean>;
@@ -170,8 +175,10 @@ interface MeetingJobsState {
       segments: TranscriptSegLike[];
       mic_path: string | null;
       system_path: string | null;
+      /** 1.42: why a side is empty or was rebuilt, in plain English. */
+      warnings: string[];
     }) => MeetingDoc;
-  }) => Promise<void>;
+    }) => Promise<"saved" | "stop-failed" | "nothing">;
 }
 
 type SetState = (
@@ -226,6 +233,12 @@ function attachGlobalListeners(set: SetState) {
   // reach the user wherever they are in the app, while they can still fix it.
   listen<string>("meeting-capture-warning", (e) => {
     toast.warning(e.payload, { duration: 30_000 });
+    logActivity({
+      status: "attention",
+      title: "Recording needs a look",
+      detail: e.payload,
+      target: { section: "meetings", meetingId: "live" },
+    });
   }).catch((err) =>
     console.error("Could not attach the capture-warning listener:", err),
   );
@@ -242,7 +255,25 @@ function errText(e: unknown): string {
 function reportLanding(
   outcome: DeliveryOutcome,
   msgs: { done: string; saved: string; what: string },
+  meetingId?: string,
+  tab?: "notes" | "transcript",
 ) {
+  if (outcome === "shown" || outcome === "view" || outcome === "disk") {
+    logActivity({
+      status: "done",
+      title: msgs.done.replace(/\.$/, ""),
+      target: { section: "meetings", meetingId, tab },
+    });
+  } else {
+    logActivity({
+      status: "failed",
+      title: `${msgs.what} could not be saved`,
+      detail:
+        outcome === "missing"
+          ? "The meeting was deleted while it ran."
+          : "The meetings store could not be written.",
+    });
+  }
   switch (outcome) {
     case "shown":
       return;
@@ -342,6 +373,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
    */
   const runJob = async (args: {
     meetingId: string;
+    title?: string;
     kind: MeetingJobKind;
     text: string;
     prompt: string;
@@ -356,6 +388,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
     set(() => ({
       job: {
         meetingId: args.meetingId,
+        title: args.title,
         kind: args.kind,
         startedAt,
         live: "",
@@ -369,9 +402,16 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
         args.meetingId,
         args.patchFor(r.data),
       );
-      (args.onLanded ?? ((o) => reportLanding(o, NOTES_MSGS)))(outcome);
+      (args.onLanded ??
+        ((o) => reportLanding(o, NOTES_MSGS, args.meetingId, "notes")))(outcome);
     } catch (e) {
       toast.error(`${args.failLabel} failed: ${errText(e)}`);
+      logActivity({
+        status: "failed",
+        title: `${args.failLabel} failed`,
+        detail: errText(e),
+        target: { section: "meetings", meetingId: args.meetingId, tab: "notes" },
+      });
     } finally {
       set((s) => (s.job && s.job.startedAt === startedAt ? { job: null } : {}));
     }
@@ -380,6 +420,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
 
   const notesJob = (a: {
     meetingId: string;
+    title?: string;
     kind: "post" | "both";
     text: string;
     prompt: string;
@@ -387,6 +428,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
   }) =>
     runJob({
       meetingId: a.meetingId,
+      title: a.title,
       kind: a.kind,
       text: a.text,
       prompt: a.prompt,
@@ -408,7 +450,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
       return notesJob(a);
     },
 
-    refine: async ({ meetingId, previous, feedback }) => {
+    refine: async ({ meetingId, title, previous, feedback }) => {
       if (isBusy()) return refuse();
       const prompt =
         "You are revising EXISTING meeting notes based on the reader's feedback. " +
@@ -420,6 +462,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
       let landed = false;
       await runJob({
         meetingId,
+        title,
         kind: "refine",
         text: previous.trim(),
         prompt,
@@ -434,6 +477,11 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
             return;
           }
           landed = true;
+          logActivity({
+            status: "done",
+            title: "Notes refined",
+            target: { section: "meetings", meetingId, tab: "notes" },
+          });
           toast.success(
             outcome === "disk" ? "Notes refined and saved." : "Notes refined.",
             {
@@ -479,13 +527,20 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
           ...patch,
         });
         if (outcome === "missing" || outcome === "failed") {
-          reportLanding(outcome, TRANSCRIPT_MSGS);
+          reportLanding(outcome, TRANSCRIPT_MSGS, meetingId, "transcript");
           return false;
         }
         const empty = !patch.you.trim() && !patch.others.trim();
         if (!thenNotes) {
-          if (empty) toast.message("Still no speech found.");
-          else reportLanding(outcome, TRANSCRIPT_MSGS);
+          if (empty) {
+            toast.message("Still no speech found.");
+            logActivity({
+              status: "attention",
+              title: "Re-transcribe found no speech",
+              detail: title,
+              target: { section: "meetings", meetingId, tab: "audio" },
+            });
+          } else reportLanding(outcome, TRANSCRIPT_MSGS, meetingId, "transcript");
           return true;
         }
         const text = thenNotes.buildText(patch);
@@ -498,6 +553,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
         releaseTask(claim);
         void notesJob({
           meetingId,
+          title,
           kind: "both",
           text,
           prompt: thenNotes.prompt,
@@ -508,6 +564,12 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
         toast.error(
           `${thenNotes ? "Transcribe + post-process" : "Re-transcription"} failed: ${errText(e)}`,
         );
+        logActivity({
+          status: "failed",
+          title: `${thenNotes ? "Transcribe + notes" : "Re-transcription"} failed`,
+          detail: errText(e),
+          target: { section: "meetings", meetingId, tab: "audio" },
+        });
         return false;
       } finally {
         releaseTask(claim);
@@ -525,6 +587,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
         const r = await commands.meetingTranscribeFile(path);
         if (r.status !== "ok") {
           toast.error(`Transcription failed: ${r.error}`);
+          logActivity({ status: "failed", title: "Import failed", detail: r.error });
           return false;
         }
         // Saved the moment a transcript exists, BEFORE any notes (v1.30.2):
@@ -542,10 +605,17 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
             ? "Imported audio transcribed — open Meetings to see it."
             : "Imported audio transcribed.",
         );
+        logActivity({
+          status: "done",
+          title: "Import transcribed",
+          detail: label,
+          target: { section: "meetings", meetingId: m.id, tab: "transcript" },
+        });
         if (notesPrompt !== null && r.data.trim()) {
           releaseTask(claim);
           void notesJob({
             meetingId: m.id,
+            title: label,
             kind: "post",
             text: r.data,
             prompt: notesPrompt,
@@ -555,6 +625,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
         return true;
       } catch (e) {
         toast.error(`Import failed: ${errText(e)}`);
+        logActivity({ status: "failed", title: "Import failed", detail: errText(e) });
         return false;
       } finally {
         releaseTask(claim);
@@ -590,6 +661,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
             ? "Recording transcribed and added to your meetings — open Meetings to see it."
             : "Recording transcribed and added to your meetings.",
         );
+        logActivity({ status: "done", title: "Recording recovered", detail: label });
         return true;
       } catch (e) {
         toast.error(`Transcription failed: ${errText(e)}`);
@@ -600,13 +672,14 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
     },
 
     stopMeeting: async ({ makeMeeting }) => {
-      if (get().stopping) return;
+      if (get().stopping) return "nothing";
       set(() => ({ stopping: { startedAt: Date.now() } }));
       try {
         const res = await commands.meetingStopCapture();
         if (res.status !== "ok") {
           toast.error(`Meeting stop failed: ${res.error}`);
-          return;
+          logActivity({ status: "failed", title: "Stopping the meeting failed", detail: res.error });
+          return "stop-failed";
         }
         const { you, others, segments, mic_path, system_path } = res.data;
         const warnings = res.data.warnings ?? [];
@@ -615,7 +688,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
         for (const w of warnings) toast.warning(w, { duration: 30_000 });
         if (!you.trim() && !others.trim() && !mic_path && !system_path) {
           toast.message("No audio captured.");
-          return;
+          return "nothing";
         }
         const m = makeMeeting({
           you,
@@ -623,17 +696,24 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
           segments: segments as TranscriptSegLike[],
           mic_path,
           system_path,
+          warnings,
         });
         const outcome = await meetingsBridge.deliverNew(m, true);
         if (outcome === "failed") {
           toast.error(
             "The meeting was recorded, but the meetings store could not be written. The audio is safe — find it under Recordings and transcribe it from there.",
           );
-          return;
+          return "saved";
         }
         if (outcome === "disk") {
           toast.success("Meeting saved — open Meetings to see it.");
         }
+        logActivity({
+          status: warnings.length > 0 ? "attention" : "done",
+          title: warnings.length > 0 ? "Meeting saved — check the capture" : "Meeting saved",
+          detail: warnings.length > 0 ? warnings.join(" ") : undefined,
+          target: { section: "meetings", meetingId: m.id },
+        });
         if (you.trim() || others.trim()) {
           // v1.17.0: warm the local notes model so the first "Generate notes"
           // doesn't pay the cold model-load cost.
@@ -643,8 +723,10 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
             "Audio saved, but transcription was empty — you can re-transcribe it.",
           );
         }
+        return "saved";
       } catch (e) {
         toast.error(`Meeting stop failed: ${errText(e)}`);
+        return "stop-failed";
       } finally {
         set(() => ({ stopping: null }));
       }

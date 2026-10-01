@@ -382,6 +382,44 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     utils::create_recording_overlay(app_handle);
 }
 
+/// Kōrero 1.42: grow the main window towards the size the new shell is
+/// designed for, clamped to the monitor it is on, and centre it. A maximised
+/// window, or one already at least that big, is left exactly as it is.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn grow_main_window_once(win: &tauri::WebviewWindow) {
+    const WANT_W: f64 = 1120.0;
+    const WANT_H: f64 = 760.0;
+    if win.is_maximized().unwrap_or(false) {
+        return;
+    }
+    let Ok(Some(monitor)) = win.current_monitor() else {
+        return;
+    };
+    let scale = monitor.scale_factor();
+    let screen = monitor.size().to_logical::<f64>(scale);
+    let Ok(current) = win.inner_size() else {
+        return;
+    };
+    let current = current.to_logical::<f64>(scale);
+    let w = WANT_W.min(screen.width * 0.9).max(current.width);
+    let h = WANT_H.min(screen.height * 0.88).max(current.height);
+    if (w - current.width).abs() < 1.0 && (h - current.height).abs() < 1.0 {
+        return;
+    }
+    if let Err(e) = win.set_size(tauri::LogicalSize::new(w, h)) {
+        log::warn!("window: could not grow the main window: {e}");
+        return;
+    }
+    let _ = win.center();
+    log::info!(
+        "window: grew main window from {:.0}x{:.0} to {:.0}x{:.0} for the 1.42 layout",
+        current.width,
+        current.height,
+        w,
+        h
+    );
+}
+
 #[tauri::command]
 #[specta::specta]
 fn trigger_update_check(app: AppHandle) -> Result<(), String> {
@@ -871,6 +909,22 @@ pub fn run(cli_args: CliArgs) {
             if !cli_args.is_eval() {
                 if let Err(err) = main_window.restore_state(StateFlags::all()) {
                     log::warn!("window-state: failed to restore main window state: {err}");
+                }
+            }
+
+            // Kōrero 1.42: the new shell (sidebar, top bar, a meeting library
+            // beside the meeting) wants more room than the 820x640 default. On
+            // first run, and once for anyone upgrading, grow a smaller window
+            // towards 1120x760, never past 90% x 88% of its monitor, and never
+            // shrink one. After that the saved size is the user's again.
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            if !cli_args.is_eval() {
+                if let Ok(data_dir) = portable::app_data_dir(&app.handle()) {
+                    let marker = data_dir.join(".korero-window-grow-v142");
+                    if !marker.exists() {
+                        grow_main_window_once(&main_window);
+                        let _ = std::fs::write(&marker, "v1.42.0");
+                    }
                 }
             }
 

@@ -1,7 +1,7 @@
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import React, { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Mic, Cpu, Loader2, X, Square } from "lucide-react";
+import { Mic, Cpu, Loader2, X, Lock, ClipboardCheck, TriangleAlert } from "lucide-react";
 import "./RecordingOverlay.css";
 import { commands } from "@/bindings";
 import i18n, { syncLanguageFromSettings } from "@/i18n";
@@ -11,24 +11,38 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 // Kōrero (v1.8.0): added "recording-latched" for double-tap latch mode.
 // In this state the overlay shows the same bars/mic layout as "recording" but
 // with an amber/orange colour scheme (see RecordingOverlay.css).
-type OverlayState = "recording" | "recording-latched" | "transcribing" | "processing";
+// Kōrero 1.42: three short notices (see overlay.rs `show_overlay_notice`).
+// The pill is the one part of Kōrero you see while dictating, so problems
+// show here, not only as a toast in a main window hidden in the tray.
+type OverlayState =
+  | "recording"
+  | "recording-latched"
+  | "transcribing"
+  | "processing"
+  | "notice-paste-copied"
+  | "notice-no-mic"
+  | "notice-mic-denied";
+
+const isRecordingState = (s: OverlayState) => s === "recording" || s === "recording-latched";
+
+const fmtClock = (sec: number) => {
+  const s = Math.max(0, Math.floor(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = String(s % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${r}` : `${m}:${r}`;
+};
 
 /**
- * Korero recording overlay v2 — polished, state-distinct.
+ * Kōrero recording overlay (the dictation pill).
  *
- * State icons:
- *   recording          -> Mic with pulsing aurora ring + drop-shadow glow
- *   recording-latched  -> Mic with pulsing amber ring (double-tap latch mode, v1.8.0)
- *   transcribing       -> Cpu with matrix-green neon strobe (cyberpunk, v1.5.0)
- *   processing         -> Loader2 with magenta neon spin (cyberpunk, v1.5.0)
+ * Kōrero 1.42 (C1 on the design canvas): the pill uses the app's palette and
+ * says more about itself — an NZ badge while listening when New Zealand
+ * English is on, a clock and a real Stop when hands-free, the prompt's name
+ * while cleaning up, and short notices when a paste falls back to the
+ * clipboard or there is no microphone (with a Fix button).
  *
- * State animations:
- *   recording          -> aurora-gradient waveform bars (live mic levels)
- *   recording-latched  -> amber/orange waveform bars; tap once to stop (v1.8.0)
- *   transcribing       -> shimmer text (system font, neon cyan glow + shimmer-fade, v1.9.0)
- *   processing         -> shimmer text + spinner
- *
- * Bar scaleY values (stored in `levels`):
+ * Bar scaleY values (stored in `levels`), unchanged since v1.2.0:
  *   When not recording: 0.15 (CSS default, no JS involvement).
  *   When recording: RAF loop drives continuous updates. Each frame:
  *     - idleScaleY = 0.12 + 0.06 * (0.5 + 0.5 * sin(t*4 + i*0.9))  → 0.12–0.18
@@ -49,6 +63,26 @@ const RecordingOverlay: React.FC = () => {
   const animFrameRef = useRef<number | null>(null);
   const animStartRef = useRef<number | null>(null);
   const direction = getLanguageDirection(i18n.language);
+  // Kōrero 1.42: what the pill says about itself.
+  const [nz, setNz] = useState(false);
+  const [promptName, setPromptName] = useState<string | null>(null);
+  const startedAtRef = useRef<number | null>(null);
+  const visibleRef = useRef(false);
+  const stateRef = useRef<OverlayState>("recording");
+  const [, setTick] = useState(0);
+
+  // Settings are read when the pill appears, so the NZ badge is never stale:
+  // a change in the main window shows next time.
+  const readSettings = async () => {
+    try {
+      const res = await commands.getAppSettings();
+      if (res.status !== "ok") return;
+      const st = res.data;
+      setNz((st.selected_language ?? "").toLowerCase() === "en-nz");
+    } catch {
+      /* keep what we had */
+    }
+  };
 
   // ── Event listeners ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -65,11 +99,27 @@ const RecordingOverlay: React.FC = () => {
     void (async () => {
       const off = await Promise.all([
         listen("show-overlay", async (event) => {
-          await syncLanguageFromSettings();
-          setState(event.payload as OverlayState);
+          const next = event.payload as OverlayState;
+          // A new dictation starts the clock; going hands-free keeps it.
+          if (next === "recording" && (!visibleRef.current || !isRecordingState(stateRef.current))) {
+            startedAtRef.current = Date.now();
+          } else if (next === "recording-latched" && startedAtRef.current === null) {
+            startedAtRef.current = Date.now();
+          }
+          stateRef.current = next;
+          visibleRef.current = true;
+          setState(next);
           setIsVisible(true);
+          await Promise.all([syncLanguageFromSettings(), readSettings()]);
+        }),
+        // The prompt's name comes from Rust, which resolves per-app routing,
+        // so the pill names the prompt actually being used.
+        listen<string | null>("overlay-prompt", (event) => {
+          setPromptName(event.payload?.trim() || null);
         }),
         listen("hide-overlay", () => {
+          visibleRef.current = false;
+          startedAtRef.current = null;
           setIsVisible(false);
         }),
         // mic-level handler no longer calls setLevels (v1.2.0): the RAF loop
@@ -96,14 +146,27 @@ const RecordingOverlay: React.FC = () => {
     };
   }, []);
 
+  // The hands-free clock ticks once a second while it is showing.
+  useEffect(() => {
+    if (state !== "recording-latched" || !isVisible) return;
+    const t = window.setInterval(() => setTick((n) => n + 1), 1000);
+    return () => window.clearInterval(t);
+  }, [state, isVisible]);
+
+  const fix = () => {
+    void commands.showMainWindowCommand().catch(() => {});
+    void emit("korero://open-section", "general").catch(() => {});
+    setIsVisible(false);
+  };
+
   // ── RAF idle animation loop ─────────────────────────────────────────────────
   // Active only while recording AND visible. Drives a gentle staggered sine
   // wave across all 9 bars as a minimum floor, ensuring bars are never flat.
   // Audio levels from smoothedLevelsRef ride on top via Math.max().
   useEffect(() => {
-    // Kōrero (v1.8.0): RAF loop also active for "recording-latched" so bars
-    // continue to animate while latch mode is engaged.
-    if ((state !== "recording" && state !== "recording-latched") || !isVisible) {
+    // Kōrero 1.42: hands-free shows a clock instead of bars, so the loop
+    // runs for "recording" only (it was also active for "recording-latched").
+    if (state !== "recording" || !isVisible) {
       if (animFrameRef.current !== null) {
         cancelAnimationFrame(animFrameRef.current);
         animFrameRef.current = null;
@@ -149,30 +212,31 @@ const RecordingOverlay: React.FC = () => {
   }, [state, isVisible]);
 
   // ── Render ──────────────────────────────────────────────────────────────────
-  // Kōrero (v1.3.0): overlay layout reworked.
+  // Kōrero 1.42: three cells, as since v1.3.0 (left | middle | right), with
+  // the right cell sized to its content for the states that carry a text
+  // button (hands-free Stop, Fix). See RecordingOverlay.css for the geometry
+  // contract; nothing here may make the pill wider than its 280px max.
   //
-  // Recording:
-  //   left=mic icon  |  middle=waveform bars  |  right=cancel button
-  //
-  // Transcribing / Processing:
-  //   left=empty  |  middle=icon + shimmer text  |  right=empty
-  //
-  // Previously the state icon always lived in overlay-left. For non-recording
-  // states this created a visual off-centre because the icon in the 22px left
-  // cell drew the eye left while the shimmer text centred only within the 1fr
-  // middle column. Moving the icon into overlay-middle for these states lets
-  // both icon and text centre together as a single visual unit (overlay-shimmer-
-  // group flex row). overlay-left is empty for these states, keeping the grid
-  // symmetric (22px | 1fr | 22px) with all content centred in the 1fr.
+  //   recording          mic        | bars + NZ badge           | cancel
+  //   recording-latched  lock       | "Locked on · 3:12"        | Stop, cancel
+  //   transcribing       —          | icon + "Transcribing…"    | —
+  //   processing         —          | icon + "Cleaning up · X"  | —
+  //   notice-paste-…     clipboard  | "Couldn't paste · copied" | —
+  //   notice-no-mic      warning    | "No microphone found"     | Fix
+  //   notice-mic-denied  warning    | "Microphone is blocked"   | Fix
+  const elapsed = startedAtRef.current ? (Date.now() - startedAtRef.current) / 1000 : 0;
+  const notice = state.startsWith("notice-");
+  const cleaningLabel = promptName
+    ? `${t("overlay.cleaningUp")} · ${promptName.length > 24 ? `${promptName.slice(0, 23)}…` : promptName}`
+    : t("overlay.processing");
+
   return (
     <div
       dir={direction}
       className={`korero-overlay ${isVisible ? "fade-in" : ""}`}
       data-state={state}
+      role={notice ? "status" : undefined}
     >
-      {/* Left cell: mic icon while recording; in latch mode it becomes a STOP
-          (finish + transcribe) button so the user can reliably end a latched
-          dictation by clicking — no need to land the stop key-press (v1.19.3). */}
       <div className="overlay-left">
         {state === "recording" && (
           <div className="mic-wrap">
@@ -181,73 +245,87 @@ const RecordingOverlay: React.FC = () => {
           </div>
         )}
         {state === "recording-latched" && (
-          <button
-            type="button"
-            className="stop-button"
-            onClick={() => commands.finishActiveRecording()}
-            aria-label="Stop and transcribe"
-            title="Stop and transcribe"
-          >
-            <Square size={11} strokeWidth={2.6} fill="currentColor" />
-          </button>
+          <Lock className="state-icon lock-icon" size={15} strokeWidth={2.2} aria-hidden="true" />
+        )}
+        {state === "notice-paste-copied" && (
+          <ClipboardCheck className="state-icon notice-icon" size={15} strokeWidth={2} aria-hidden="true" />
+        )}
+        {(state === "notice-no-mic" || state === "notice-mic-denied") && (
+          <TriangleAlert className="state-icon notice-icon" size={15} strokeWidth={2} aria-hidden="true" />
         )}
       </div>
 
-      {/* Middle cell: bars when recording/recording-latched; icon + shimmer text otherwise.
-          Non-recording: icon and text share overlay-shimmer-group so they
-          centre as a unit within the 1fr column. */}
       <div className="overlay-middle">
-        {(state === "recording" || state === "recording-latched") && (
-          <div className="bars-container" aria-label="Recording audio levels">
-            {levels.map((v, i) => (
-              <div
-                key={i}
-                className="bar"
-                style={{
-                  // Kōrero (v1.2.0): `v` is now a pre-computed scaleY value (0.12–1.0)
-                  // from the RAF loop — no additional mapping needed here.
-                  // Opacity: 0.4 at idle (~0.12–0.18), rises to 1.0 at full audio.
-                  transform: `scaleY(${v.toFixed(3)})`,
-                  opacity: Math.max(0.4, Math.min(1, v * 1.6)),
-                }}
-              />
-            ))}
-          </div>
+        {state === "recording" && (
+          <>
+            <div className="bars-container" aria-label="Recording audio levels">
+              {levels.map((v, i) => (
+                <div
+                  key={i}
+                  className="bar"
+                  style={{
+                    // `v` is a pre-computed scaleY (0.12–1.0) from the RAF loop.
+                    transform: `scaleY(${v.toFixed(3)})`,
+                    opacity: Math.max(0.4, Math.min(1, v * 1.6)),
+                  }}
+                />
+              ))}
+            </div>
+            {nz && (
+              <span className="nz-badge" title={t("overlay.nzBadge")} aria-label={t("overlay.nzBadge")}>
+                NZ
+              </span>
+            )}
+          </>
+        )}
+        {state === "recording-latched" && (
+          <span className="pill-label">
+            {t("overlay.lockedOn")} · <span className="pill-clock">{fmtClock(elapsed)}</span>
+          </span>
         )}
         {(state === "transcribing" || state === "processing") && (
           <div className="overlay-shimmer-group">
             {state === "transcribing" ? (
-              <Cpu
-                className="state-icon transcribe-icon"
-                size={15}
-                strokeWidth={2.0}
-              />
+              <Cpu className="state-icon transcribe-icon" size={15} strokeWidth={2.0} />
             ) : (
-              <Loader2
-                className="state-icon spin-icon"
-                size={15}
-                strokeWidth={2.2}
-              />
+              <Loader2 className="state-icon spin-icon" size={15} strokeWidth={2.2} />
             )}
             <span className="shimmer-text">
-              {state === "transcribing"
-                ? t("overlay.transcribing")
-                : t("overlay.processing")}
+              {state === "transcribing" ? t("overlay.transcribing") : cleaningLabel}
             </span>
           </div>
         )}
+        {state === "notice-paste-copied" && <span className="pill-label notice-label">{t("overlay.pasteCopied")}</span>}
+        {state === "notice-no-mic" && <span className="pill-label notice-label">{t("overlay.noMic")}</span>}
+        {state === "notice-mic-denied" && <span className="pill-label notice-label">{t("overlay.micBlocked")}</span>}
       </div>
 
-      {/* Right cell: cancel button during recording and recording-latched; empty otherwise. */}
       <div className="overlay-right">
-        {(state === "recording" || state === "recording-latched") && (
+        {state === "recording-latched" && (
+          <button
+            type="button"
+            className="pill-text-button"
+            onClick={() => commands.finishActiveRecording()}
+            aria-label={t("overlay.stopAndTranscribe")}
+            title={t("overlay.stopAndTranscribe")}
+          >
+            {t("overlay.stop")}
+          </button>
+        )}
+        {isRecordingState(state) && (
           <button
             type="button"
             className="cancel-button"
             onClick={() => commands.cancelOperation()}
-            aria-label="Cancel recording"
+            aria-label={t("overlay.cancel")}
+            title={t("overlay.cancel")}
           >
             <X size={13} strokeWidth={2.6} />
+          </button>
+        )}
+        {(state === "notice-no-mic" || state === "notice-mic-denied") && (
+          <button type="button" className="pill-text-button pill-fix" onClick={fix} title={t("overlay.fixHint")}>
+            {t("overlay.fix")}
           </button>
         )}
       </div>

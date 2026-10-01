@@ -12,7 +12,7 @@ import { commands } from "../../../bindings";
 /**
  * Kōrero fork (v1.12.0): Help & Guide page.
  *
- * Sits between Post Process and About in the sidebar. Plain-English guidance on
+ * Kōrero 1.42: shown with About as the "Help & about" page. Plain-English guidance on
  * how to use Kōrero — the transcription model and its load/unload behaviour,
  * shortcuts, post-processing, troubleshooting — plus a Diagnostics block that
  * surfaces the log-level selector + log folder (previously buried in the Debug
@@ -87,9 +87,9 @@ export const HelpSettings: React.FC = () => {
 
   return (
     <div className="max-w-3xl w-full mx-auto space-y-6">
-      <div className="px-4 pt-1">
-        <h1 className="text-lg font-semibold text-text">Help &amp; Guide</h1>
-        <p className="text-sm text-text-subtle mt-1">
+      <div>
+        <h1 className="kx-title">Help &amp; about</h1>
+        <p className="kx-meta mt-1">
           How Kōrero works, how to drive it from the keyboard, and what to do
           when something misbehaves.
         </p>
@@ -106,10 +106,26 @@ export const HelpSettings: React.FC = () => {
         </Guide>
         <Guide title="Where the controls live">
           <p>
-            General (shortcuts, microphone, post-processing toggle), Models
-            (which speech model is active), Advanced (idle unload, noise
-            suppression, retention), Post Process (prompts and provider), and
-            History (past dictations). This page links to each where relevant.
+            Today is the home page: start a meeting, a note or an import, see
+            what is running, and check Kōrero is ready. Under Set up: Dictation
+            &amp; sound (shortcuts, microphone, sounds), Speech models, AI
+            clean-up &amp; notes (prompts and provider) and Advanced. Dictation
+            history keeps past dictations.
+          </p>
+        </Guide>
+        <Guide title="Find anything: Ctrl K">
+          <p>
+            Ctrl K searches your meetings (transcripts and notes), notes,
+            dictations and settings at once, and runs common actions: record a
+            meeting, flag a moment, new note, import audio. Macrons are
+            optional: “whanau” finds “whānau”.
+          </p>
+        </Guide>
+        <Guide title="Activity">
+          <p>
+            The Activity button (top right) lists what is running, what needs a
+            look, and what finished this session. Work carries on when you
+            change pages or close the window to the tray.
           </p>
         </Guide>
       </SettingsGroup>
@@ -120,7 +136,7 @@ export const HelpSettings: React.FC = () => {
             The speech model (Parakeet V3 by default) downloads once on first
             use — that single step needs internet. After it has downloaded,
             transcription is 100% on-device. Manage or switch models in
-            Settings → Models.
+            Speech models.
           </p>
         </Guide>
         <Guide title="Loading and unloading">
@@ -130,7 +146,7 @@ export const HelpSettings: React.FC = () => {
             it unloads the model after a period of inactivity.
           </p>
           <p>
-            Set that window in Settings → Advanced → Model unload timeout.
+            Set that window in Advanced → Model unload timeout.
             Never keeps the model resident for the fastest possible first word;
             Immediately frees memory after every dictation but adds a reload
             delay each time; the minute options sit in between.
@@ -148,7 +164,7 @@ export const HelpSettings: React.FC = () => {
           <p>
             In push-to-talk you hold the shortcut while speaking and release to
             finish. In toggle mode you tap once to start and tap again to stop.
-            Choose the mode and set every binding in Settings → General.
+            Choose the mode and set every binding in Dictation &amp; sound.
           </p>
         </Guide>
         <Guide title="Dictate">
@@ -168,7 +184,25 @@ export const HelpSettings: React.FC = () => {
           <p>
             Double-tap the dictate shortcut to lock recording on for a long,
             hands-free dictation; a single tap stops it. Useful for notes and
-            long passages where you do not want to hold a key.
+            long passages where you do not want to hold a key. The pill shows
+            “Locked on” with a clock, and its Stop button finishes the
+            dictation.
+          </p>
+        </Guide>
+        <Guide title="The dictation pill">
+          <p>
+            The pill near the bottom of the screen shows NZ while New Zealand
+            English is on, and names the prompt while it cleans up. If a paste
+            fails, the text goes to the clipboard and the pill says so; if
+            there is no microphone, its Fix button opens Dictation &amp; sound.
+          </p>
+        </Guide>
+        <Guide title="During a meeting">
+          <p>
+            Press F (or Flag moment) to mark something that matters; the notes
+            give flagged moments their own lines. “Pop out the recorder” opens
+            a small window that stays on top of your call, with Pause, Flag and
+            Stop. Recording carries on whichever page you are on.
           </p>
         </Guide>
         <Guide title="Cancel">
@@ -189,9 +223,9 @@ export const HelpSettings: React.FC = () => {
         </Guide>
         <Guide title="Turn it on">
           <p>
-            Enable Post-processing in Settings → General. A Post Process section
-            then appears in the sidebar where you manage prompts and the
-            provider.
+            Turn it on in AI clean-up &amp; notes, where you also manage the
+            prompts and choose the provider (a local Ollama model keeps
+            everything on this computer).
           </p>
         </Guide>
         <Guide title="Provider and API key">
@@ -216,8 +250,8 @@ export const HelpSettings: React.FC = () => {
             For everyday English the default Parakeet V3 is both the fastest and
             among the most accurate. It has no te reo Māori support at all — no
             macrons, no Māori vocabulary — so if you dictate te reo, or any other
-            language, switch to a Whisper model (Large or Turbo) in Settings →
-            Models. Whisper also applies your custom words at the moment of
+            language, switch to a Whisper model (Large or Turbo) in Speech
+            models. Whisper also applies your custom words at the moment of
             transcription, which Parakeet cannot do.
           </p>
         </Guide>
@@ -238,7 +272,7 @@ export const HelpSettings: React.FC = () => {
             matters most.
           </p>
           <Callout tone="info">
-            Optional noise suppression (Settings → Advanced) can help in genuinely
+            Optional noise suppression (Advanced) can help in genuinely
             noisy spaces, but may slightly reduce accuracy in quiet ones — A/B test
             on your own microphone.
           </Callout>
@@ -301,7 +335,7 @@ export const HelpSettings: React.FC = () => {
             The spoken-voice (text-to-speech) engine runs on-device and is set
             up separately from the app. If you see "voice engine not set up",
             install the local TTS engine — or point Kōrero at an existing one
-            with the KORERO_TTS_DIR environment variable. Settings → Models
+            with the KORERO_TTS_DIR environment variable. Speech models
             shows whether the engine is detected.
           </p>
           <Callout tone="info">
@@ -326,8 +360,8 @@ export const HelpSettings: React.FC = () => {
         </Guide>
         <Guide title="Nothing was typed after I spoke">
           <p>
-            Check that the correct input device is selected in Settings →
-            General, that you began speaking after the start sound, and that the
+            Check that the correct input device is selected in Dictation
+            &amp; sound, that you began speaking after the start sound, and that the
             target app had focus. Very short clips can produce no text.
           </p>
         </Guide>
@@ -336,7 +370,7 @@ export const HelpSettings: React.FC = () => {
             The first dictation after launch — or after an idle unload — takes a
             moment while the model loads. Set Model unload timeout to Never to
             keep it resident. Also confirm the model finished downloading in
-            Settings → Models.
+            Speech models.
           </p>
         </Guide>
         <Guide title="Microphone is blocked">
@@ -348,7 +382,7 @@ export const HelpSettings: React.FC = () => {
         </Guide>
         <Guide title="Accuracy in noisy rooms">
           <p>
-            Optional noise suppression (Settings → Advanced) can help in genuinely
+            Optional noise suppression (Advanced) can help in genuinely
             noisy spaces.
           </p>
           <Callout tone="warning">

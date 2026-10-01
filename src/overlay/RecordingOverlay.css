@@ -618,3 +618,249 @@ body {
   }
   .bar             { transition: none; }
 }
+
+/* ============================================================================
+   Kōrero 1.42 — the pill joins the app's one system (S1 and C1 boards).
+   ----------------------------------------------------------------------------
+   Appended as overrides, so every note above still explains the MECHANISM it
+   documents. What changes is colour and copy, never the geometry contract
+   (--pill-h, --halo, max-width 280px ↔ overlay.rs 336×96) and never the glow
+   mechanism: each visible state still glows with an ANIMATED box-shadow on the
+   same 2.6s clock, with radii no larger than the ones measured above (depth
+   0 3px 12px, glow 7px → 12px+1px), and nothing here puts `filter` on the pill.
+
+   The palette is the app's: one blue accent (#5ab0ff as ink, #0b63ce as a
+   fill), neutral surfaces, amber only for something you should look at, and
+   green only for the NZ badge. The cyan/purple/pink aurora and the neon
+   states are retired.
+   ============================================================================ */
+:root {
+  --kx-pill-surface: rgba(20, 20, 22, 0.97);
+  --kx-pill-border: #2f2f33;
+  --kx-pill-control: #252528;
+  --kx-pill-control-hover: #303034;
+  --kx-pill-accent: #5ab0ff;
+  --kx-pill-accent-fill: #0b63ce;
+  --kx-pill-ink-soft: #c7c7cc;
+  --kx-pill-ok: #30d158;
+  --kx-pill-ok-quiet: #10261a;
+  --kx-pill-alert: #ff7a8e;
+  --kx-pill-alert-quiet: #3a1820;
+  --kx-pill-warn: #f5a020;
+  --kx-pill-warn-surface: rgba(47, 37, 23, 0.97);
+  --kx-pill-warn-border: #6b5124;
+  --kx-pill-warn-ink: #f3e6cf;
+  --kx-pill-warn-control: #4a3a1f;
+  --kx-pill-warn-control-hover: #5a4726;
+  --kx-mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+}
+
+.korero-overlay {
+  background: var(--kx-pill-surface);
+  border-color: var(--kx-pill-border);
+}
+
+/* Glow: the same shape as korero-recording-glow, in the accent. */
+@keyframes kx-pill-glow-accent {
+  0%, 100% {
+    box-shadow:
+      inset 0   1px 0 0 rgba(255, 255, 255, 0.10),
+      inset 0  -1px 0 0 rgba(255, 255, 255, 0.03),
+      0 3px 12px 0 rgba(0, 0, 0, 0.52),
+      0 1px  3px 0 rgba(0, 0, 0, 0.28),
+      0 0   7px 0 rgba(90, 176, 255, 0.20);
+  }
+  50% {
+    box-shadow:
+      inset 0   1px 0 0 rgba(255, 255, 255, 0.10),
+      inset 0  -1px 0 0 rgba(255, 255, 255, 0.03),
+      0 3px 12px 0 rgba(0, 0, 0, 0.52),
+      0 1px  3px 0 rgba(0, 0, 0, 0.28),
+      0 0  12px 1px rgba(90, 176, 255, 0.40);
+  }
+}
+
+@keyframes kx-pill-glow-warn {
+  0%, 100% {
+    box-shadow:
+      inset 0   1px 0 0 rgba(255, 255, 255, 0.08),
+      0 3px 12px 0 rgba(0, 0, 0, 0.52),
+      0 1px  3px 0 rgba(0, 0, 0, 0.28),
+      0 0   7px 0 rgba(245, 160, 32, 0.22);
+  }
+  50% {
+    box-shadow:
+      inset 0   1px 0 0 rgba(255, 255, 255, 0.08),
+      0 3px 12px 0 rgba(0, 0, 0, 0.52),
+      0 1px  3px 0 rgba(0, 0, 0, 0.28),
+      0 0  12px 1px rgba(245, 160, 32, 0.42);
+  }
+}
+
+.korero-overlay[data-state="recording"],
+.korero-overlay[data-state="transcribing"],
+.korero-overlay[data-state="processing"] {
+  animation: kx-pill-glow-accent 2.6s ease-in-out infinite;
+}
+.korero-overlay[data-state="transcribing"],
+.korero-overlay[data-state="processing"] {
+  border-color: rgba(90, 176, 255, 0.32);
+}
+
+/* Recording: a blue mic, plain blue bars, and the NZ badge. */
+.mic-icon {
+  color: var(--kx-pill-accent);
+  filter: none;
+}
+.mic-pulse {
+  background: radial-gradient(circle, rgba(90, 176, 255, 0.42) 0%, rgba(90, 176, 255, 0) 70%);
+}
+.bar {
+  width: 3px;
+  background: var(--kx-pill-accent);
+  box-shadow: none;
+}
+.nz-badge {
+  flex-shrink: 0;
+  margin-inline-start: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--kx-pill-ok-quiet);
+  color: var(--kx-pill-ok);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+}
+
+/* Hands-free: a lock, how long it has run, and a real Stop. */
+.korero-overlay[data-state="recording-latched"] {
+  grid-template-columns: 22px 1fr auto;
+  border-color: var(--kx-pill-accent-fill);
+  animation: kx-pill-glow-accent 2.6s ease-in-out infinite;
+}
+.lock-icon {
+  color: var(--kx-pill-accent);
+}
+.pill-label {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  color: var(--kx-pill-ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.pill-clock {
+  font-family: var(--kx-mono);
+  color: #ffffff;
+}
+.overlay-right {
+  gap: 4px;
+}
+.pill-text-button {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 13px;
+  border: 0;
+  background: var(--kx-pill-control);
+  color: #ffffff;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 120ms ease-out, transform 100ms ease-out;
+}
+.pill-text-button:hover {
+  background: var(--kx-pill-control-hover);
+}
+.pill-text-button:active {
+  transform: scale(0.96);
+}
+.pill-text-button:focus-visible,
+.cancel-button:focus-visible {
+  outline: 2px solid var(--kx-pill-accent);
+  outline-offset: 2px;
+}
+
+/* Cancel: quiet until you reach for it, then the app's alert colour. */
+.cancel-button {
+  background: var(--kx-pill-control);
+  border-color: transparent;
+  color: var(--kx-pill-ink-soft);
+}
+.cancel-button:hover {
+  background: var(--kx-pill-alert-quiet);
+  border-color: transparent;
+  color: var(--kx-pill-alert);
+  box-shadow: none;
+}
+
+/* Transcribing and cleaning up: blue, with the sweep in neutral ink. */
+.transcribe-icon {
+  color: var(--kx-pill-accent);
+  filter: none;
+  animation: kx-icon-breathe 2.6s ease-in-out infinite;
+  will-change: opacity;
+}
+@keyframes kx-icon-breathe {
+  0%, 100% { opacity: 0.7; }
+  50%      { opacity: 1; }
+}
+.spin-icon {
+  color: var(--kx-pill-accent);
+  filter: none;
+}
+.overlay-shimmer-group {
+  min-width: 0;
+  max-width: 100%;
+}
+.shimmer-text {
+  font-size: 12.5px;
+  background-image: linear-gradient(
+    100deg,
+    var(--kx-pill-ink-soft) 0%,
+    var(--kx-pill-ink-soft) 44%,
+    #ffffff 50%,
+    var(--kx-pill-ink-soft) 56%,
+    var(--kx-pill-ink-soft) 100%
+  );
+  filter: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* Notices: amber, because they want a look, with a Fix where there is one. */
+.korero-overlay[data-state^="notice-"] {
+  background: var(--kx-pill-warn-surface);
+  border-color: var(--kx-pill-warn-border);
+  animation: kx-pill-glow-warn 2.6s ease-in-out infinite;
+}
+.korero-overlay[data-state="notice-no-mic"],
+.korero-overlay[data-state="notice-mic-denied"] {
+  grid-template-columns: 22px 1fr auto;
+}
+.notice-icon {
+  color: var(--kx-pill-warn);
+}
+.notice-label {
+  color: var(--kx-pill-warn-ink);
+}
+.pill-fix {
+  background: var(--kx-pill-warn-control);
+}
+.pill-fix:hover {
+  background: var(--kx-pill-warn-control-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .korero-overlay[data-state="recording"],
+  .korero-overlay[data-state="recording-latched"],
+  .korero-overlay[data-state="transcribing"],
+  .korero-overlay[data-state="processing"],
+  .korero-overlay[data-state^="notice-"] { animation: none; }
+  .transcribe-icon { animation: none; opacity: 1; }
+  .shimmer-text { -webkit-text-fill-color: var(--kx-pill-ink-soft); }
+}

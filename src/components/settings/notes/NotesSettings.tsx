@@ -27,245 +27,156 @@ import { commands, type ModelInfo } from "../../../bindings";
 import i18n from "../../../i18n";
 import { formatRelativeTime } from "../../../utils/dateFormat";
 import { useSettings } from "../../../hooks/useSettings";
+import { noteTitle, useNotes } from "../../../stores/notesStore";
+import { useNav } from "../../../stores/navStore";
+import { fmtClock } from "../../meetings/model";
 
 /**
- * Kōrero fork (v1.12.0): Notes page.
+ * Kōrero Notes page (v1.12.0; reworked 1.42).
  *
- * A dedicated dictation canvas. Press Dictate, ramble, press again to stop —
- * the text is transcribed (optionally cleaned up by the post-processing prompt)
- * and inserted at the cursor, rather than pasted into another app. Copy the
- * note out when finished. Notes persist in the webview store so they survive
- * restarts; nothing is sent anywhere.
+ * A dictation canvas: press Dictate, talk, press Stop, and the words land at
+ * your cursor. Since 1.42 the notes, the dictation and the processing run live
+ * in `useNotes` (src/stores/notesStore.ts), so leaving this page mid-dictation
+ * no longer loses the words or strands the microphone.
  */
 
-interface Note {
-  id: string;
-  title: string;
-  content: string;
-  updatedAt: number;
-}
-
-const STORE_KEY = "korero.notes.v1";
 const MODE_KEY = "korero.notes.postprocess";
-// v1.14.3: per-page processing choices persist across restarts.
 const PROMPT_ID_KEY = "korero.notes.promptId";
 const PROMPT_TEXT_KEY = "korero.notes.customPrompt";
 const PP_MODEL_KEY = "korero.notes.ppModel";
 
-const newId = () =>
-  (crypto as any)?.randomUUID?.() ?? `n_${Date.now()}_${Math.random()}`;
-
-const blankNote = (): Note => ({
-  id: newId(),
-  title: "",
-  content: "",
-  updatedAt: Date.now(),
-});
-
-const loadNotes = (): Note[] => {
+const readKey = (k: string, fallback = ""): string => {
   try {
-    const raw = localStorage.getItem(STORE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length) return parsed as Note[];
-    }
+    return localStorage.getItem(k) ?? fallback;
   } catch {
-    /* ignore corrupt store */
+    return fallback;
   }
-  return [blankNote()];
+};
+const writeKey = (k: string, v: string) => {
+  try {
+    localStorage.setItem(k, v);
+  } catch {
+    /* a remembered choice is a convenience */
+  }
 };
 
-const titleOf = (n: Note) => {
-  if (n.title.trim()) return n.title.trim();
-  const firstLine = n.content.split("\n").find((l) => l.trim());
-  return firstLine ? firstLine.trim().slice(0, 40) : "Untitled note";
-};
-
-const fmtTime = (s: number) => {
-  const m = Math.floor(s / 60);
-  const sec = s % 60;
-  return `${m}:${sec.toString().padStart(2, "0")}`;
+/** Ticks once a second from `startedAt`, so elapsed counters survive remounts. */
+const useSecondsSince = (startedAt: number | null): number => {
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (startedAt === null) return;
+    const t = window.setInterval(() => force((n) => n + 1), 1000);
+    return () => window.clearInterval(t);
+  }, [startedAt]);
+  return startedAt === null ? 0 : Math.floor((Date.now() - startedAt) / 1000);
 };
 
 export const NotesSettings: React.FC = () => {
   const { settings, postProcessModelOptions } = useSettings();
   const ppEnabled = settings?.post_process_enabled ?? false;
 
-  const [notes, setNotes] = useState<Note[]>(() => loadNotes());
-  const [activeId, setActiveId] = useState<string>(() => loadNotes()[0].id);
+  const notes = useNotes((s) => s.notes);
+  const activeId = useNotes((s) => s.activeId);
+  const dictation = useNotes((s) => s.dictation);
+  const dictationNoteId = useNotes((s) => s.dictationNoteId);
+  const dictationStartedAt = useNotes((s) => s.dictationStartedAt);
+  const processing = useNotes((s) => s.processing);
+
   const [postProcess, setPostProcess] = useState<boolean>(
-    () => localStorage.getItem(MODE_KEY) === "1",
+    () => readKey(MODE_KEY) === "1",
   );
-  const [recording, setRecording] = useState(false);
-  const [processing, setProcessing] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
   const [justCopied, setJustCopied] = useState(false);
-  // v1.14.3: whole-note processing — transcription model picker, per-run
-  // prompt + AI-model choice, busy state, and a one-step undo snapshot.
   const [models, setModels] = useState<ModelInfo[] | null>(null);
-  const [promptId, setPromptId] = useState<string>(
-    () => localStorage.getItem(PROMPT_ID_KEY) ?? "",
+  const [promptId, setPromptId] = useState<string>(() => readKey(PROMPT_ID_KEY));
+  const [customPrompt, setCustomPrompt] = useState<string>(() =>
+    readKey(PROMPT_TEXT_KEY),
   );
-  const [customPrompt, setCustomPrompt] = useState<string>(
-    () => localStorage.getItem(PROMPT_TEXT_KEY) ?? "",
-  );
-  const [ppModel, setPpModel] = useState<string>(
-    () => localStorage.getItem(PP_MODEL_KEY) ?? "",
-  );
-  const [processingNote, setProcessingNote] = useState(false);
-  // v1.15.1: visible elapsed seconds while the model rewrites the note —
-  // whole-note processing time scales with note length and model speed, so
-  // show the cost instead of an anonymous spinner.
-  const [processElapsed, setProcessElapsed] = useState(0);
-  // v1.15.0: corrections memory — teach form + suggestions mined from the
-  // most recent whole-note clean-up.
+  const [ppModel, setPpModel] = useState<string>(() => readKey(PP_MODEL_KEY));
   const corrections = useCorrections();
   const [teachWrong, setTeachWrong] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<Correction[]>([]);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  // v1.20.0: remember the caret so dictated / processed text lands where the
-  // cursor was — clicking the Stop button moves focus off the textarea, which
-  // previously forced every dictation to append at the very end of the note.
+  // Keep the caret so dictated text lands where the cursor was — clicking
+  // Stop moves focus off the textarea.
   const lastCaretRef = useRef<{ start: number; end: number } | null>(null);
-  const timerRef = useRef<number | null>(null);
-  // Snapshot for Undo after a whole-note rewrite — keyed by note id so a
-  // note switch between process and undo can't clobber the wrong note.
-  const lastSnapshotRef = useRef<{ id: string; content: string } | null>(null);
 
-  // Post-processing must be enabled globally for clean-up mode to do anything.
-  const cleanupActive = postProcess && ppEnabled;
   const activeNote = notes.find((n) => n.id === activeId) ?? notes[0];
+  const recording = dictation === "recording" || dictation === "starting";
+  const finishing = dictation === "finishing";
+  const processingHere = processing?.noteId === activeNote.id;
+  const cleanupActive = postProcess && ppEnabled;
+  const elapsed = useSecondsSince(dictationStartedAt);
+  const processElapsed = useSecondsSince(processing?.startedAt ?? null);
 
-  // Persist notes + mode. v1.14.4: debounced — previously the whole notes
-  // array was stringified on EVERY keystroke (main-thread jank as notes grow).
-  //
-  // v1.30.2: the debounce cleanup runs on UNMOUNT as well as on every `notes`
-  // change, and App.tsx renders only the active settings section — so typing
-  // and then leaving the Notes tab within 500 ms silently discarded the edit,
-  // because `loadNotes()` re-reads localStorage on remount. Identical to the
-  // Meetings autosave bug fixed in the same version. The flush lives in its own
-  // mount-scoped effect below; putting it in this cleanup would fire on every
-  // keystroke and defeat the debounce entirely.
-  const notesRef = useRef(notes);
-  const lastPersistedRef = useRef<string>("");
-  const writeNotes = (payload: string) => {
-    try {
-      localStorage.setItem(STORE_KEY, payload);
-      lastPersistedRef.current = payload;
-    } catch {
-      /* storage full / unavailable — keep working in memory */
+  useEffect(() => writeKey(MODE_KEY, postProcess ? "1" : "0"), [postProcess]);
+  useEffect(() => writeKey(PROMPT_ID_KEY, promptId), [promptId]);
+  useEffect(() => writeKey(PROMPT_TEXT_KEY, customPrompt), [customPrompt]);
+  useEffect(() => writeKey(PP_MODEL_KEY, ppModel), [ppModel]);
+
+  // A link from Today, search or Activity can ask for a particular note.
+  const navSeq = useNav((s) => s.navSeq);
+  useEffect(() => {
+    const id = useNav.getState().takeNoteFocus();
+    if (id && useNotes.getState().notes.some((n) => n.id === id)) {
+      useNotes.getState().setActive(id);
     }
-  };
-  useEffect(() => {
-    notesRef.current = notes;
-    const payload = JSON.stringify(notes);
-    const t = window.setTimeout(() => writeNotes(payload), 500);
-    return () => window.clearTimeout(t);
-  }, [notes]);
-  useEffect(
-    () => () => {
-      const payload = JSON.stringify(notesRef.current);
-      if (payload !== lastPersistedRef.current) writeNotes(payload);
-    },
-    [],
-  );
+  }, [navSeq]);
 
-  useEffect(() => {
-    localStorage.setItem(MODE_KEY, postProcess ? "1" : "0");
-  }, [postProcess]);
-
-  // v1.14.3: persist processing choices.
-  useEffect(() => {
-    localStorage.setItem(PROMPT_ID_KEY, promptId);
-  }, [promptId]);
-  useEffect(() => {
-    localStorage.setItem(PROMPT_TEXT_KEY, customPrompt);
-  }, [customPrompt]);
-  useEffect(() => {
-    localStorage.setItem(PP_MODEL_KEY, ppModel);
-  }, [ppModel]);
-
-  // v1.14.3: downloaded transcription models for the picker (same pattern as
-  // Meetings — selecting one sets the app-wide active model).
   useEffect(() => {
     commands
       .getAvailableModels()
-      .then((res) => {
-        if (res.status === "ok") {
-          setModels(res.data.filter((m) => m.is_downloaded));
-        } else {
-          setModels([]);
-        }
-      })
+      .then((res) =>
+        setModels(res.status === "ok" ? res.data.filter((m) => m.is_downloaded) : []),
+      )
       .catch(() => setModels([]));
   }, []);
 
-  // Default the prompt picker to the globally selected post-process prompt
-  // once settings arrive (only when nothing was persisted).
   useEffect(() => {
     if (!promptId && settings?.post_process_selected_prompt_id) {
       setPromptId(settings.post_process_selected_prompt_id);
     }
   }, [settings?.post_process_selected_prompt_id]);
 
-  // Recording timer.
+  // While this page is open it inserts dictation at the cursor; when it is
+  // closed the store appends to the end of the note instead.
   useEffect(() => {
-    if (recording) {
-      setElapsed(0);
-      timerRef.current = window.setInterval(
-        () => setElapsed((e) => e + 1),
-        1000,
-      );
-    } else if (timerRef.current !== null) {
-      window.clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-    return () => {
-      if (timerRef.current !== null) window.clearInterval(timerRef.current);
-    };
-  }, [recording]);
-
-  const patchActive = (patch: Partial<Note>) => {
-    setNotes((prev) =>
-      prev.map((n) =>
-        n.id === activeNote.id ? { ...n, ...patch, updatedAt: Date.now() } : n,
-      ),
-    );
-  };
-
-  // v1.14.3: returns the note's NEW content so callers can chain whole-note
-  // processing without waiting on React state.
-  const insertText = (text: string): string => {
-    const t = text.trim();
-    const content = activeNote.content;
-    if (!t) return content;
-    const ta = textareaRef.current;
-    // Prefer the live selection when the textarea is focused; otherwise fall
-    // back to the last known caret (the Stop button steals focus, so the live
-    // selection would otherwise collapse to the end of the note).
-    let caret: { start: number; end: number } | null = null;
-    if (ta && document.activeElement === ta) {
-      caret = {
-        start: ta.selectionStart ?? content.length,
-        end: ta.selectionEnd ?? content.length,
-      };
-    } else if (lastCaretRef.current) {
-      const clamp = (n: number) => Math.max(0, Math.min(n, content.length));
-      caret = {
-        start: clamp(lastCaretRef.current.start),
-        end: clamp(lastCaretRef.current.end),
-      };
-    }
-    if (caret) {
-      const before = content.slice(0, caret.start);
-      const after = content.slice(caret.end);
-      const sep = before && !/\s$/.test(before) ? " " : "";
-      const inserted = sep + t;
-      const next = before + inserted + after;
-      const pos = before.length + inserted.length;
+    const insert = (noteId: string, text: string): string | null => {
+      const st = useNotes.getState();
+      if (noteId !== st.activeId) return null;
+      const note = st.notes.find((n) => n.id === noteId);
+      if (!note) return null;
+      const t = text.trim();
+      const content = note.content;
+      const ta = textareaRef.current;
+      let caret: { start: number; end: number } | null = null;
+      if (ta && document.activeElement === ta) {
+        caret = {
+          start: ta.selectionStart ?? content.length,
+          end: ta.selectionEnd ?? content.length,
+        };
+      } else if (lastCaretRef.current) {
+        const clamp = (n: number) => Math.max(0, Math.min(n, content.length));
+        caret = {
+          start: clamp(lastCaretRef.current.start),
+          end: clamp(lastCaretRef.current.end),
+        };
+      }
+      let next: string;
+      let pos: number;
+      if (caret) {
+        const before = content.slice(0, caret.start);
+        const after = content.slice(caret.end);
+        const sep = before && !/\s$/.test(before) ? " " : "";
+        next = before + sep + t + after;
+        pos = before.length + sep.length + t.length;
+      } else {
+        const sep = content && !/\s$/.test(content) ? " " : "";
+        next = content + sep + t;
+        pos = next.length;
+      }
       lastCaretRef.current = { start: pos, end: pos };
-      patchActive({ content: next });
+      st.patchNote(noteId, { content: next });
       if (ta) {
         requestAnimationFrame(() => {
           ta.focus();
@@ -273,120 +184,30 @@ export const NotesSettings: React.FC = () => {
         });
       }
       return next;
-    }
-    const sep = content && !/\s$/.test(content) ? " " : "";
-    const next = content + sep + t;
-    lastCaretRef.current = { start: next.length, end: next.length };
-    patchActive({ content: next });
-    return next;
-  };
+    };
+    useNotes.getState().setInserter(insert);
+    return () => useNotes.getState().setInserter(null);
+  }, []);
 
-  // ---- whole-note processing (v1.14.3) -------------------------------------
-
-  // The prompt actually sent: a saved post-processing prompt, or the custom
-  // text. Empty falls back to the Rust-side default clean-up prompt.
   const effectivePrompt = (): string => {
     if (promptId === "custom") return customPrompt;
     const found = settings?.post_process_prompts?.find((p) => p.id === promptId);
     return found?.prompt ?? customPrompt ?? "";
   };
-
-  const applyToNote = (id: string, content: string) =>
-    setNotes((prev) =>
-      prev.map((n) =>
-        n.id === id ? { ...n, content, updatedAt: Date.now() } : n,
-      ),
-    );
-
-  const undoProcess = () => {
-    const snap = lastSnapshotRef.current;
-    if (!snap) return;
-    applyToNote(snap.id, snap.content);
-    lastSnapshotRef.current = null;
-    toast.message("Note restored.");
-  };
-
-  /// Run the selected prompt (+ optional model override) over the whole note.
-  const processNoteText = async (noteId: string, content: string) => {
-    const text = content.trim();
-    if (!text || processingNote) return;
-    setProcessingNote(true);
-    setProcessElapsed(0);
-    const startedAt = Date.now();
-    const tick = window.setInterval(
-      () => setProcessElapsed(Math.floor((Date.now() - startedAt) / 1000)),
-      1000,
-    );
-    try {
-      const res = await commands.notePostProcess(
-        text,
-        effectivePrompt(),
-        ppModel.trim() ? ppModel.trim() : null,
-      );
-      if (res.status === "ok") {
-        const out = res.data.trim();
-        if (!out) {
-          toast.error("The model returned no output — note unchanged.");
-          return;
-        }
-        lastSnapshotRef.current = { id: noteId, content };
-        applyToNote(noteId, out);
-        // v1.15.0: mine conservative wrong → right suggestions from what the
-        // clean-up changed, so repeat mistakes become permanent fixes.
-        setSuggestions(mineCorrectionSuggestions(content, out, corrections.list));
-        toast.success("Note processed.", {
-          action: { label: "Undo", onClick: undoProcess },
-          duration: 8000,
-        });
-      } else {
-        toast.error(res.error);
-      }
-    } catch (e) {
-      toast.error(String(e));
-    } finally {
-      window.clearInterval(tick);
-      setProcessingNote(false);
-    }
-  };
+  const suggest = (before: string, after: string) =>
+    setSuggestions(mineCorrectionSuggestions(before, after, corrections.list));
 
   const toggleDictation = async () => {
-    if (processing || processingNote) return;
-    if (recording) {
-      setRecording(false);
-      setProcessing(true);
-      try {
-        // v1.14.3: always take the RAW transcript — clean-up now applies to
-        // the whole note (below), not just the dictated snippet.
-        const res = await commands.noteStopDictation(false);
-        if (res.status === "ok") {
-          if (res.data && res.data.trim()) {
-            const noteId = activeNote.id;
-            const updated = insertText(res.data);
-            if (cleanupActive) {
-              await processNoteText(noteId, updated);
-            }
-          } else {
-            toast.message("No speech detected.");
-          }
-        } else {
-          toast.error(`Dictation failed: ${res.error}`);
-        }
-      } catch (e) {
-        toast.error(`Dictation failed: ${String(e)}`);
-      } finally {
-        setProcessing(false);
-      }
-    } else {
-      try {
-        const res = await commands.noteStartDictation();
-        if (res.status === "ok") {
-          setRecording(true);
-        } else {
-          toast.error(res.error);
-        }
-      } catch (e) {
-        toast.error(`Could not start dictation: ${String(e)}`);
-      }
+    const st = useNotes.getState();
+    if (st.dictation === "recording") {
+      await st.stopDictation({
+        cleanup: cleanupActive,
+        prompt: effectivePrompt(),
+        model: ppModel.trim() ? ppModel.trim() : null,
+        onSuggest: suggest,
+      });
+    } else if (st.dictation === "idle") {
+      await st.startDictation();
     }
   };
 
@@ -402,26 +223,14 @@ export const NotesSettings: React.FC = () => {
   };
 
   const addNote = () => {
-    const n = blankNote();
-    setNotes((prev) => [n, ...prev]);
-    setActiveId(n.id);
+    useNotes.getState().addNote();
     requestAnimationFrame(() => textareaRef.current?.focus());
-  };
-
-  const deleteNote = (id: string) => {
-    setNotes((prev) => {
-      const next = prev.filter((n) => n.id !== id);
-      const list = next.length ? next : [blankNote()];
-      if (id === activeId) setActiveId(list[0].id);
-      return list;
-    });
   };
 
   const wordCount = activeNote.content.trim()
     ? activeNote.content.trim().split(/\s+/).length
     : 0;
 
-  // ---- picker options (v1.14.3) --------------------------------------------
   const currentModel = settings?.selected_model ?? "";
   const modelOptions: DropdownOption[] = (models ?? []).map((m) => ({
     value: m.id,
@@ -444,22 +253,13 @@ export const NotesSettings: React.FC = () => {
     { value: "custom", label: "Custom prompt…" },
   ];
 
-  // AI model for processing: "" = the model configured for the provider under
-  // Post Process; otherwise another model available on that provider.
-  //
-  // Korero (v1.35.0): this list used to be built purely from the provider's
-  // static suggested_models, which for a local provider (Ollama) meant it
-  // offered models that are not installed and hid the ones that are -- the
-  // same fault as the Post Process model dropdown, independently coded here.
-  // Fetched models now win; suggestions are a fallback for remote providers
-  // only, where every catalogue entry is genuinely usable with a valid key.
+  // Fetched models win; suggestions are a fallback for remote providers only
+  // (v1.35.0: a local provider must never offer models that are not installed).
   const activeProvider = settings?.post_process_providers?.find(
     (p) => p.id === settings?.post_process_provider_id,
   );
   const configuredPpModel =
-    (settings?.post_process_models ?? {})[
-      settings?.post_process_provider_id ?? ""
-    ] ?? "";
+    (settings?.post_process_models ?? {})[settings?.post_process_provider_id ?? ""] ?? "";
   const fetchedPpModels =
     postProcessModelOptions[settings?.post_process_provider_id ?? ""] ?? [];
   const ppModelCandidates =
@@ -471,204 +271,162 @@ export const NotesSettings: React.FC = () => {
   const ppModelOptions: DropdownOption[] = [
     {
       value: "",
-      label: configuredPpModel
-        ? `Default (${configuredPpModel})`
-        : "Provider default",
+      label: configuredPpModel ? `Default (${configuredPpModel})` : "Provider default",
     },
     ...ppModelCandidates
       .filter((m) => m && m !== configuredPpModel)
       .map((m) => ({ value: m, label: m })),
   ];
 
-  return (
-    <div className="max-w-4xl w-full mx-auto space-y-4">
-      <div className="px-1">
-        <h1 className="text-lg font-semibold text-text">Notes</h1>
-        <p className="text-sm text-text-subtle mt-1">
-          Dictate long-form notes hands-free, then copy them out. Text is
-          inserted at your cursor — it is not pasted into other apps.
-        </p>
-      </div>
+  const dictatingElsewhere =
+    recording && dictationNoteId !== null && dictationNoteId !== activeNote.id;
 
-      <div className="flex gap-4">
-        {/* Saved notes list */}
-        <div className="w-56 shrink-0 glass-card p-2 flex flex-col gap-1 max-h-[70vh] overflow-y-auto">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={addNote}
-            className="mb-1 flex items-center justify-center gap-1.5"
-          >
+  return (
+    <div className="kx-page kx-page-wide flex flex-col gap-4" style={{ maxWidth: 1180 }}>
+      <header>
+        <h1 className="kx-title">Notes</h1>
+        <p className="kx-meta mt-1">
+          Dictate long-form notes, then copy them out. Your words land at the
+          cursor; they are not pasted into other apps.
+        </p>
+      </header>
+
+      <div className="flex gap-4 min-h-0">
+        <nav aria-label="Notes" className="kx-card w-60 shrink-0 p-2 flex flex-col gap-1 max-h-[72vh] overflow-y-auto">
+          <Button variant="secondary" size="sm" onClick={addNote} className="mb-1 w-full">
             <Plus size={15} /> New note
           </Button>
           {notes.map((n) => {
             const isActive = n.id === activeNote.id;
             return (
-              <div
-                key={n.id}
-                onClick={() => setActiveId(n.id)}
-                className={`group rounded-lg px-3 py-2 cursor-pointer transition-colors ${
-                  isActive ? "bg-glass-accent-strong" : "hover:bg-white/5"
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-text truncate">
-                    {titleOf(n)}
+              <div key={n.id} className="group relative">
+                <button
+                  type="button"
+                  aria-current={isActive ? "true" : undefined}
+                  onClick={() => useNotes.getState().setActive(n.id)}
+                  className="kx-list-item pr-9"
+                >
+                  <span className="block text-[13.5px] truncate">{noteTitle(n)}</span>
+                  <span className="kx-meta flex items-center gap-1.5">
+                    {dictationNoteId === n.id && recording && (
+                      <span className="kx-dot kx-dot-alert" aria-hidden="true" />
+                    )}
+                    {formatRelativeTime(String(Math.floor(n.updatedAt / 1000)), i18n.language)}
                   </span>
-                  <button
-                    type="button"
-                    title="Delete note"
-                    aria-label={`Delete note ${titleOf(n)}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      // v1.25.0 (UX batch): empty notes delete silently;
-                      // anything with content asks first (audit #2). Review
-                      // fix #4: a TITLE is content too — only bypass when
-                      // both title and body are blank.
-                      if (!n.content.trim() && !n.title.trim()) {
-                        deleteNote(n.id);
-                      } else {
-                        confirmDestructive(
-                          `Delete "${titleOf(n)}"?`,
-                          "The note is removed permanently.",
-                          "Delete",
-                          () => deleteNote(n.id),
-                        );
-                      }
-                    }}
-                    className="opacity-0 group-hover:opacity-100 text-text-subtle hover:text-pill-urgent transition-opacity"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-                <span className="text-xs text-text-subtle">
-                  {/* Korero (UX round, 2026-09-02): the shared formatter, not
-                      toLocaleDateString(). Called bare, that follows the
-                      OPERATING SYSTEM locale rather than the app's own language
-                      setting -- Korero in French on an English Windows showed
-                      English dates.
-
-                      RELATIVE, not absolute, and that is the whole point of the
-                      round. A first pass used formatDate() here, which left the
-                      app with TWO date treatments -- relative in History, a long
-                      absolute date in Notes -- which is the defect this work
-                      exists to remove. "2 hours ago" is also the more useful
-                      answer for "when did I last touch this note", and it is far
-                      shorter than "2 September 2026" in a narrow list column
-                      where a wrap would make every row a different height.
-
-                      Contract: the formatter takes SECONDS as a string;
-                      updatedAt is Date.now() milliseconds (see the Note type). */}
-                  {formatRelativeTime(
-                    String(Math.floor(n.updatedAt / 1000)),
-                    i18n.language,
-                  )}
-                </span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Delete note ${noteTitle(n)}`}
+                  title="Delete note"
+                  onClick={() => {
+                    const del = () => useNotes.getState().deleteNote(n.id);
+                    if (!n.content.trim() && !n.title.trim()) del();
+                    else
+                      confirmDestructive(
+                        `Delete "${noteTitle(n)}"?`,
+                        "The note is removed permanently.",
+                        "Delete",
+                        del,
+                      );
+                  }}
+                  className="kx-btn kx-btn-ghost kx-btn-icon kx-btn-sm absolute right-1.5 top-1.5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                >
+                  <Trash2 size={14} />
+                </button>
               </div>
             );
           })}
-        </div>
+        </nav>
 
-        {/* Editor */}
-        <div className="flex-1 min-w-0 glass-card p-4 flex flex-col gap-3">
+        <section aria-label="Note editor" className="kx-card flex-1 min-w-0 p-4 flex flex-col gap-3">
+          <label htmlFor="note-title" className="kx-sr-only">
+            Note title
+          </label>
           <input
+            id="note-title"
             value={activeNote.title}
-            onChange={(e) => patchActive({ title: e.target.value })}
+            onChange={(e) =>
+              useNotes.getState().patchNote(activeNote.id, { title: e.target.value })
+            }
             placeholder="Note title"
-            className="w-full bg-transparent text-base font-medium text-text placeholder:text-text-subtle focus:outline-none"
+            className="w-full bg-transparent kx-title placeholder:text-[var(--kx-ink-2)] focus:outline-none"
           />
 
-          {/* Dictation controls */}
           <div className="flex flex-wrap items-center gap-2">
             <Button
               variant={recording ? "danger" : "primary"}
-              size="md"
               onClick={toggleDictation}
-              disabled={processing}
-              className="flex items-center gap-2"
+              disabled={finishing || dictation === "starting" || dictatingElsewhere || !!processing}
             >
-              {processing ? (
+              {finishing ? (
                 <>
-                  <Loader2 size={16} className="animate-spin" />{" "}
+                  <Loader2 size={15} className="animate-spin" />
                   {cleanupActive ? "Transcribing + cleaning…" : "Transcribing…"}
                 </>
               ) : recording ? (
                 <>
-                  <Square size={15} /> Stop · {fmtTime(elapsed)}
+                  <Square size={13} fill="currentColor" /> Stop ·{" "}
+                  <span className="kx-mono">{fmtClock(elapsed)}</span>
                 </>
               ) : (
                 <>
-                  <Mic size={16} /> Dictate
+                  <Mic size={15} /> Dictate
                 </>
               )}
             </Button>
+            {recording && (
+              <Button variant="ghost" onClick={() => useNotes.getState().cancelDictation()}>
+                <X size={14} /> Cancel
+              </Button>
+            )}
 
-            {/* Mode toggle */}
-            <div className="flex rounded-lg overflow-hidden border border-glass-border">
+            <div role="group" aria-label="Dictation mode" className="flex rounded-[9px] overflow-hidden border border-[var(--kx-control)]">
               <button
                 type="button"
+                aria-pressed={!postProcess}
                 onClick={() => setPostProcess(false)}
-                className={`px-3 py-[5px] text-sm transition-colors ${
-                  !postProcess
-                    ? "bg-glass-accent-strong text-text"
-                    : "text-text-muted hover:bg-white/5"
-                }`}
+                className={`px-3 min-h-[34px] text-[13px] ${!postProcess ? "bg-[var(--kx-selected)] text-[var(--kx-accent-ink)] font-semibold" : "text-[var(--kx-ink-soft)] hover:bg-white/5"}`}
               >
                 Transcribe
               </button>
               <button
                 type="button"
+                aria-pressed={postProcess}
                 onClick={() => setPostProcess(true)}
                 disabled={!ppEnabled}
                 title={
                   ppEnabled
                     ? "Transcribe, then clean up the WHOLE note with the selected prompt and model"
-                    : "Enable post-processing in General to use clean-up"
+                    : "Turn on AI clean-up to use this"
                 }
-                className={`px-3 py-[5px] text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                  postProcess
-                    ? "bg-glass-accent-strong text-text"
-                    : "text-text-muted hover:bg-white/5"
-                }`}
+                className={`px-3 min-h-[34px] text-[13px] disabled:opacity-40 disabled:cursor-not-allowed ${postProcess ? "bg-[var(--kx-selected)] text-[var(--kx-accent-ink)] font-semibold" : "text-[var(--kx-ink-soft)] hover:bg-white/5"}`}
               >
                 Transcribe + clean up
               </button>
             </div>
 
             <div className="ml-auto flex items-center gap-3">
-              <span className="text-xs text-text-subtle">{wordCount} words</span>
-              <Button
-                variant="secondary"
-                size="md"
-                onClick={copyNote}
-                disabled={!activeNote.content.trim()}
-                className="flex items-center gap-1.5"
-              >
-                {justCopied ? (
-                  <>
-                    <Check size={15} /> Copied
-                  </>
-                ) : (
-                  <>
-                    <Copy size={15} /> Copy
-                  </>
-                )}
+              <span className="kx-meta kx-mono">{wordCount} words</span>
+              <Button variant="secondary" onClick={copyNote} disabled={!activeNote.content.trim()}>
+                {justCopied ? <Check size={15} /> : <Copy size={15} />}
+                {justCopied ? "Copied" : "Copy"}
               </Button>
             </div>
           </div>
 
+          {dictatingElsewhere && (
+            <p className="kx-banner kx-banner-info">
+              A dictation is running in another note. It will land there when you stop it.
+            </p>
+          )}
           {postProcess && !ppEnabled && (
-            <p className="text-xs text-pill-warning">
-              Clean-up needs post-processing turned on in General — falling back
-              to plain transcription until then.
+            <p className="kx-banner kx-banner-warn">
+              Clean-up needs AI clean-up turned on. Until then, notes are transcribed only.
             </p>
           )}
 
-          {/* v1.14.3: processing controls — transcription model (future
-              dictations), the prompt + AI model used for whole-note
-              processing, and a re-runnable Process note action with Undo. */}
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-text-subtle">Model</span>
+            <span className="kx-meta">Speech model</span>
             <Dropdown
               options={modelOptions}
               selectedValue={currentModel}
@@ -677,39 +435,38 @@ export const NotesSettings: React.FC = () => {
             />
             {ppEnabled && (
               <>
-                <span className="text-xs text-text-subtle ml-2">Prompt</span>
+                <span className="kx-meta ml-2">Prompt</span>
                 <Dropdown
                   options={promptOptions}
                   selectedValue={promptId}
                   onSelect={setPromptId}
-                  disabled={processingNote}
+                  disabled={!!processing}
                 />
-                <span className="text-xs text-text-subtle ml-2">AI model</span>
+                <span className="kx-meta ml-2">AI model</span>
                 <Dropdown
                   options={ppModelOptions}
                   selectedValue={ppModel}
                   onSelect={setPpModel}
-                  disabled={processingNote}
+                  disabled={!!processing}
                 />
                 <Button
                   variant="secondary"
-                  size="md"
                   onClick={() =>
-                    processNoteText(activeNote.id, activeNote.content)
+                    useNotes.getState().processNote({
+                      noteId: activeNote.id,
+                      content: activeNote.content,
+                      prompt: effectivePrompt(),
+                      model: ppModel.trim() ? ppModel.trim() : null,
+                      onSuggest: suggest,
+                    })
                   }
-                  disabled={
-                    processingNote ||
-                    processing ||
-                    recording ||
-                    !activeNote.content.trim()
-                  }
-                  className="flex items-center gap-1.5"
+                  disabled={!!processing || finishing || recording || !activeNote.content.trim()}
                   title="Run the selected prompt and AI model over the whole note (Undo available)"
                 >
-                  {processingNote ? (
+                  {processingHere ? (
                     <>
                       <Loader2 size={15} className="animate-spin" /> Processing…{" "}
-                      {processElapsed}s
+                      <span className="kx-mono">{processElapsed}s</span>
                     </>
                   ) : (
                     <>
@@ -721,17 +478,21 @@ export const NotesSettings: React.FC = () => {
             )}
           </div>
           {ppEnabled && promptId === "custom" && (
-            <textarea
-              value={customPrompt}
-              onChange={(e) => setCustomPrompt(e.target.value)}
-              rows={2}
-              placeholder="Custom processing prompt — e.g. 'Rewrite this note as a client-ready email, NZ English.' Leave empty for a standard clean-up."
-              className="w-full bg-white/5 border border-white/10 rounded-md px-2 py-1.5 text-xs text-text placeholder:text-text-subtle focus:outline-none resize-none"
-            />
+            <>
+              <label htmlFor="note-prompt" className="kx-sr-only">
+                Custom processing prompt
+              </label>
+              <textarea
+                id="note-prompt"
+                value={customPrompt}
+                onChange={(e) => setCustomPrompt(e.target.value)}
+                rows={2}
+                placeholder="Custom processing prompt — e.g. 'Rewrite this note as a client-ready email, NZ English.' Leave empty for a standard clean-up."
+                className="kx-input"
+              />
+            </>
           )}
 
-          {/* v1.15.0: teach the transcriber — select a mis-heard word in the
-              note, then click Teach. */}
           {teachWrong === null ? (
             <button
               type="button"
@@ -739,45 +500,32 @@ export const NotesSettings: React.FC = () => {
                 const ta = textareaRef.current;
                 const s = ta?.selectionStart ?? 0;
                 const e = ta?.selectionEnd ?? 0;
-                setTeachWrong(
-                  activeNote.content.slice(s, e).trim().slice(0, 80),
-                );
+                setTeachWrong(activeNote.content.slice(s, e).trim().slice(0, 80));
               }}
-              className="self-start text-xs text-text-subtle hover:text-aurora-cyan transition-colors flex items-center gap-1.5"
+              className="kx-btn kx-btn-quiet kx-btn-sm self-start"
               title="Select a mis-transcribed word in the note first, then click to teach the correction"
             >
-              <GraduationCap size={13} /> Teach a correction
+              <GraduationCap size={14} /> Teach a correction
             </button>
           ) : (
-            <AddCorrectionInline
-              initialWrong={teachWrong}
-              onDone={() => setTeachWrong(null)}
-            />
+            <AddCorrectionInline initialWrong={teachWrong} onDone={() => setTeachWrong(null)} />
           )}
 
-          {/* v1.15.0: suggestions mined from the latest clean-up. */}
           {suggestions.length > 0 && (
             <div className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="text-text-subtle">
-                The clean-up suggests teaching:
-              </span>
+              <span className="kx-meta">The clean-up suggests teaching:</span>
               {suggestions.map((sug, i) => (
-                <span
-                  key={`${sug.wrong}-${i}`}
-                  className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-full px-2.5 py-1"
-                >
-                  <span className="text-text-muted line-through">
-                    {sug.wrong}
-                  </span>
-                  <span className="text-text">{sug.right}</span>
+                <span key={`${sug.wrong}-${i}`} className="kx-chip">
+                  <span className="line-through opacity-70">{sug.wrong}</span>
+                  <span className="text-white">{sug.right}</span>
                   <button
                     type="button"
-                    title="Teach this correction"
+                    aria-label={`Teach ${sug.wrong} as ${sug.right}`}
                     onClick={() => {
                       corrections.add(sug.wrong, sug.right);
                       setSuggestions((prev) => prev.filter((_, j) => j !== i));
                     }}
-                    className="text-aurora-cyan hover:opacity-75"
+                    className="kx-accent-ink"
                   >
                     <Plus size={12} />
                   </button>
@@ -785,48 +533,43 @@ export const NotesSettings: React.FC = () => {
               ))}
               <button
                 type="button"
-                title="Dismiss suggestions"
+                aria-label="Dismiss suggestions"
                 onClick={() => setSuggestions([])}
-                className="text-text-subtle hover:text-text"
+                className="kx-ink-2 hover:text-white"
               >
                 <X size={12} />
               </button>
             </div>
           )}
 
-          {/* v1.14.4: read-only while the model rewrites the note — edits made
-              during the (potentially long) LLM call would be silently
-              overwritten when the processed result lands. */}
+          <label htmlFor="note-body" className="kx-sr-only">
+            Note
+          </label>
           <textarea
+            id="note-body"
             ref={textareaRef}
             value={activeNote.content}
-            onChange={(e) => patchActive({ content: e.target.value })}
-            // v1.20.0: keep the last caret fresh so dictation inserts there
-            // even after Stop (or any control) takes focus. onSelect covers
-            // caret moves + selections; onBlur captures the position as focus
-            // leaves the textarea.
+            onChange={(e) =>
+              useNotes.getState().patchNote(activeNote.id, { content: e.target.value })
+            }
             onSelect={(e) => {
               const ta = e.currentTarget;
-              lastCaretRef.current = {
-                start: ta.selectionStart,
-                end: ta.selectionEnd,
-              };
+              lastCaretRef.current = { start: ta.selectionStart, end: ta.selectionEnd };
             }}
             onBlur={(e) => {
               const ta = e.currentTarget;
-              lastCaretRef.current = {
-                start: ta.selectionStart,
-                end: ta.selectionEnd,
-              };
+              lastCaretRef.current = { start: ta.selectionStart, end: ta.selectionEnd };
             }}
-            readOnly={processingNote}
+            // Read-only while the model rewrites the note: edits made during the
+            // run would be overwritten when the result lands.
+            readOnly={processingHere}
             placeholder="Start dictating, or type here. Your words land at the cursor."
             spellCheck
-            className={`w-full flex-1 min-h-[320px] resize-none bg-transparent text-sm text-text leading-relaxed placeholder:text-text-subtle focus:outline-none ${
-              processingNote ? "opacity-60 cursor-wait" : ""
+            className={`kx-read w-full max-w-none flex-1 min-h-[340px] resize-none bg-transparent placeholder:text-[var(--kx-ink-2)] focus:outline-none ${
+              processingHere ? "opacity-60 cursor-wait" : ""
             }`}
           />
-        </div>
+        </section>
       </div>
     </div>
   );

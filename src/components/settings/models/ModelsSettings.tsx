@@ -243,10 +243,10 @@ export const ModelsSettings: React.FC = () => {
   return (
     <div className="max-w-3xl w-full mx-auto space-y-4">
       <div className="mb-1">
-        <h1 className="text-xl font-semibold mb-2">
+        <h1 className="kx-title mb-1">
           {t("settings.models.title")}
         </h1>
-        <p className="text-sm text-text/60">
+        <p className="kx-meta">
           Download and manage the on-device models Kōrero uses — speech-to-text,
           the audio-brief voice, and local post-processing — all in one place.
         </p>

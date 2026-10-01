@@ -377,7 +377,16 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
     }
 }
 
+/// Kōrero 1.42: bumped on every show and hide, so a notice that hides itself
+/// later can tell whether anything else has used the pill in the meantime.
+static OVERLAY_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn bump_overlay_generation() -> u64 {
+    OVERLAY_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
+
 fn show_overlay_state(app_handle: &AppHandle, state: &str) {
+    bump_overlay_generation();
     // Check if overlay should be shown based on position setting
     let settings = settings::get_settings(app_handle);
     if settings.overlay_position == OverlayPosition::None {
@@ -407,9 +416,36 @@ pub fn show_transcribing_overlay(app_handle: &AppHandle) {
     show_overlay_state(app_handle, "transcribing");
 }
 
-/// Shows the processing overlay window
-pub fn show_processing_overlay(app_handle: &AppHandle) {
+/// Shows the processing overlay window.
+///
+/// Kōrero 1.42: with the name of the prompt being used, so the pill can say
+/// "Cleaning up · Client email". Sent before the state so it is in place
+/// when the pill appears; `None` shows the plain "Processing…" label.
+pub fn show_processing_overlay(app_handle: &AppHandle, prompt_name: Option<String>) {
+    if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
+        let _ = overlay_window.emit("overlay-prompt", prompt_name);
+    }
     show_overlay_state(app_handle, "processing");
+}
+
+/// Kōrero 1.42: a short notice on the pill, which then hides itself.
+///
+/// The pill is the one part of Kōrero you can see while dictating; the main
+/// window is usually hidden in the tray. So a dictation that could not be
+/// pasted, or could not start, says so here as well as in the main window.
+/// `kind` is the overlay state ("notice-paste-copied", "notice-no-mic",
+/// "notice-mic-denied"). If anything else shows or hides the pill before
+/// `hide_after_ms` is up, the notice leaves it alone.
+pub fn show_overlay_notice(app_handle: &AppHandle, kind: &str, hide_after_ms: u64) {
+    show_overlay_state(app_handle, kind);
+    let generation = OVERLAY_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
+    let app = app_handle.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(hide_after_ms));
+        if OVERLAY_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == generation {
+            hide_recording_overlay(&app);
+        }
+    });
 }
 
 /// Updates the overlay window position based on current settings
@@ -429,6 +465,7 @@ pub fn update_overlay_position(app_handle: &AppHandle) {
 
 /// Hides the recording overlay window with fade-out animation
 pub fn hide_recording_overlay(app_handle: &AppHandle) {
+    let generation = bump_overlay_generation();
     // Always hide the overlay regardless of settings - if setting was changed while recording,
     // we still want to hide it properly
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
@@ -438,7 +475,12 @@ pub fn hide_recording_overlay(app_handle: &AppHandle) {
         let window_clone = overlay_window.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(300));
-            let _ = window_clone.hide();
+            // Kōrero 1.42: unless the pill was shown again inside those 300 ms
+            // (a new dictation, or a notice replacing the pill), which would
+            // otherwise be hidden out from under it.
+            if OVERLAY_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == generation {
+                let _ = window_clone.hide();
+            }
         });
     }
 }

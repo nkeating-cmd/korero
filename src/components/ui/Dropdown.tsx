@@ -30,10 +30,15 @@ interface DropdownProps {
 }
 
 interface DropdownPos {
+  /** The trigger's bottom edge (or top edge when the list opens upwards). */
   top: number;
   left: number;
   width: number;
+  /** Kōrero 1.42: open upwards when there is no room below the trigger. */
+  above?: boolean;
 }
+
+const MENU_MAX = 248;
 
 export const Dropdown: React.FC<DropdownProps> = ({
   options,
@@ -74,7 +79,14 @@ export const Dropdown: React.FC<DropdownProps> = ({
         setIsOpen(false);
         return;
       }
-      setDropdownPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+      const roomBelow = window.innerHeight - rect.bottom;
+      const above = roomBelow < MENU_MAX + 8 && rect.top > roomBelow;
+      setDropdownPos({
+        top: above ? rect.top - 4 : rect.bottom + 4,
+        left: rect.left,
+        width: Math.max(rect.width, 200),
+        above,
+      });
     };
 
     reposition(); // initial position
@@ -191,11 +203,7 @@ export const Dropdown: React.FC<DropdownProps> = ({
       <button
         ref={triggerRef}
         type="button"
-        className={`px-2.5 py-1.5 text-sm font-medium bg-glass-surface-thin border border-glass-border rounded-lg min-w-[200px] text-start flex items-center justify-between transition-all duration-150 ${
-          disabled
-            ? "opacity-50 cursor-not-allowed"
-            : "hover:bg-glass-surface-hover hover:border-glass-border-strong cursor-pointer"
-        }`}
+        className="kx-select"
         onClick={handleToggle}
         onKeyDown={handleTriggerKeyDown}
         disabled={disabled}
@@ -204,7 +212,8 @@ export const Dropdown: React.FC<DropdownProps> = ({
       >
         <span className="truncate">{selectedOption?.label || placeholder}</span>
         <svg
-          className={`w-4 h-4 ms-2 transition-transform duration-200 ${isOpen ? "transform rotate-180" : ""}`}
+          aria-hidden="true"
+          className={`w-4 h-4 ms-2 shrink-0 kx-ink-2 transition-transform duration-200 ${isOpen ? "transform rotate-180" : ""}`}
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -226,15 +235,17 @@ export const Dropdown: React.FC<DropdownProps> = ({
             onKeyDown={handleListKeyDown}
             style={{
               position: "fixed",
-              top: dropdownPos.top,
+              ...(dropdownPos.above
+                ? { bottom: window.innerHeight - dropdownPos.top }
+                : { top: dropdownPos.top }),
               left: dropdownPos.left,
               width: dropdownPos.width,
               zIndex: 9999,
             }}
-            className="bg-background border border-glass-border-strong rounded-lg shadow-xl max-h-60 overflow-y-auto"
+            className="kx-menu"
           >
             {options.length === 0 ? (
-              <div className="px-2.5 py-1.5 text-sm text-text-subtle">
+              <div className="px-2.5 py-1.5 kx-meta">
                 {t("common.noOptionsFound")}
               </div>
             ) : (
@@ -244,11 +255,7 @@ export const Dropdown: React.FC<DropdownProps> = ({
                   type="button"
                   role="option"
                   aria-selected={selectedValue === option.value}
-                  className={`w-full px-2.5 py-1.5 text-sm text-start hover:bg-glass-surface-hover focus-visible:bg-glass-surface-hover transition-colors duration-150 ${
-                    selectedValue === option.value
-                      ? "bg-aurora-cyan/15 text-aurora-cyan font-medium"
-                      : "text-text"
-                  } ${option.disabled ? "opacity-50 cursor-not-allowed" : ""}`}
+                  className="kx-menu-item"
                   onClick={() => handleSelect(option.value)}
                   disabled={option.disabled}
                 >
