@@ -17,13 +17,15 @@ Two things do reach the network, and it is worth naming them rather than roundin
 speech models are downloaded on first use, and the app asks GitHub once at startup whether a newer
 release exists. Neither carries audio, transcripts, or anything about you. No telemetry, ever.
 
-Current version: **v1.41.0** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.41.0)).
+Current version: **v1.42.0** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.42.0)).
 
 ---
 
 ## What Kōrero adds over Handy
 
 ### Meetings — record both sides of a call (v1.13–1.14)
+- **A meetings library and a live view** (v1.42). Meetings are grouped by day beside the open meeting, with Transcript, Notes, Audio and Ask tabs. While you record, the live view shows both sides' levels and the transcript as it arrives. Press **F** to flag a moment and the notes give it its own line. After Stop, a short wrap-up says what was saved and what to check. Recording carries on whichever page you are on.
+- **Pop-out recorder** (v1.42): a small always-on-top window with the clock, both sides' levels, Pause, Flag and Stop, so you can keep it beside the call. If the call goes quiet for 90 seconds, Kōrero says it may be playing through a different device.
 - **Live transcript while you record** (v1.14): speech is segmented and transcribed on the fly, streaming into the Meetings page — and you can **ask your configured model about the meeting so far**, mid-meeting. Stopping is near-instant because the transcript already exists.
 - **Live input meters + device test** (v1.13.5–6): per-stream level meters with device names and captured-time counters, a no-risk *Test audio* button that exercises the real capture path, and **native WASAPI loopback** (with cpal fallback) for reliable system-audio capture.
 - **Dual capture**: your microphone ("You") **and system audio via WASAPI loopback ("Others")** — a free speaker split without diarization models.
@@ -33,7 +35,9 @@ Current version: **v1.41.0** ([release notes](https://github.com/nkeating-cmd/ko
 - Privacy guard: a warning whenever the configured LLM provider is a cloud endpoint, plus a Rust-side egress allowlist so a tampered config can't redirect transcripts to an unknown host.
 
 ### New surfaces & workflows
-- **Home dashboard** — a proper landing screen with quick-action cards and your recent dictations, instead of opening straight into a settings list.
+- **Today** (v1.42) — the home page: start a meeting, a note or an import, see what's running and what just finished, and a *Ready to go* panel that checks your microphone, NZ English, speech model, notes model and call audio, with a fix button for each.
+- **Search everything with Ctrl K** (v1.42) — meetings (titles, transcripts and notes), notes, dictations and settings in one box. Macrons are optional: "whanau" finds *whānau*. It also runs common actions: record, flag a moment, new note, import.
+- **Activity** (v1.42) — one panel for what's running, what needs a look, and what finished this session.
 - **Notes page** — a built-in dictation canvas: press *Dictate*, ramble, press again, and the text lands at your cursor. *Transcribe + clean up* runs your chosen post-processing prompt over the **whole note** (v1.14.3), and a **Process note** button re-runs it any time with a selectable prompt (saved or custom) and AI model — with one-click Undo. Copy the finished note out in one click. Notes persist across restarts.
 - **Help & Guide page** — plain-English guidance on the model, shortcuts, post-processing, and troubleshooting, plus a **Diagnostics** panel.
 - **Record-and-clean-up shortcut** (`Ctrl+Shift+Space`) — records, transcribes, then runs your chosen post-processing prompt in one gesture.
@@ -41,6 +45,7 @@ Current version: **v1.41.0** ([release notes](https://github.com/nkeating-cmd/ko
 - **Latch / hands-free mode** — double-tap a shortcut to lock recording on for long dictation; tap once to stop.
 
 ### Reliability
+- **Nothing lost, nothing hidden** (v1.42). If a paste fails, the text goes to the clipboard and the dictation pill says so. No microphone shows on the pill with a Fix button. A note's dictation always lands in the note it started in, even if you change page, and a failed clean-up is labelled instead of passing as done.
 - **Meetings keep working when you leave the tab** (v1.41). Stop, re-transcribe, import, recover, notes and refine all run in the background, and the spinner and progress are still there when you come back. One queue now handles every read and write of the meetings store, so a page you return to can no longer save its older copy over a finished result.
 - **Capture warnings while there's still time to fix them** (v1.41). If the microphone hears nothing for two minutes, or almost nothing comes through from the computer's audio output after 90 seconds, Kōrero warns you mid-meeting with a toast and a taskbar flash. Stop explains why a side came back empty.
 - **Missed speech is rebuilt from the recording** (v1.41). If live transcription falls behind or hits an error, Stop re-transcribes that speaker from the saved audio. The speech engine reloads itself after a failure. Re-transcribe reports the real error and keeps your existing transcript.
@@ -61,16 +66,18 @@ Current version: **v1.41.0** ([release notes](https://github.com/nkeating-cmd/ko
 
 ### Post-processing (LLM clean-up)
 - **11 providers** out of the box — DeepSeek (default), OpenAI, Anthropic Claude, Google Gemini, OpenRouter, Groq, Cerebras, z.ai, AWS Bedrock, Ollama (local), and a custom endpoint. Post-processing is off until you turn it on.
+- **Thinking off for local models** (v1.42). Ollama models that think by default (gemma4, qwen3) ran past the clean-up time limit. Kōrero now turns thinking off, and gemma4:12b answered a clean-up in 20–30 seconds instead of timing out.
 - **Local models via Ollama**, including in-app model pull — plus an **Ollama doctor** (v1.17): detects a missing or stopped Ollama, installs it via winget from inside the app, starts it with one click, **auto-restarts it when a clean-up request finds it down**, and checks it's running at startup.
 - **Curated default prompts** — clean transcript, client email, Slack/WhatsApp, meeting note, red-team, and **NZ English + te reo Māori** (restores macrons, never translates te reo, fixes common mis-hearings like "far no" → *whānau*).
 
 ### Localisation & defaults
-- **New Zealand English on by default** (v1.41; Handy defaults to auto-detect). Macrons, NZ place names and NZ spelling apply out of the box. An existing plain "English" setting switches over once; turn it off in Settings → General and it stays off.
+- **New Zealand English on by default** (v1.41; Handy defaults to auto-detect). Macrons, NZ place names and NZ spelling apply out of the box. An existing plain "English" setting switches over once; turn it off in Dictation & sound and it stays off.
 - **NZ + te reo Māori custom dictionary** seeded by default, with **macron-aware matching** so words like *whānau* / *hapū* resolve correctly.
 - **Teachable corrections** (v1.15) — select a mis-transcribed word anywhere and teach the right one. Fixed deterministically in every future transcription, fed to the AI clean-up as a glossary, and the Notes clean-up even **suggests corrections** it noticed itself.
 - Sensible defaults: trailing space on insert, 15-minute model unload timeout.
 
 ### Look & feel
+- **One system across the app** (v1.42). The sidebar is grouped into Capture, Library and Set up, with plain-English names. The dictation pill uses the same palette and shows when New Zealand English is on, a clock and a real Stop when hands-free, and the prompt it is cleaning up with.
 - **Quiet Instrument** (v1.33.0) — a true-neutral dark ladder with **one** accent, replacing the aurora-on-navy theme. The animated cyan/purple/pink background is gone: it was three competing hues, a permanently-promoted full-window compositing layer, and the loudest thing on every screen.
 - **Glass is chrome only.** Sidebar and toolbars keep the material; anything you *read* sits on an opaque surface. Following Apple's own 2025–26 position that the material exists to bring focus to content, not to sit under it.
 - **Typography on the ladder that exists** — the installed Aptos has exactly two faces (Regular and Bold), measured, so hierarchy comes from size, colour and space rather than from weights the renderer silently rounds. Aptos Display for large titles, tabular figures everywhere numbers tick, a 74ch measure on transcripts.
