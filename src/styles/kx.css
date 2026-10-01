@@ -621,7 +621,13 @@ body {
   .kx-today-actions {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-  @container (min-width: 940px) {
+  @container (min-width: 860px) {
+    .kx-today {
+      grid-template-columns: minmax(0, 1fr) 280px;
+      column-gap: 24px;
+    }
+  }
+  @container (min-width: 1060px) {
     .kx-today {
       grid-template-columns: minmax(0, 1fr) 300px;
       column-gap: 28px;
