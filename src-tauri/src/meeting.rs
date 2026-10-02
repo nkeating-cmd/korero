@@ -45,6 +45,48 @@ pub fn is_meeting_active() -> bool {
     MEETING_ACTIVE.load(Ordering::Relaxed)
 }
 
+/// Kōrero 1.43 (F-143-VRAM): below this many characters a prompt reads in
+/// seconds even on a crowded graphics card, so the speech model stays loaded.
+const FREE_SPEECH_MIN_CHARS: usize = 4_000;
+
+/// Whether to free the speech model before a local AI model reads `prompt_chars`
+/// of meeting text. Only for an AI model on this computer (a loopback URL: it
+/// shares the graphics card), only when nothing is recording, and never when
+/// the user chose to keep the speech model loaded.
+pub(crate) fn should_free_speech_model(
+    base_url: &str,
+    prompt_chars: usize,
+    recording: bool,
+    meeting_active: bool,
+    keep_speech_loaded: bool,
+) -> bool {
+    crate::commands::history::is_loopback_url(base_url)
+        && prompt_chars >= FREE_SPEECH_MIN_CHARS
+        && !recording
+        && !meeting_active
+        && !keep_speech_loaded
+}
+
+/// Free the speech model's graphics memory before meeting notes or Ask run on
+/// a local AI model (see `TranscriptionManager::release_for_local_llm`).
+fn free_speech_model_for_local_llm(app: &AppHandle, base_url: &str, prompt_chars: usize) {
+    let recording = app
+        .try_state::<Arc<AudioRecordingManager>>()
+        .map_or(false, |a| a.is_recording());
+    let keep = crate::settings::get_settings(app).model_unload_timeout
+        == crate::settings::ModelUnloadTimeout::Never;
+    if !should_free_speech_model(base_url, prompt_chars, recording, is_meeting_active(), keep) {
+        return;
+    }
+    if let Some(tm) = app.try_state::<Arc<TranscriptionManager>>() {
+        if tm.release_for_local_llm() {
+            log::info!(
+                "Freed the speech model so the local AI model has the graphics card ({prompt_chars} chars)"
+            );
+        }
+    }
+}
+
 /// Result of stopping a meeting. Audio paths are always populated (recording is
 /// saved before transcription); transcript fields may be empty if transcription
 /// failed — the audio can then be re-transcribed from disk.
@@ -1679,6 +1721,7 @@ pub async fn meeting_query(
          transcript. If the answer is not present, say you cannot find it in the meeting."
             .to_string();
     let user = format!("Meeting transcript:\n\n{transcript}\n\n---\nQuestion: {question}");
+    free_speech_model_for_local_llm(&app, &provider.base_url, user.chars().count());
 
     let answer = crate::llm_client::send_chat_completion_with_schema(
         &provider,
@@ -1896,6 +1939,7 @@ pub async fn meeting_post_process(
     // are moved into the LLM calls).
     let system_for_strip = system.clone();
     let api_key_fallback = api_key.clone();
+    free_speech_model_for_local_llm(&app, &provider.base_url, text.chars().count());
     let answer = crate::llm_client::stream_chat_completion(
         &provider,
         api_key,
@@ -3266,5 +3310,77 @@ mod korero_meetings_reliability_tests {
         assert!(n.contains("48,000-character"), "{n}");
         assert!(truncation_note(48_000, 48_000).contains("100%"));
         assert!(truncation_note(0, 0).contains("100%"), "no divide by zero");
+    }
+}
+
+#[cfg(test)]
+mod korero_143_vram_tests {
+    use super::{should_free_speech_model, FREE_SPEECH_MIN_CHARS};
+
+    const LOCAL: &str = "http://localhost:11434/v1";
+
+    #[test]
+    fn frees_for_a_long_transcript_on_a_local_model() {
+        assert!(should_free_speech_model(LOCAL, 40_000, false, false, false));
+        assert!(should_free_speech_model(
+            "http://127.0.0.1:11434/v1",
+            FREE_SPEECH_MIN_CHARS,
+            false,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn keeps_it_for_cloud_remote_and_disguised_hosts() {
+        assert!(!should_free_speech_model(
+            "https://api.openai.com/v1",
+            40_000,
+            false,
+            false,
+            false
+        ));
+        assert!(!should_free_speech_model(
+            "http://192.168.1.20:11434/v1",
+            40_000,
+            false,
+            false,
+            false
+        ));
+        assert!(!should_free_speech_model(
+            "http://localhost:11434@evil.example/v1",
+            40_000,
+            false,
+            false,
+            false
+        ));
+        assert!(!should_free_speech_model("", 40_000, false, false, false));
+    }
+
+    #[test]
+    fn keeps_it_while_anything_records_or_when_the_user_says_never() {
+        assert!(
+            !should_free_speech_model(LOCAL, 40_000, true, false, false),
+            "dictating"
+        );
+        assert!(
+            !should_free_speech_model(LOCAL, 40_000, false, true, false),
+            "meeting recording"
+        );
+        assert!(
+            !should_free_speech_model(LOCAL, 40_000, false, false, true),
+            "unload set to Never"
+        );
+    }
+
+    #[test]
+    fn keeps_it_for_short_prompts() {
+        assert!(!should_free_speech_model(
+            LOCAL,
+            FREE_SPEECH_MIN_CHARS - 1,
+            false,
+            false,
+            false
+        ));
     }
 }

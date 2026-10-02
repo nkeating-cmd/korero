@@ -249,6 +249,53 @@ impl TranscriptionManager {
         Ok(())
     }
 
+    /// Kōrero 1.43 (F-143-VRAM): free the speech model's graphics memory so a
+    /// local AI model about to read a long transcript has the card to itself.
+    /// Measured on the test laptop: with the speech model resident, a 12 GB
+    /// card overflowed and the local model read prompts at 71 tokens/s instead
+    /// of 1,414.
+    ///
+    /// Never waits and never interrupts: if a load is under way or a
+    /// transcription holds the engine, it does nothing and returns false.
+    /// Holding `is_loading` for the whole step means no load can start
+    /// half-way (same lock order as `transcribe_traced`: is_loading, then
+    /// engine). The next dictation or transcription reloads the model, as it
+    /// does after the idle unload.
+    pub fn release_for_local_llm(&self) -> bool {
+        let is_loading = self
+            .is_loading
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *is_loading {
+            return false;
+        }
+        let mut engine = match self.engine.try_lock() {
+            Ok(g) => g,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return false,
+        };
+        if engine.is_none() {
+            return false;
+        }
+        *engine = None;
+        *self
+            .current_model_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        drop(engine);
+        drop(is_loading);
+        let _ = self.app_handle.emit(
+            "model-state-changed",
+            ModelStateEvent {
+                event_type: "unloaded".to_string(),
+                model_id: None,
+                model_name: None,
+                error: None,
+            },
+        );
+        true
+    }
+
     fn now_ms() -> u64 {
         // Korero: unwrap_or_default returns Duration::ZERO on the impossible
         // case of a pre-1970 system clock. The idle-timer keeps working
