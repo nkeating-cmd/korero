@@ -68,7 +68,12 @@ pub fn classify_gpu(vendor_id: u32, name: &str, vram_mb: u32) -> GpuKind {
             }
         }
         0x1002 => {
-            if ["radeon rx", " rx ", "radeon pro", "firepro", "instinct"]
+            // APUs are named "... Graphics" ("AMD Radeon(TM) RX Vega 10
+            // Graphics", "AMD Radeon 780M Graphics"); cards aren't
+            // (refuter DEF-07).
+            if n.ends_with("graphics") {
+                GpuKind::Integrated
+            } else if ["radeon rx", " rx ", "radeon pro", "firepro", "instinct"]
                 .iter()
                 .any(|k| n.contains(k))
             {
@@ -370,6 +375,14 @@ mod tests {
         );
         assert_eq!(
             classify_gpu(0x1002, "AMD Radeon RX 7600", 8_176),
+            GpuKind::Discrete
+        );
+        assert_eq!(
+            classify_gpu(0x1002, "AMD Radeon(TM) RX Vega 10 Graphics", 2_048),
+            GpuKind::Integrated
+        );
+        assert_eq!(
+            classify_gpu(0x1002, "AMD Radeon RX Vega 64", 8_176),
             GpuKind::Discrete
         );
         assert_eq!(

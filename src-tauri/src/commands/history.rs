@@ -169,7 +169,13 @@ pub(crate) fn is_loopback_url(base_url: &str) -> bool {
         .strip_prefix("http://")
         .or_else(|| base_url.trim().strip_prefix("https://"))
         .unwrap_or(base_url.trim());
-    let host_port = without_scheme.split('/').next().unwrap_or("");
+    let authority = without_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("");
+    // Kōrero 1.43 (refuter DEF-01): `http://localhost:11434@evil.example/v1`
+    // goes to evil.example: everything before the last '@' is userinfo.
+    let host_port = authority.rsplit('@').next().unwrap_or("");
     // Strip an IPv6 bracket form or a trailing :port.
     let host = if let Some(rest) = host_port.strip_prefix('[') {
         rest.split(']').next().unwrap_or("")

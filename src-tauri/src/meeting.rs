@@ -1976,9 +1976,12 @@ pub async fn meeting_prewarm_post_process(
     // every later call keeps. Other local providers keep the old warm-up.
     if provider.id == "ollama" {
         let chars = transcript_chars.unwrap_or(0).min(48_000) as usize;
-        // Estimate as plain Latin text, plus the notes prompt itself.
+        // Estimate as plain Latin text, plus room for the notes prompt and the
+        // corrections glossary (refuter DEF-05: +512 was below what the notes
+        // call then asked for, so it still reloaded). Context sizes go in
+        // 2 048-token steps, so this lands on the notes call's step.
         let prompt =
-            crate::ollama_chat::estimate_tokens(&"a".repeat(chars)).saturating_add(512);
+            crate::ollama_chat::estimate_tokens(&"a".repeat(chars)).saturating_add(2_048);
         crate::ollama_chat::warm(
             &provider.base_url,
             &model,

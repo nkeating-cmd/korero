@@ -1,5 +1,5 @@
 /* eslint-disable i18next/no-literal-string */
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Check, ChevronDown, Cpu, Download, HardDrive, Loader2, MemoryStick, MonitorSmartphone, X } from "lucide-react";
 import { toast } from "sonner";
@@ -52,6 +52,15 @@ export const LocalModelSetup: React.FC = () => {
   const [ollama, setOllama] = useState<{ installed: boolean; running: boolean } | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [fixing, setFixing] = useState(false);
+  // Keep keyboard focus somewhere sensible as buttons appear and vanish (A11Y-01).
+  const primaryRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const dismissRef = useRef<HTMLButtonElement>(null);
+  const focusLost = () => {
+    const a = document.activeElement as HTMLButtonElement | null;
+    return !a || a === document.body || a.disabled;
+  };
+  const focusLater = (r: React.RefObject<HTMLButtonElement | null>) => setTimeout(() => r.current?.focus(), 0);
 
   const ollamaProvider = settings?.post_process_providers?.find((p) => p.id === "ollama");
   const baseUrl = ollamaProvider?.base_url ?? "http://localhost:11434/v1";
@@ -78,6 +87,11 @@ export const LocalModelSetup: React.FC = () => {
     void probe();
   }, [baseUrl, job.step === "done"]);
 
+  useEffect(() => {
+    if (job.step === "pulling" && focusLost()) focusLater(cancelRef);
+    if ((job.step === "done" || job.step === "error" || job.step === "cancelled") && focusLost()) focusLater(dismissRef);
+  }, [job.step]);
+
   const rec = useMemo(() => (profile ? recommend(CATALOGUE, profile) : null), [profile]);
   const others = useMemo(
     () => (profile ? sortByFit(CATALOGUE, profile).filter((e) => e.tag !== rec?.tag) : []),
@@ -95,6 +109,7 @@ export const LocalModelSetup: React.FC = () => {
     } finally {
       setFixing(false);
       void probe();
+      focusLater(primaryRef);
     }
   };
   const installOllama = async () => {
@@ -110,13 +125,14 @@ export const LocalModelSetup: React.FC = () => {
   };
 
   const action = (e: CatalogueEntry, primary: boolean) => {
-    const f = fitFor(e, profile);
     const inUse = isLocalInUse(settings, e.tag);
     const have = installed.includes(e.tag);
+    // Already downloaded: free disk space no longer matters (refuter DEF-06).
+    const f = fitFor(e, have ? { ...profile, free_disk_mb: null } : profile);
     const disabled = f.fit === "no" || busy || inUse || !local || !ollama?.installed;
     const cls = primary ? "kx-btn kx-btn-primary shrink-0" : "kx-btn kx-btn-secondary kx-btn-sm shrink-0 w-[112px] justify-center";
     return (
-      <button type="button" className={cls} disabled={disabled} onClick={() => go(e.tag)}>
+      <button type="button" ref={primary ? primaryRef : undefined} className={cls} disabled={disabled} onClick={() => go(e.tag)}>
         {inUse ? (
           <>
             <Check size={14} aria-hidden="true" /> In use
@@ -220,15 +236,24 @@ export const LocalModelSetup: React.FC = () => {
               <X size={14} className="text-[var(--kx-warn)]" aria-hidden="true" />
             )}
             <span className="flex-1 text-[13px] text-[var(--kx-ink-read)]">
-              <span className="kx-mono">{job.model}</span> · <span aria-live="polite">{STEP_TEXT[job.step]}</span>
+              <span className="kx-mono">{job.model}</span> · {STEP_TEXT[job.step]}
             </span>
             {job.step === "pulling" && (
-              <button type="button" className="kx-btn kx-btn-quiet kx-btn-sm" onClick={() => job.cancel()}>
+              <button ref={cancelRef} type="button" className="kx-btn kx-btn-quiet kx-btn-sm" onClick={() => job.cancel()}>
                 Cancel
               </button>
             )}
             {!busy && (
-              <button type="button" className="kx-btn kx-btn-quiet kx-btn-sm" onClick={() => job.reset()} aria-label="Dismiss">
+              <button
+                ref={dismissRef}
+                type="button"
+                className="kx-btn kx-btn-quiet kx-btn-sm"
+                onClick={() => {
+                  job.reset();
+                  focusLater(primaryRef);
+                }}
+                aria-label="Dismiss"
+              >
                 <X size={14} aria-hidden="true" />
               </button>
             )}
@@ -252,6 +277,10 @@ export const LocalModelSetup: React.FC = () => {
               </p>
             </>
           )}
+          {/* Step changes and outcomes are announced; percentages are not (A11Y-02). */}
+          <div aria-live="polite" className="kx-sr-only">
+            {`${job.model}: ${STEP_TEXT[job.step]}.${job.step === "error" && job.error ? ` ${job.error}` : ""}`}
+          </div>
           {job.step === "done" && job.result && (
             <p className="kx-meta">
               Cleaned a test sentence in {job.result.seconds.toFixed(1)} s

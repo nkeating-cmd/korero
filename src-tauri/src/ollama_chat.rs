@@ -411,18 +411,29 @@ pub enum Outcome<T> {
     NotOllama,
 }
 
+/// `Total(t)`: one deadline for the whole call (non-streamed: Ollama replies
+/// only when it's done). `Read(t)`: a per-read limit for a stream. reqwest's
+/// read limit also applies while waiting for the response headers, which
+/// Ollama sends only after reading the whole prompt, so it must be at least
+/// the first-byte budget (refuter DEF-02: a 180 s limit here cut every long
+/// transcript off at 180 s whatever the budget said).
+enum Limit {
+    Total(Duration),
+    Read(Duration),
+}
+
 fn client(
     provider: &PostProcessProvider,
     api_key: &str,
-    total: Option<Duration>,
+    limit: Limit,
 ) -> Result<reqwest::Client, String> {
     let headers = crate::llm_client::build_headers(provider, api_key)?;
     let mut b = reqwest::Client::builder()
         .default_headers(headers)
         .connect_timeout(CONNECT_TIMEOUT);
-    b = match total {
-        Some(t) => b.timeout(t),
-        None => b.read_timeout(IDLE_TIMEOUT),
+    b = match limit {
+        Limit::Total(t) => b.timeout(t),
+        Limit::Read(t) => b.read_timeout(t),
     };
     b.build()
         .map_err(|e| format!("Failed to build HTTP client: {e}"))
@@ -435,6 +446,15 @@ fn ollama_json_error(body: &str) -> Option<String> {
             .map(str::to_string)
             .unwrap_or_else(|| e.to_string())
     })
+}
+
+/// Ollama's own errors are `{"error": "<string>"}`. llama.cpp and other
+/// OpenAI-style servers answer an unknown route with `{"error": {...}}`
+/// (refuter DEF-03), which means "not Ollama", not an Ollama error.
+pub fn is_ollama_error_shape(body: &str) -> bool {
+    serde_json::from_str::<Value>(body.trim())
+        .ok()
+        .is_some_and(|v| v.get("error").is_some_and(Value::is_string))
 }
 
 /// Size the request and send it, retrying once for a refused-as-too-long or
@@ -487,7 +507,7 @@ async fn send_sized(
         }
         let text = read_bounded(resp, SMALL_BODY).await.unwrap_or_default();
         log::warn!("ollama_chat: HTTP {status} ({} bytes)", text.len());
-        if status == 404 && ollama_json_error(&text).is_none() {
+        if status == 404 && !is_ollama_error_shape(&text) {
             return Ok(Outcome::NotOllama);
         }
         if !resized {
@@ -537,7 +557,7 @@ pub async fn chat(
     let http = client(
         provider,
         api_key,
-        Some(kind.budget(prompt) + Duration::from_secs(5)),
+        Limit::Total(kind.budget(prompt) + Duration::from_secs(5)),
     )?;
     let resp = match send_sized(provider, &http, model, system, user, kind, false).await? {
         Outcome::Done(r) => r,
@@ -568,7 +588,12 @@ pub async fn chat_stream<F: FnMut(&str)>(
     kind: CallKind,
     mut on_delta: F,
 ) -> Result<Outcome<String>, String> {
-    let http = client(provider, api_key, None)?;
+    let prompt = estimate_tokens(user) + system.map(estimate_tokens).unwrap_or(0);
+    let http = client(
+        provider,
+        api_key,
+        Limit::Read(kind.budget(prompt).max(IDLE_TIMEOUT)),
+    )?;
     let resp = match send_sized(provider, &http, model, system, user, kind, true).await? {
         Outcome::Done(r) => r,
         Outcome::NotOllama => return Ok(Outcome::NotOllama),
@@ -873,6 +898,19 @@ mod tests {
             }
         }
         assert!(failed, "4 MiB output cap must trip");
+    }
+
+    #[test]
+    fn not_ollama_is_told_apart_from_an_ollama_error() {
+        // DEF-03: llama.cpp / OpenAI-style 404s carry an error OBJECT.
+        assert!(is_ollama_error_shape(
+            r#"{"error":"model \"x\" not found, try pulling it first"}"#
+        ));
+        assert!(!is_ollama_error_shape(
+            r#"{"error":{"code":404,"message":"File Not Found","type":"not_found_error"}}"#
+        ));
+        assert!(!is_ollama_error_shape("404 page not found"));
+        assert!(!is_ollama_error_shape(""));
     }
 
     #[test]

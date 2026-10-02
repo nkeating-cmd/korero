@@ -67,6 +67,10 @@ describe("destination (SEC-143-01)", () => {
     expect(isLoopbackUrl("http://127.0.0.1:11434/v1")).toBe(true);
     expect(isLoopbackUrl("http://[::1]:11434")).toBe(true);
     expect(isLoopbackUrl("http://localhost.evil.example/v1")).toBe(false);
+    // DEF-01: userinfo is not the host.
+    expect(isLoopbackUrl("http://localhost:11434@evil.example/v1")).toBe(false);
+    expect(isLoopbackUrl("http://[::1]@evil.example/v1")).toBe(false);
+    expect(cleanupDestination({ ...ollama, base_url: "http://localhost:11434@evil.example/v1" }).local).toBe(false);
     expect(isLoopbackUrl("https://api.openai.com/v1")).toBe(false);
   });
 });

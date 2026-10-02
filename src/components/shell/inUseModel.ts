@@ -58,7 +58,10 @@ export function speechState(s: SpeechInput): { value: string; detail?: string; l
 export function isLoopbackUrl(baseUrl: string): boolean {
   const s = baseUrl.trim();
   const rest = s.replace(/^https?:\/\//i, "");
-  const hostPort = rest.split("/")[0] ?? "";
+  const authority = rest.split(/[/?#]/)[0] ?? "";
+  // Everything before the last "@" is userinfo, not the host (1.43 refuter
+  // DEF-01: "http://localhost:11434@evil.example" goes to evil.example).
+  const hostPort = authority.slice(authority.lastIndexOf("@") + 1);
   let host: string;
   if (hostPort.startsWith("[")) host = hostPort.slice(1).split("]")[0] ?? "";
   else {

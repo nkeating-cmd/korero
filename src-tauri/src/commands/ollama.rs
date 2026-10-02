@@ -695,6 +695,20 @@ mod korero_143_pull_tests {
     }
 
     #[test]
+    fn korero_143_loopback_rejects_userinfo() {
+        use crate::commands::history::is_loopback_url as l;
+        assert!(l("http://localhost:11434/v1"));
+        assert!(l("http://127.0.0.1:11434"));
+        assert!(l("http://[::1]:11434/v1"));
+        // Refuter DEF-01: userinfo before '@' is not the host.
+        assert!(!l("http://localhost:11434@evil.example/v1"));
+        assert!(!l("http://[::1]@evil.example/v1"));
+        assert!(!l("http://user:pw@evil.example:11434"));
+        assert!(!l("http://localhost.evil.example/v1"));
+        assert!(!l("https://api.openai.com/v1"));
+    }
+
+    #[test]
     fn gpu_share_parses_ps() {
         let ps = r#"{"models":[{"name":"gemma4:12b","size":8000,"size_vram":8000},{"name":"x:latest","size":100,"size_vram":40}]}"#;
         assert_eq!(gpu_share_from(ps, "gemma4:12b"), Some(1.0));

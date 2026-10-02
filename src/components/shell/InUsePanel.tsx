@@ -35,7 +35,10 @@ interface Row {
   mono?: boolean;
 }
 
-const dotClass = (l: Level) => (l === "ok" ? "kx-dot-ok" : l === "warn" ? "kx-dot-warn" : "");
+// Shape as well as colour (A11Y-04): ok is a filled circle, warn a diamond,
+// off a hollow ring.
+const dotClass = (l: Level) =>
+  l === "ok" ? "kx-dot-ok" : l === "warn" ? "kx-dot-warn" : "!bg-transparent border border-[var(--kx-ink-2)]";
 const levelWord = (l: Level) => (l === "warn" ? "Needs a look. " : "");
 
 const MenuSection: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
@@ -60,10 +63,12 @@ const Item: React.FC<{
     type="button"
     role={checked === undefined ? "menuitem" : "menuitemradio"}
     aria-checked={checked === undefined ? undefined : checked}
+    // aria-disabled, not disabled: unavailable choices stay reachable with the
+    // arrow keys and are announced as such (A11Y-03).
+    aria-disabled={disabled || undefined}
     tabIndex={-1}
-    disabled={disabled}
-    className="kx-menu-item gap-2"
-    onClick={onSelect}
+    className={`kx-menu-item gap-2 ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
+    onClick={disabled ? undefined : onSelect}
   >
     <span className="w-4 shrink-0 flex justify-center" aria-hidden="true">
       {checked ? <Check size={14} /> : icon}
@@ -154,7 +159,7 @@ export const InUsePanel: React.FC<{ collapsed: boolean }> = ({ collapsed }) => {
   // Focus the checked item (or the first) when a menu opens.
   useLayoutEffect(() => {
     if (!open || !menuRef.current) return;
-    const items = Array.from(menuRef.current.querySelectorAll<HTMLButtonElement>("[role^='menuitem']:not([disabled])"));
+    const items = Array.from(menuRef.current.querySelectorAll<HTMLButtonElement>("[role^='menuitem']"));
     (items.find((b) => b.getAttribute("aria-checked") === "true") ?? items[0])?.focus();
   }, [open, locked]);
 
@@ -165,7 +170,7 @@ export const InUsePanel: React.FC<{ collapsed: boolean }> = ({ collapsed }) => {
   };
 
   const onMenuKey = (e: React.KeyboardEvent) => {
-    const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("[role^='menuitem']:not([disabled])") ?? []);
+    const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("[role^='menuitem']") ?? []);
     const i = items.indexOf(document.activeElement as HTMLButtonElement);
     const to = (n: number) => {
       e.preventDefault();
@@ -178,7 +183,11 @@ export const InUsePanel: React.FC<{ collapsed: boolean }> = ({ collapsed }) => {
     else if (e.key === "Escape") {
       e.preventDefault();
       close();
-    } else if (e.key === "Tab") close(false);
+    } else if (e.key === "Tab") {
+      // Leave the menu by its row, so Tab and Shift+Tab carry on from there (A11Y-08).
+      e.preventDefault();
+      close();
+    }
   };
 
   const toggle = async (id: Which) => {
@@ -202,9 +211,16 @@ export const InUsePanel: React.FC<{ collapsed: boolean }> = ({ collapsed }) => {
     }
   };
 
+  // Focus goes back to the row, not to the page body (A11Y-01).
   const goTo = (s: Section) => {
-    setOpen(null);
+    close();
     go(s);
+  };
+  // The menu said "unlocked" when it opened; check again at the moment of
+  // change, and treat an unknown state as locked (refuter DEF-04).
+  const stillLocked = async (): Promise<string | null> => {
+    const dictating = await commands.isRecording().catch(() => true);
+    return lockedReason(useRecorder.getState().recording, dictating);
   };
   const attempt = async (what: string, fn: () => Promise<unknown>) => {
     close();
@@ -260,7 +276,7 @@ export const InUsePanel: React.FC<{ collapsed: boolean }> = ({ collapsed }) => {
 
   // ---- menus ---------------------------------------------------------------
   const lockNote = locked ? (
-    <div className="flex items-center gap-2 px-2.5 py-2 text-[12.5px] text-[var(--kx-ink-soft)]">
+    <div id="kx-inuse-lock" className="flex items-center gap-2 px-2.5 py-2 text-[12.5px] text-[var(--kx-ink-soft)]">
       <Lock size={13} aria-hidden="true" /> {locked}
     </div>
   ) : null;
@@ -291,7 +307,13 @@ export const InUsePanel: React.FC<{ collapsed: boolean }> = ({ collapsed }) => {
                   checked={checked}
                   disabled={!!locked}
                   sub={isDefault && mic.usingDefault && mic.name !== "System default" ? `Now: ${mic.name}` : undefined}
-                  onSelect={() => void attempt("microphone", () => updateSetting("selected_microphone", d.name))}
+                  onSelect={() =>
+                    void attempt("microphone", async () => {
+                      const why = await stillLocked();
+                      if (why) throw new Error(why);
+                      await updateSetting("selected_microphone", d.name);
+                    })
+                  }
                 >
                   {isDefault ? "System default" : d.name}
                 </Item>
@@ -316,6 +338,8 @@ export const InUsePanel: React.FC<{ collapsed: boolean }> = ({ collapsed }) => {
                   hint={m.size_mb ? `${(m.size_mb / 1024).toFixed(1)} GB` : undefined}
                   onSelect={() =>
                     void attempt("speech model", async () => {
+                      const why = await stillLocked();
+                      if (why) throw new Error(why);
                       if (!(await selectModel(m.id))) throw new Error("the model didn't load");
                     })
                   }
@@ -387,7 +411,12 @@ export const InUsePanel: React.FC<{ collapsed: boolean }> = ({ collapsed }) => {
   const fullLabel = (r: Row) => `${r.label}: ${r.value}${r.detail ? ` · ${r.detail}` : ""}`;
 
   return (
-    <div ref={rootRef} className={`relative flex ${collapsed ? "flex-col items-center gap-1" : "flex-col gap-0.5"}`}>
+    <div
+      ref={rootRef}
+      role="group"
+      aria-label="In use"
+      className={`relative flex ${collapsed ? "flex-col items-center gap-1" : "flex-col gap-0.5"}`}
+    >
       {rows.map((r) =>
         collapsed ? (
           <button
@@ -447,6 +476,7 @@ export const InUsePanel: React.FC<{ collapsed: boolean }> = ({ collapsed }) => {
           ref={menuRef}
           role="menu"
           aria-label={rows.find((r) => r.id === open)?.label}
+          aria-describedby={locked && open !== "cleanup" ? "kx-inuse-lock" : undefined}
           onKeyDown={onMenuKey}
           style={{ maxHeight: maxH }}
           className={`kx-menu absolute z-50 w-[300px] !max-h-none overflow-y-auto ${
