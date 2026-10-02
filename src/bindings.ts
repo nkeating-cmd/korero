@@ -714,9 +714,9 @@ async meetingTranscribeMerge(micPath: string | null, systemPath: string | null) 
     else return { status: "error", error: e  as any };
 }
 },
-async meetingPrewarmPostProcess() : Promise<Result<null, string>> {
+async meetingPrewarmPostProcess(transcriptChars: number | null) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("meeting_prewarm_post_process") };
+    return { status: "ok", data: await TAURI_INVOKE("meeting_prewarm_post_process", { transcriptChars }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1116,6 +1116,38 @@ async updateRecordingRetentionPeriod(period: string) : Promise<Result<null, stri
 async checkOllamaConnection(baseUrl: string) : Promise<boolean> {
     return await TAURI_INVOKE("check_ollama_connection", { baseUrl });
 },
+async cancelOllamaPull() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancel_ollama_pull") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async ollamaTestModel(model: string) : Promise<Result<OllamaTestRun, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("ollama_test_model", { model }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async useLocalOllamaModel(model: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("use_local_ollama_model", { model }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getMachineProfile() : Promise<Result<MachineProfile, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_machine_profile") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async meetingGenerateAudioBrief(text: string, speaker: string | null, style: string | null, tempo: number | null) : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("meeting_generate_audio_brief", { text, speaker, style, tempo }) };
@@ -1132,9 +1164,9 @@ async ttsEngineStatus() : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async pullOllamaModel(baseUrl: string, modelName: string) : Promise<Result<null, string>> {
+async pullOllamaModel(modelName: string) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("pull_ollama_model", { baseUrl, modelName }) };
+    return { status: "ok", data: await TAURI_INVOKE("pull_ollama_model", { modelName }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1189,6 +1221,40 @@ historyUpdatePayload: "history-update-payload"
 
 /** user-defined types **/
 
+export type GpuInfo = { name: string; vram_mb: number; kind: GpuKind }
+export type GpuKind = 
+/**
+ * Its own memory: models run there at full speed.
+ */
+"discrete" | 
+/**
+ * Shares system memory; Ollama mostly runs on the processor.
+ */
+"integrated" | 
+/**
+ * Apple Silicon: one pool of unified memory.
+ */
+"apple"
+export type MachineProfile = { gpus: GpuInfo[]; ram_mb: number; 
+/**
+ * Free space where Ollama keeps models. `None` when it couldn't be read
+ * (the fit rules then skip the disk check rather than refuse everything).
+ */
+free_disk_mb: number | null; 
+/**
+ * `OLLAMA_MODELS` points somewhere other than the default.
+ */
+models_dir_custom: boolean; os: string }
+export type OllamaTestRun = { seconds: number; 
+/**
+ * The model's answer to a fixed fictional sentence (first 200 chars).
+ */
+sample: string; 
+/**
+ * Share of the loaded model on the graphics card (Ollama /api/ps
+ * `size_vram / size`). Below ~0.9, part runs on the processor.
+ */
+gpu_share: number | null }
 export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk: boolean; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; meeting_recording_dir?: string | null; meeting_export_dir?: string | null; denoise_enabled?: boolean; save_crash_reports?: boolean; transcript_corrections?: { wrong: string; right: string }[]; post_process_app_routes?: string[]; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; custom_filler_words?: string[] | null; whisper_accelerator?: WhisperAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; whisper_gpu_device?: number; extra_recording_buffer_ms?: number }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"

@@ -1681,7 +1681,15 @@ pub async fn meeting_query(
     let user = format!("Meeting transcript:\n\n{transcript}\n\n---\nQuestion: {question}");
 
     let answer = crate::llm_client::send_chat_completion_with_schema(
-        &provider, api_key, &model, user, Some(system), None, None, None,
+        &provider,
+        api_key,
+        &model,
+        user,
+        Some(system),
+        None,
+        None,
+        None,
+        crate::ollama_chat::CallKind::Ask,
     )
     .await?;
     answer.ok_or_else(|| "The model returned no answer.".to_string())
@@ -1945,7 +1953,10 @@ pub async fn meeting_post_process(
 /// calls this fire-and-forget when a transcript becomes available.
 #[tauri::command]
 #[specta::specta]
-pub async fn meeting_prewarm_post_process(app: AppHandle) -> Result<(), String> {
+pub async fn meeting_prewarm_post_process(
+    app: AppHandle,
+    transcript_chars: Option<u32>,
+) -> Result<(), String> {
     let settings = crate::settings::get_settings(&app);
     let provider = match settings.active_post_process_provider().cloned() {
         Some(p) => p,
@@ -1959,9 +1970,27 @@ pub async fn meeting_prewarm_post_process(app: AppHandle) -> Result<(), String> 
         .get(&provider.id)
         .cloned()
         .unwrap_or_default();
-    // Keep it resident for 30 min — comfortably covers reviewing a transcript
-    // then clicking Generate, and a re-run or two after that.
-    crate::commands::ollama::warm_model(&provider.base_url, &model, 1_800).await;
+    // Kōrero 1.43 (RT-A-01): warm at the context the notes call for THIS
+    // transcript will ask for, so Generate notes doesn't reload the model
+    // (~20 s on legion). Resident for 30 min (ollama_chat::KEEP_ALIVE), which
+    // every later call keeps. Other local providers keep the old warm-up.
+    if provider.id == "ollama" {
+        let chars = transcript_chars.unwrap_or(0).min(48_000) as usize;
+        // Estimate as plain Latin text, plus the notes prompt itself.
+        let prompt =
+            crate::ollama_chat::estimate_tokens(&"a".repeat(chars)).saturating_add(512);
+        crate::ollama_chat::warm(
+            &provider.base_url,
+            &model,
+            prompt,
+            crate::ollama_chat::CallKind::Meeting.num_predict(),
+        )
+        .await;
+    } else {
+        // Keep it resident for 30 min — comfortably covers reviewing a
+        // transcript then clicking Generate, and a re-run or two after that.
+        crate::commands::ollama::warm_model(&provider.base_url, &model, 1_800).await;
+    }
     Ok(())
 }
 

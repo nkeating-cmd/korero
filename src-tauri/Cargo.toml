@@ -1,6 +1,6 @@
 [package]
 name = "korero"
-version = "1.42.0"
+version = "1.43.0"
 description = "Kōrero — speech-to-text, NZ English"
 authors = ["Kyt Services Ltd <nic@kyt.nz>", "cjpais (upstream)"]
 edition = "2021"
@@ -156,6 +156,11 @@ wasapi = "0.23"
 # as inconsistent).
 transcribe-rs = { version = "0.3.11", features = ["ort-directml"] }
 windows = { version = "0.61.3", features = [
+  # Kōrero 1.43: Win32_ features for get_machine_profile (DXGI adapters, memory, free disk).
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_System_SystemInformation",
+  "Win32_Storage_FileSystem",
   "Win32_Media_Audio_Endpoints",
   "Win32_System_Com_StructuredStorage",
   "Win32_System_Variant",

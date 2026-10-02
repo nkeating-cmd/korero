@@ -249,6 +249,7 @@ pub async fn tidy_history_entry_reo(
         processed_prompt,
         None,
         None,
+        crate::ollama_chat::CallKind::Note,
     )
     .await?
     .ok_or_else(|| "The model returned no content".to_string())?;

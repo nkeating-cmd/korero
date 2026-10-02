@@ -263,6 +263,7 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
             Some(json_schema),
             reasoning_effort.clone(),
             reasoning.clone(),
+            crate::ollama_chat::CallKind::Dictation,
         )
         .await
         {
@@ -319,6 +320,7 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
         processed_prompt,
         reasoning_effort,
         reasoning,
+        crate::ollama_chat::CallKind::Dictation,
     )
     .await
     {
@@ -639,10 +641,13 @@ impl ShortcutAction for TranscribeAction {
 
                     match transcription_result {
                         Ok(transcription) => {
+                            // Kōrero 1.43 (SEC-143-06): the length only. The log
+                            // file ends up attached to bug reports; dictations
+                            // don't belong in it.
                             debug!(
-                                "Transcription completed in {:?}: '{}'",
+                                "Transcription completed in {:?} ({} chars)",
                                 transcription_time.elapsed(),
-                                transcription
+                                transcription.chars().count()
                             );
 
                             if post_process {

@@ -188,10 +188,13 @@ pub fn get_available_microphones() -> Result<Vec<AudioDevice>, String> {
         is_default: true,
     }];
 
+    // Kōrero 1.43 (RT-F-03): report which device IS the system default, so
+    // "System default" can name it. The synthetic "Default" entry above still
+    // stands for "follow the system".
     result.extend(devices.into_iter().map(|d| AudioDevice {
         index: d.index,
         name: d.name,
-        is_default: false, // The explicit default is handled separately
+        is_default: d.is_default,
     }));
 
     Ok(result)

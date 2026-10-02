@@ -10,6 +10,7 @@ import { useRecorder } from "../../stores/recorderStore";
 import { useAppStatus } from "../../stores/appStatusStore";
 import { useNav } from "../../stores/navStore";
 import type { Meeting } from "../meetings/model";
+import { micLabel } from "../shell/inUseModel";
 
 /**
  * Kōrero 1.42: "Ready to go". One look tells you whether dictation and
@@ -81,23 +82,16 @@ export const HealthPanel: React.FC<{ meetings: Meeting[] | null }> = ({ meetings
   const checks: Check[] = [];
 
   // Microphone
-  const selectedMic = settings?.selected_microphone ?? null;
-  const micKnown =
-    !selectedMic ||
-    selectedMic === "default" ||
-    audioDevices.length === 0 ||
-    audioDevices.some((d) => d.name === selectedMic);
-  const defaultMic = audioDevices.find((d) => d.is_default)?.name;
+  // Kōrero 1.43: shared with the In use panel. The store reports "no choice"
+  // as "Default" and lists a synthetic "Default" device, so the old
+  // lowercase compare never named the real device.
+  const mic = micLabel(settings?.selected_microphone, audioDevices);
   checks.push({
     id: "mic",
     label: "Microphone",
-    detail: micKnown
-      ? selectedMic && selectedMic !== "default"
-        ? selectedMic
-        : `Default${defaultMic ? ` · ${defaultMic}` : ""}`
-      : `${selectedMic} is not connected`,
-    level: micKnown ? "ok" : "warn",
-    action: micKnown ? undefined : { label: "Choose", run: () => useNav.getState().go("general") },
+    detail: mic.missing ? `${mic.name} is not connected` : mic.usingDefault ? `${mic.name} · system default` : mic.name,
+    level: mic.missing ? "warn" : "ok",
+    action: mic.missing ? { label: "Choose", run: () => useNav.getState().go("general") } : undefined,
   });
 
   // New Zealand English

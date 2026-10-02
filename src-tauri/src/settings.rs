@@ -1243,6 +1243,12 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
                     existing.is_local_provider = provider.is_local_provider;
                     changed = true;
                 }
+                // Kōrero 1.43 (SEC-143-03): whether a built-in provider's URL
+                // may be edited is not the stored file's decision.
+                if existing.allow_base_url_edit != provider.allow_base_url_edit {
+                    existing.allow_base_url_edit = provider.allow_base_url_edit;
+                    changed = true;
+                }
             }
             None => {
                 // Provider doesn't exist, add it

@@ -63,7 +63,7 @@ const MEETING_PP_MAX_TOKENS: u32 = 8192;
 /// Partial output is saved, but it is never passed off as complete: the marker
 /// is appended so the saved notes say plainly that they were cut short and why.
 /// Only a genuinely empty result is an error.
-fn partial_or_error(full: String, why: &str) -> Result<String, String> {
+pub(crate) fn partial_or_error(full: String, why: &str) -> Result<String, String> {
     if full.trim().is_empty() {
         Err(format!("The provider produced no output — {why}."))
     } else {
@@ -148,7 +148,10 @@ struct ChatMessageResponse {
 }
 
 /// Build headers for API requests based on provider type
-fn build_headers(provider: &PostProcessProvider, api_key: &str) -> Result<HeaderMap, String> {
+pub(crate) fn build_headers(
+    provider: &PostProcessProvider,
+    api_key: &str,
+) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
 
     // Common headers
@@ -226,6 +229,7 @@ pub async fn send_chat_completion(
     prompt: String,
     reasoning_effort: Option<String>,
     reasoning: Option<ReasoningConfig>,
+    kind: crate::ollama_chat::CallKind,
 ) -> Result<Option<String>, String> {
     send_chat_completion_with_schema(
         provider,
@@ -236,6 +240,7 @@ pub async fn send_chat_completion(
         None,
         reasoning_effort,
         reasoning,
+        kind,
     )
     .await
 }
@@ -260,9 +265,6 @@ pub async fn send_chat_completion(
 /// The `llm-egress-allowlist-complete` check in `checks.json` counts the call
 /// sites and fails if a `create_client(` appears without one.
 pub(crate) fn assert_endpoint_unmodified(provider: &PostProcessProvider) -> Result<(), String> {
-    if provider.allow_base_url_edit {
-        return Ok(());
-    }
     let defaults = crate::settings::get_default_settings();
     let Some(def) = defaults
         .post_process_providers
@@ -274,6 +276,13 @@ pub(crate) fn assert_endpoint_unmodified(provider: &PostProcessProvider) -> Resu
         // provider that happens to have allow_base_url_edit unset.
         return Ok(());
     };
+    // Kōrero 1.43 (SEC-143-03): whether a BUILT-IN provider's URL may be edited
+    // comes from the built-in default, never from the stored copy. A tampered
+    // settings_store.json could otherwise set allow_base_url_edit=true on
+    // `openai` and point it anywhere, taking the key and transcripts with it.
+    if def.allow_base_url_edit {
+        return Ok(());
+    }
     if def.base_url.trim_end_matches('/') != provider.base_url.trim_end_matches('/') {
         return Err(format!(
             "Blocked: the endpoint for provider '{}' was altered to an unexpected URL. \
@@ -282,6 +291,30 @@ pub(crate) fn assert_endpoint_unmodified(provider: &PostProcessProvider) -> Resu
         ));
     }
     Ok(())
+}
+
+/// Kōrero 1.43 (SEC-143-01): a built-in cloud provider with no API key would
+/// still be sent the transcript (`build_headers` just omits auth). Refuse
+/// before anything leaves the computer.
+pub(crate) fn assert_has_key_if_cloud(
+    provider: &PostProcessProvider,
+    api_key: &str,
+) -> Result<(), String> {
+    if !api_key.trim().is_empty() {
+        return Ok(());
+    }
+    let defaults = crate::settings::get_default_settings();
+    let Some(def) = defaults
+        .post_process_providers
+        .iter()
+        .find(|p| p.id == provider.id)
+    else {
+        return Ok(()); // user-defined provider: may legitimately need no key
+    };
+    if def.allow_base_url_edit || def.is_local_provider {
+        return Ok(()); // user-owned or local endpoints may run without a key
+    }
+    Err(format!("No API key for {}: nothing was sent.", def.label))
 }
 
 /// Send a chat completion request with structured output support.
@@ -298,8 +331,32 @@ pub async fn send_chat_completion_with_schema(
     json_schema: Option<Value>,
     reasoning_effort: Option<String>,
     reasoning: Option<ReasoningConfig>,
+    kind: crate::ollama_chat::CallKind,
 ) -> Result<Option<String>, String> {
     assert_endpoint_unmodified(provider)?;
+    assert_has_key_if_cloud(provider, &api_key)?;
+
+    // Kōrero 1.43: a local Ollama goes through its native API with a context
+    // sized to the request (see ollama_chat.rs). Ollama has no structured
+    // output here (supports_structured_output=false) and thinking is always
+    // off, so json_schema and reasoning have nothing to carry over.
+    if provider.id == "ollama" {
+        match crate::ollama_chat::chat(
+            provider,
+            &api_key,
+            model,
+            system_prompt.as_deref(),
+            &user_content,
+            kind,
+        )
+        .await?
+        {
+            crate::ollama_chat::Outcome::Done(v) => return Ok(v),
+            crate::ollama_chat::Outcome::NotOllama => {
+                log::info!("Ollama provider is not an Ollama server; using the OpenAI-compatible path")
+            }
+        }
+    }
 
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
@@ -404,6 +461,25 @@ pub async fn send_chat_completion_meeting(
     system_prompt: Option<String>,
 ) -> Result<String, String> {
     assert_endpoint_unmodified(provider)?;
+    assert_has_key_if_cloud(provider, &api_key)?;
+
+    if provider.id == "ollama" {
+        match crate::ollama_chat::chat(
+            provider,
+            &api_key,
+            model,
+            system_prompt.as_deref(),
+            &user_content,
+            crate::ollama_chat::CallKind::Meeting,
+        )
+        .await?
+        {
+            crate::ollama_chat::Outcome::Done(v) => return Ok(v.unwrap_or_default()),
+            crate::ollama_chat::Outcome::NotOllama => {
+                log::info!("Ollama provider is not an Ollama server; using the OpenAI-compatible path")
+            }
+        }
+    }
 
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
@@ -498,6 +574,26 @@ pub async fn stream_chat_completion<F: FnMut(&str)>(
     use futures_util::StreamExt;
 
     assert_endpoint_unmodified(provider)?;
+    assert_has_key_if_cloud(provider, &api_key)?;
+
+    if provider.id == "ollama" {
+        match crate::ollama_chat::chat_stream(
+            provider,
+            &api_key,
+            model,
+            system_prompt.as_deref(),
+            &user_content,
+            crate::ollama_chat::CallKind::Meeting,
+            |s: &str| on_delta(s),
+        )
+        .await?
+        {
+            crate::ollama_chat::Outcome::Done(v) => return Ok(v),
+            crate::ollama_chat::Outcome::NotOllama => {
+                log::info!("Ollama provider is not an Ollama server; using the OpenAI-compatible path")
+            }
+        }
+    }
 
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
@@ -1027,13 +1123,36 @@ mod egress_allowlist_tests {
 
     #[test]
     fn korero_r05_user_owned_provider_is_exempt() {
-        let mut p = builtin("openai");
-        p.allow_base_url_edit = true;
-        p.base_url = "http://127.0.0.1:11434/v1".to_string();
+        // Kōrero 1.43: "user-owned" is decided by the built-in default. Ollama
+        // and Custom are user-owned, so an edited URL is fine.
+        let mut p = builtin("ollama");
+        p.base_url = "http://127.0.0.1:11500/v1".to_string();
         assert!(
             assert_endpoint_unmodified(&p).is_ok(),
             "providers the user owns are intentionally exempt"
         );
+    }
+
+    #[test]
+    fn korero_143_tampered_edit_flag_is_blocked() {
+        // SEC-143-03: a stored allow_base_url_edit=true on a built-in cloud
+        // provider must not unlock an edited URL.
+        let mut p = builtin("openai");
+        p.allow_base_url_edit = true;
+        p.base_url = "https://exfil.example.invalid/v1".to_string();
+        let err = assert_endpoint_unmodified(&p).unwrap_err();
+        assert!(err.starts_with("Blocked:"), "{err}");
+    }
+
+    #[test]
+    fn korero_143_keyless_cloud_not_sent() {
+        // SEC-143-01: a built-in cloud provider with no key is refused before
+        // any request; local and user-owned providers are not.
+        assert!(assert_has_key_if_cloud(&builtin("deepseek"), "").is_err());
+        assert!(assert_has_key_if_cloud(&builtin("deepseek"), "  ").is_err());
+        assert!(assert_has_key_if_cloud(&builtin("deepseek"), "sk-test").is_ok());
+        assert!(assert_has_key_if_cloud(&builtin("ollama"), "").is_ok());
+        assert!(assert_has_key_if_cloud(&builtin("custom"), "").is_ok());
     }
 
     #[test]

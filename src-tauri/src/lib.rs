@@ -19,6 +19,7 @@ mod eval; // Kōrero (v1.40.0): --eval-transcribe entry point (accuracy harness)
 mod helpers;
 mod input;
 mod llm_client;
+mod ollama_chat; // Kōrero 1.43: native Ollama chat with a sized context
 mod managers;
 mod overlay;
 pub mod portable;
@@ -487,44 +488,10 @@ fn migrate_legacy_app_data() {
 #[cfg(not(windows))]
 fn migrate_legacy_app_data() {}
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run(cli_args: CliArgs) {
-    // Kōrero (v1.12.0): install the global panic hook before anything else so a
-    // panic anywhere in startup or runtime is logged and (if enabled) written to
-    // a crash report. The crash directory + on/off flag are populated in setup.
-    crash::install_panic_hook();
-
-    // Korero (v1.28.0): must run BEFORE anything resolves the app-data directory,
-    // which means before portable::init() and before the Tauri builder. See the
-    // function doc comment for why this exists.
-    migrate_legacy_app_data();
-
-    // Kōrero (v1.40.0, SEC-01 / RT #2): an evaluation run never touches the
-    // live install. Set EVAL_MODE (write_settings becomes a no-op) and seed the
-    // data-dir lock with a per-process temp dir BEFORE portable::init(), so no
-    // marker file is involved and the installed app's next launch is unaffected.
-    if cli_args.is_eval() {
-        settings::EVAL_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
-        let sandbox = eval::sandbox_dir();
-        if !portable::set_data_dir_override(sandbox.clone()) {
-            eprintln!("[eval] could not sandbox data dir at {}", sandbox.display());
-        }
-        match &cli_args.models_dir {
-            Some(dir) => {
-                portable::set_models_dir_override(dir.clone());
-            }
-            None => eprintln!("[eval] --models-dir not given: models will not be found (exit 3)"),
-        }
-    }
-
-    // Detect portable mode before anything else
-    portable::init();
-
-    // Parse console logging directives from RUST_LOG, falling back to info-level logging
-    // when the variable is unset
-    let console_filter = build_console_filter();
-
-    let specta_builder = Builder::<tauri::Wry>::new()
+/// Kōrero 1.43 (RT-F-06): the command and event list in one place, so the
+/// app and the `bindings_are_current` test build exactly the same bindings.
+pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
+    Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             shortcut::change_binding,
             shortcut::reset_binding,
@@ -689,10 +656,54 @@ pub fn run(cli_args: CliArgs) {
             commands::history::update_recording_retention_period,
             commands::ollama::pull_ollama_model,
             commands::ollama::check_ollama_connection,
+            commands::ollama::cancel_ollama_pull, // Kōrero 1.43
+            commands::ollama::ollama_test_model,  // Kōrero 1.43
+            commands::ollama::use_local_ollama_model, // Kōrero 1.43
+            commands::machine::get_machine_profile, // Kōrero 1.43
             commands::history_extra::update_post_processed_text,
             helpers::clamshell::is_laptop,
         ])
-        .events(collect_events![managers::history::HistoryUpdatePayload,]);
+        .events(collect_events![managers::history::HistoryUpdatePayload,])
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run(cli_args: CliArgs) {
+    // Kōrero (v1.12.0): install the global panic hook before anything else so a
+    // panic anywhere in startup or runtime is logged and (if enabled) written to
+    // a crash report. The crash directory + on/off flag are populated in setup.
+    crash::install_panic_hook();
+
+    // Korero (v1.28.0): must run BEFORE anything resolves the app-data directory,
+    // which means before portable::init() and before the Tauri builder. See the
+    // function doc comment for why this exists.
+    migrate_legacy_app_data();
+
+    // Kōrero (v1.40.0, SEC-01 / RT #2): an evaluation run never touches the
+    // live install. Set EVAL_MODE (write_settings becomes a no-op) and seed the
+    // data-dir lock with a per-process temp dir BEFORE portable::init(), so no
+    // marker file is involved and the installed app's next launch is unaffected.
+    if cli_args.is_eval() {
+        settings::EVAL_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
+        let sandbox = eval::sandbox_dir();
+        if !portable::set_data_dir_override(sandbox.clone()) {
+            eprintln!("[eval] could not sandbox data dir at {}", sandbox.display());
+        }
+        match &cli_args.models_dir {
+            Some(dir) => {
+                portable::set_models_dir_override(dir.clone());
+            }
+            None => eprintln!("[eval] --models-dir not given: models will not be found (exit 3)"),
+        }
+    }
+
+    // Detect portable mode before anything else
+    portable::init();
+
+    // Parse console logging directives from RUST_LOG, falling back to info-level logging
+    // when the variable is unset
+    let console_filter = build_console_filter();
+
+    let specta_builder = specta_builder();
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds
     specta_builder

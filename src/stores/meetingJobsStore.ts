@@ -717,7 +717,8 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
         if (you.trim() || others.trim()) {
           // v1.17.0: warm the local notes model so the first "Generate notes"
           // doesn't pay the cold model-load cost.
-          commands.meetingPrewarmPostProcess().catch(() => {});
+          // 1.43: sized to this transcript so the notes call reuses the load.
+          commands.meetingPrewarmPostProcess(you.length + others.length).catch(() => {});
         } else if (warnings.length === 0) {
           toast.message(
             "Audio saved, but transcription was empty — you can re-transcribe it.",

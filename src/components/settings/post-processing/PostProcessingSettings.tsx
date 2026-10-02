@@ -18,7 +18,7 @@
 
 import React, { useEffect, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
-import { RefreshCcw } from "lucide-react";
+import { ChevronDown, RefreshCcw } from "lucide-react";
 import { commands } from "@/bindings";
 
 import { Alert } from "../../ui/Alert";
@@ -41,7 +41,7 @@ import { ShortcutInput } from "../ShortcutInput";
 import { CorrectionsManager } from "../../ui/Corrections";
 import { useSettings } from "../../../hooks/useSettings";
 import { PostProcessingToggle } from "../PostProcessingToggle";
-import { OllamaPullButton } from "../PostProcessingSettingsApi/OllamaPullButton";
+import { LocalModelSetup } from "./LocalModelSetup";
 import { PostProcessAppRouting } from "./PostProcessAppRouting";
 
 const PostProcessingSettingsApiComponent: React.FC = () => {
@@ -185,53 +185,9 @@ const PostProcessingSettingsApiComponent: React.FC = () => {
         </SettingContainer>
       )}
 
-      {/* Korero (v1.3.0): in-app model pull for local providers (Ollama).
-          Shows connection status, model storage path, and a pull button.
-          Rendered only when is_local_provider is true.
-          Korero (v1.35.0): the suggestion catalogue lives here now -- these are
-          things you could have, which is a different question from the model
-          dropdown's "what do I have". Clicking a chip selects it so the Pull
-          button below targets it. */}
-      {state.isLocalProvider && (
-        <SettingContainer
-          title="Pull model"
-          description={`Download ${state.model || "the selected model"} from Ollama's registry so it is available locally.`}
-          descriptionMode="tooltip"
-          layout="stacked"
-          grouped={true}
-        >
-          <div className="flex flex-col gap-2">
-            {state.pullCandidates.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-xs text-mid-gray/60 mr-0.5">
-                  Not installed:
-                </span>
-                {state.pullCandidates.map((candidate) => (
-                  <button
-                    key={candidate}
-                    type="button"
-                    onClick={() => state.handleModelSelect(candidate)}
-                    disabled={state.isModelUpdating}
-                    className={`text-xs font-mono rounded-full border px-2 py-0.5 transition-colors ${
-                      state.model === candidate
-                        ? "border-cyan-400/60 text-cyan-300 bg-cyan-400/10"
-                        : "border-mid-gray/25 text-mid-gray/70 hover:text-mid-gray/95 hover:border-mid-gray/45"
-                    }`}
-                  >
-                    {candidate}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <OllamaPullButton
-              baseUrl={state.baseUrl}
-              modelName={state.model}
-              onModelPulled={state.handleRefreshModels}
-            />
-          </div>
-        </SettingContainer>
-      )}
+      {/* Kōrero 1.43: the "Pull model" block is gone: downloading a local model
+          now happens in the "Run AI clean-up on this computer" card above,
+          which picks one that fits this computer. */}
     </>
   );
 };
@@ -592,11 +548,40 @@ export const PostProcessingSettingsPrompts = React.memo(
 );
 PostProcessingSettingsPrompts.displayName = "PostProcessingSettingsPrompts";
 
+/**
+ * Kōrero 1.43: provider, API key and model fields are for people choosing a
+ * cloud service or their own server. Folded away when clean-up runs on a
+ * local Ollama (the card above handles that); open otherwise.
+ */
+const ProviderDisclosure: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { settings } = useSettings();
+  const isOllama = (settings?.post_process_provider_id ?? "") === "ollama";
+  const [open, setOpen] = useState<boolean | null>(null);
+  const shown = open ?? !isOllama;
+  return (
+    <div>
+      <button
+        type="button"
+        className="kx-btn kx-btn-quiet kx-btn-sm -ml-2.5 mb-2"
+        aria-expanded={shown}
+        onClick={() => setOpen(!shown)}
+      >
+        <ChevronDown size={14} className={shown ? "rotate-180" : ""} aria-hidden="true" />
+        Use a different provider or model
+      </button>
+      {shown && children}
+    </div>
+  );
+};
+
 export const PostProcessingSettings: React.FC = () => {
   const { t } = useTranslation();
 
   return (
     <div className="max-w-3xl w-full mx-auto space-y-6">
+      {/* Kōrero 1.43: a local model that fits this computer, one click away. */}
+      <LocalModelSetup />
+
       {/* Korero (v1.2.0): enable/disable toggle surfaced here so the user can
           turn off post-processing without hunting through Advanced > Experimental. */}
       <SettingsGroup title="Clean-up">
@@ -611,9 +596,11 @@ export const PostProcessingSettings: React.FC = () => {
         />
       </SettingsGroup>
 
-      <SettingsGroup title={t("settings.postProcessing.api.title")}>
-        <PostProcessingSettingsApi />
-      </SettingsGroup>
+      <ProviderDisclosure>
+        <SettingsGroup title={t("settings.postProcessing.api.title")}>
+          <PostProcessingSettingsApi />
+        </SettingsGroup>
+      </ProviderDisclosure>
 
       <SettingsGroup title={t("settings.postProcessing.prompts.title")}>
         <PostProcessingSettingsPrompts />

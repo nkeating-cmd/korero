@@ -29,7 +29,7 @@ import { MeetingsSettings } from "./settings/meetings/MeetingsSettings";
 import { AudioBriefSettings } from "./settings/audiobrief/AudioBriefSettings";
 import { TodayPage } from "./today/TodayPage";
 import { HelpAndAbout } from "./settings/help/HelpAndAbout";
-import ModelSelector from "./model-selector";
+import { InUsePanel } from "./shell/InUsePanel";
 import { useSettings } from "../hooks/useSettings";
 import { useNav, type Section } from "../stores/navStore";
 import { useRecorder } from "../stores/recorderStore";
@@ -153,23 +153,22 @@ export const Sidebar: React.FC = () => {
 
       <div className="flex flex-col gap-px pt-2">
         {item("help")}
-        <div className={`flex items-center gap-1 mt-1.5 pt-2 border-t border-[var(--kx-hairline-soft)] ${collapsed ? "flex-col" : ""}`}>
-          {!collapsed && (
-            <div className="flex-1 min-w-0 text-[12px] kx-sidebar-model">
-              <ModelSelector />
-            </div>
-          )}
-          {!narrow && (
-            <button
-              type="button"
-              onClick={toggle}
-              aria-label={collapsed ? "Expand the sidebar" : "Collapse the sidebar"}
-              title={collapsed ? "Expand the sidebar" : "Collapse the sidebar"}
-              className="kx-btn kx-btn-ghost kx-btn-icon kx-btn-sm shrink-0"
-            >
-              {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
-            </button>
-          )}
+        <div className="mt-1.5 pt-1.5 border-t border-[var(--kx-hairline-soft)]">
+          <div className={`flex items-center ${collapsed ? "flex-col gap-1 pb-1" : "justify-between pl-2.5 pb-0.5"}`}>
+            {!collapsed && <span className="kx-overline">In use</span>}
+            {!narrow && (
+              <button
+                type="button"
+                onClick={toggle}
+                aria-label={collapsed ? "Expand the sidebar" : "Collapse the sidebar"}
+                title={collapsed ? "Expand the sidebar" : "Collapse the sidebar"}
+                className="kx-btn kx-btn-ghost kx-btn-icon kx-btn-sm shrink-0"
+              >
+                {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+              </button>
+            )}
+          </div>
+          <InUsePanel collapsed={collapsed} />
         </div>
       </div>
     </nav>

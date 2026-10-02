@@ -2,6 +2,7 @@ pub mod audio;
 pub mod history;
 pub mod models;
 pub mod history_extra;
+pub mod machine; // Kōrero 1.43: hardware profile for the local-model card
 pub mod ollama;
 pub mod notes;
 pub mod transcription;
@@ -187,4 +188,17 @@ pub fn initialize_shortcuts(app: AppHandle) -> Result<(), String> {
 
     log::info!("Shortcuts initialized successfully");
     Ok(())
+}
+
+/// Kōrero 1.43 (SEC-143-09): commands that change what runs on this computer
+/// (install Ollama, download, test or switch a model) or read its hardware
+/// belong to the main window. Without an app ACL manifest Tauri lets every
+/// window call every app command, including the pill overlay and the pop-out
+/// recorder, so check the caller here.
+pub(crate) fn require_main_window(window: &tauri::Window) -> Result<(), String> {
+    if window.label() == "main" {
+        Ok(())
+    } else {
+        Err("This action is only available in the main Kōrero window.".to_string())
+    }
 }

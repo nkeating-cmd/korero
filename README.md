@@ -35,6 +35,8 @@ Current version: **v1.42.0** ([release notes](https://github.com/nkeating-cmd/ko
 - Privacy guard: a warning whenever the configured LLM provider is a cloud endpoint, plus a Rust-side egress allowlist so a tampered config can't redirect transcripts to an unknown host.
 
 ### New surfaces & workflows
+- **Always see what's in use** (v1.43). The foot of the sidebar shows the microphone (the real device, even on "system default"), the speech model and the clean-up model with its prompt, on every page. Click any of them to change it. The clean-up line says where text goes: on this computer, or the cloud service it's sent to.
+- **A local AI model that fits your computer** (v1.43). AI clean-up & notes reads your graphics card, memory and free disk, suggests one model that fits, and downloads, tests and switches to it with one button. Other models are labelled Fits well, Fits, Slower or Won't fit. The suggestions are provisional until they have been tested on Kōrero's prompts.
 - **Today** (v1.42) — the home page: start a meeting, a note or an import, see what's running and what just finished, and a *Ready to go* panel that checks your microphone, NZ English, speech model, notes model and call audio, with a fix button for each.
 - **Search everything with Ctrl K** (v1.42) — meetings (titles, transcripts and notes), notes, dictations and settings in one box. Macrons are optional: "whanau" finds *whānau*. It also runs common actions: record, flag a moment, new note, import.
 - **Activity** (v1.42) — one panel for what's running, what needs a look, and what finished this session.
@@ -66,6 +68,7 @@ Current version: **v1.42.0** ([release notes](https://github.com/nkeating-cmd/ko
 
 ### Post-processing (LLM clean-up)
 - **11 providers** out of the box — DeepSeek (default), OpenAI, Anthropic Claude, Google Gemini, OpenRouter, Groq, Cerebras, z.ai, AWS Bedrock, Ollama (local), and a custom endpoint. Post-processing is off until you turn it on.
+- **Long meetings no longer get notes from half the transcript** (v1.43). Ollama reads only 4,000 tokens by default on graphics cards under 24 GB, so notes and Ask for a meeting longer than about 15–20 minutes were written from part of it, without saying so. Kōrero now asks Ollama for a context sized to each request, refuses rather than truncates if it can't fit, and keeps the model loaded at that size so dictation doesn't wait for a reload.
 - **Thinking off for local models** (v1.42). Ollama models that think by default (gemma4, qwen3) ran past the clean-up time limit. Kōrero now turns thinking off, and gemma4:12b answered a clean-up in 20–30 seconds instead of timing out.
 - **Local models via Ollama**, including in-app model pull — plus an **Ollama doctor** (v1.17): detects a missing or stopped Ollama, installs it via winget from inside the app, starts it with one click, **auto-restarts it when a clean-up request finds it down**, and checks it's running at startup.
 - **Curated default prompts** — clean transcript, client email, Slack/WhatsApp, meeting note, red-team, and **NZ English + te reo Māori** (restores macrons, never translates te reo, fixes common mis-hearings like "far no" → *whānau*).

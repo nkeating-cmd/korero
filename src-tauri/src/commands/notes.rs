@@ -171,7 +171,15 @@ pub async fn note_post_process(
     };
 
     let answer = crate::llm_client::send_chat_completion_with_schema(
-        &provider, api_key, &model, user, system, None, None, None,
+        &provider,
+        api_key,
+        &model,
+        user,
+        system,
+        None,
+        None,
+        None,
+        crate::ollama_chat::CallKind::Note,
     )
     .await?;
     answer.ok_or_else(|| "The model returned no output.".to_string())

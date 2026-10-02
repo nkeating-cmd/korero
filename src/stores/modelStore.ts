@@ -335,6 +335,20 @@ export const useModelStore = create<ModelsStore>()(
           }),
         );
         get().loadModels();
+        // Kōrero 1.43 (RT-F-02): switch to a freshly downloaded speech model.
+        // This lived in the sidebar's model picker, which the In use panel
+        // replaced; it belongs here so it works on every page. Never mid-take:
+        // not while dictating, not while a meeting records.
+        setTimeout(async () => {
+          try {
+            const dictating = await commands.isRecording();
+            const meeting = await commands.meetingRecordingStatus();
+            const recordingMeeting = meeting.status === "ok" && meeting.data !== null;
+            if (!dictating && !recordingMeeting) await get().selectModel(modelId);
+          } catch {
+            // best-effort, as before
+          }
+        }, 500);
       });
 
       listen<{ model_id: string; error: string }>(
