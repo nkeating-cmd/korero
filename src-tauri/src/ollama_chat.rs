@@ -5,7 +5,7 @@
 //! 24 GB (docs.ollama.com/context-length), and the OpenAI-compatible endpoint
 //! Kōrero used cannot change it. Meeting notes and Ask send up to 48 000
 //! characters (~12 000 tokens), so on a default install the model saw only part
-//! of the meeting, silently. Measured on legion (Ollama 0.34.4, gemma4:12b, a
+//! of the meeting, silently. Measured on the test laptop (Ollama 0.34.4, gemma4:12b, a
 //! fictional 40 583-character transcript with code words planted at both
 //! ends): at num_ctx 4 096 only 2 051 prompt tokens were evaluated and the
 //! answer was invented; at 14 336 both code words came back.
@@ -13,7 +13,7 @@
 //! RULES.
 //! * One chooser for every Ollama call (`choose_num_ctx`). Reuse the context
 //!   the model is already loaded with whenever it is big enough: a different
-//!   `num_ctx` makes Ollama reload the model, which cost ~20 s on legion.
+//!   `num_ctx` makes Ollama reload the model, which cost ~20 s on the test laptop.
 //! * Always send `truncate: false`. Ollama then refuses an over-long prompt
 //!   with HTTP 400 and the exact token count instead of dropping text, and we
 //!   retry once at the right size. Never silent truncation.
@@ -55,6 +55,14 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DICTATION_TIMEOUT: Duration = Duration::from_secs(30);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const TOTAL_CEILING: Duration = Duration::from_secs(3_600);
+/// A non-streamed reply arrives only when it is complete, so its limit must
+/// also cover writing up to `num_predict` tokens. 10 tokens a second is a
+/// deliberately slow floor: a laptop GPU that has spilled into system memory
+/// (measured on the 1.43 test machine). Live run 2026-10-02: the meeting
+/// fallback was cut off at 260 s; before 1.43 it had 900 s.
+const GEN_FLOOR_TPS: u64 = 10;
+const PROMPT_FLOOR_TPS: u64 = 40;
+const NON_STREAM_CEILING: Duration = Duration::from_secs(1_200);
 
 pub const TOO_LONG: &str = "This transcript is too long for the model to read in one pass. \
 Use the trim markers to choose the part that matters, then try again.";
@@ -85,10 +93,23 @@ impl CallKind {
     fn budget(self, prompt_tokens: u32) -> Duration {
         match self {
             CallKind::Dictation => DICTATION_TIMEOUT,
-            _ => {
-                let extra = 20 * u64::from(prompt_tokens / 4_000 + 1);
-                Duration::from_secs((180 + extra).min(900))
-            }
+            // Reading the prompt at PROMPT_FLOOR_TPS. Measured on the test laptop
+            // 2026-10-02 with gemma4:12b: 1,414 tokens/s with the graphics card
+            // to itself, 71 tokens/s while Kōrero's own speech model was also
+            // loaded on it (the card ran out and spilled into system memory).
+            // A model that is partly on the processor ("cpu" fit) is that slow
+            // by design, so the budget has to allow it.
+            _ => Duration::from_secs((180 + u64::from(prompt_tokens) / PROMPT_FLOOR_TPS).min(900)),
+        }
+    }
+    /// The whole-response limit for a non-streamed call: reading the prompt
+    /// plus writing the answer.
+    fn total_budget(self, prompt_tokens: u32, num_predict: u32) -> Duration {
+        match self {
+            CallKind::Dictation => DICTATION_TIMEOUT,
+            _ => (self.budget(prompt_tokens)
+                + Duration::from_secs(u64::from(num_predict) / GEN_FLOOR_TPS))
+            .min(NON_STREAM_CEILING),
         }
     }
 }
@@ -119,7 +140,7 @@ fn is_dense_script(c: char) -> bool {
 }
 
 /// Conservative prompt-token estimate. Latin text at 0.37 tokens per
-/// character (legion measured 0.262 on prose and 0.358 on digit-heavy text
+/// character (the test laptop measured 0.262 on prose and 0.358 on digit-heavy text
 /// with gemma4); CJK, kana and hangul at a full token each. `truncate:false`
 /// catches the rest.
 pub fn estimate_tokens(text: &str) -> u32 {
@@ -473,7 +494,6 @@ async fn send_sized(
     let mut prompt = estimate_tokens(user) + system.map(estimate_tokens).unwrap_or(0);
     let loaded = loaded_context(&base, model).await;
     let (mut num_ctx, mut num_predict) = choose_num_ctx(prompt, kind.num_predict(), loaded)?;
-    let budget = kind.budget(prompt);
     let mut restarted = false;
     let mut resized = false;
 
@@ -482,12 +502,25 @@ async fn send_sized(
             "ollama_chat: POST {url} model={model} num_ctx={num_ctx} num_predict={num_predict} kind={kind:?} (loaded={loaded:?})"
         );
         let body = build_body(model, system, user, num_ctx, num_predict, stream);
+        // Streamed: Ollama sends its first line once the prompt is read.
+        // Non-streamed: nothing arrives until the whole answer is written.
+        let wait = if stream {
+            kind.budget(prompt)
+        } else {
+            kind.total_budget(prompt, num_predict)
+        };
         let send = http.post(&url).json(&body).send();
-        let resp = match tokio::time::timeout(budget, send).await {
-            Err(_) => {
+        let resp = match tokio::time::timeout(wait, send).await {
+            Err(_) if stream => {
                 return Err(format!(
                     "The local model didn't start answering within {} s.",
-                    budget.as_secs()
+                    wait.as_secs()
+                ))
+            }
+            Err(_) => {
+                return Err(format!(
+                    "The local model didn't finish its answer within {} s.",
+                    wait.as_secs()
                 ))
             }
             Ok(Err(e)) if e.is_connect() && !restarted && provider.is_local_provider => {
@@ -550,14 +583,14 @@ pub async fn chat(
     user: &str,
     kind: CallKind,
 ) -> Result<Outcome<Option<String>>, String> {
-    // Ollama sends a non-streamed reply only when it is complete, so the budget
+    // Ollama sends a non-streamed reply only when it is complete, so the limit
     // in `send_sized` already bounds the whole call; the client's own limit sits
-    // just above it as a backstop.
+    // just above it as a backstop (num_predict only ever shrinks from here).
     let prompt = estimate_tokens(user) + system.map(estimate_tokens).unwrap_or(0);
     let http = client(
         provider,
         api_key,
-        Limit::Total(kind.budget(prompt) + Duration::from_secs(5)),
+        Limit::Total(kind.total_budget(prompt, kind.num_predict()) + Duration::from_secs(5)),
     )?;
     let resp = match send_sized(provider, &http, model, system, user, kind, false).await? {
         Outcome::Done(r) => r,
@@ -730,7 +763,7 @@ mod tests {
 
     #[test]
     fn estimate_covers_measured_densities() {
-        // legion, gemma4: 40 583 chars of prose -> 10 644 tokens;
+        // the test laptop, gemma4: 40 583 chars of prose -> 10 644 tokens;
         // 82 889 digit-heavy chars -> 29 702 tokens.
         let prose = "a".repeat(40_583);
         assert!(estimate_tokens(&prose) >= 10_644);
@@ -923,7 +956,7 @@ mod tests {
         assert!(!is_oom(404, "{\"error\":\"model not found\"}"));
     }
 
-    // ---- live tests (legion): run with
+    // ---- live tests (the test laptop): run with
     // cargo test --lib ollama_chat::tests::live -- --ignored --nocapture --test-threads=1
 
     /// A fictional meeting with a code word planted at each end (same shape as
@@ -1011,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "live: needs a local Ollama with the model (legion)"]
+    #[ignore = "live: needs a local Ollama with the model (the test laptop)"]
     fn live_long_transcript_production_paths() {
         tauri::async_runtime::block_on(async {
             let provider = live_provider();
@@ -1070,7 +1103,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "live: needs a local Ollama with the model (legion)"]
+    #[ignore = "live: needs a local Ollama with the model (the test laptop)"]
     fn live_no_reload_across_a_session() {
         tauri::async_runtime::block_on(async {
             let provider = live_provider();
@@ -1130,5 +1163,23 @@ mod tests {
         assert!(CallKind::Meeting.budget(u32::MAX) <= Duration::from_secs(900));
         assert_eq!(CallKind::Meeting.num_predict(), 8_192);
         assert_eq!(CallKind::Ask.num_predict(), 1_500);
+    }
+
+    #[test]
+    fn non_stream_budget_covers_the_answer() {
+        // Live 2026-10-02: a 40k-character meeting fallback was cut at 260 s.
+        // Before 1.43 that path allowed 900 s; it must not allow less now.
+        let meeting = CallKind::Meeting.total_budget(15_000, CallKind::Meeting.num_predict());
+        assert!(meeting >= Duration::from_secs(900), "{meeting:?}");
+        assert!(meeting <= NON_STREAM_CEILING);
+        for kind in [CallKind::Ask, CallKind::Note, CallKind::Meeting] {
+            assert!(kind.total_budget(1_000, 1_500) > kind.budget(1_000));
+        }
+        // Dictation stays short: someone is waiting at a text cursor.
+        assert_eq!(
+            CallKind::Dictation.total_budget(500, 1_500),
+            DICTATION_TIMEOUT
+        );
+        assert!(CallKind::Meeting.total_budget(u32::MAX, u32::MAX) <= NON_STREAM_CEILING);
     }
 }

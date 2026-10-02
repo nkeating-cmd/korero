@@ -4,7 +4,7 @@
 //! Read-only and local: nothing here is stored or sent anywhere, and the
 //! profile never carries a path (only whether the models folder is custom).
 //!
-//! WHY NOT WMI. `Win32_VideoController.AdapterRAM` is a 32-bit field: legion's
+//! WHY NOT WMI. `Win32_VideoController.AdapterRAM` is a 32-bit field: the test laptop's
 //! 12 GB RTX 4080 Laptop reads as 4 GB there. DXGI's `DedicatedVideoMemory`
 //! is the real figure.
 
@@ -416,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "live: reads this computer's hardware (legion)"]
+    #[ignore = "live: reads this computer's hardware (the test laptop)"]
     fn live_profile() {
         let p = profile_now();
         println!("LIVE profile: {:?}", p);

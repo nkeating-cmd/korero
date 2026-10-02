@@ -28,7 +28,7 @@ const entry = (tag: string) => CATALOGUE.find((e) => e.tag === tag)!;
 describe("recommend", () => {
   test("8 GB graphics card: the largest model that runs fully on it", () =>
     expect(recommend(CATALOGUE, gpu(8, 16))?.tag).toBe("qwen3.5:4b"));
-  test("12 GB graphics card (legion): gemma4:12b", () => expect(recommend(CATALOGUE, gpu(12, 32))?.tag).toBe("gemma4:12b"));
+  test("12 GB graphics card (the test laptop): gemma4:12b", () => expect(recommend(CATALOGUE, gpu(12, 32))?.tag).toBe("gemma4:12b"));
   test("24 GB graphics card: 26b only just fits, so the 12b is suggested and the 26b is offered", () => {
     expect(recommend(CATALOGUE, gpu(24, 64))?.tag).toBe("gemma4:12b");
     expect(fitFor(entry("gemma4:26b"), gpu(24, 64)).fit).toBe("tight");

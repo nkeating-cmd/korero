@@ -4,7 +4,7 @@
  *
  * PROVISIONAL. These are candidates, not tested picks: the clean-up bake-off
  * (NZ spelling, te reo kept with macrons, nothing invented, no preamble) has
- * not run on them yet. gemma4:12b is the one in daily use (legion, thinking
+ * not run on them yet. gemma4:12b is the one in daily use (the test laptop, thinking
  * off: fixed the "lime/line prices" error, 1 Oct 2026).
  *
  * Sizes are Ollama's default tags as listed on ollama.com on 2 Oct 2026

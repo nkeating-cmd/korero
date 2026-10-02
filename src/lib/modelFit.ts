@@ -7,7 +7,7 @@
  *
  * Memory needed = the download (≈ the weights) + an allowance for the context
  * cache and runtime, sized for the largest context the app asks for (32k
- * tokens, ollama_chat::MAX_CTX). Calibrated on legion: gemma4:12b stays at
+ * tokens, ollama_chat::MAX_CTX). Calibrated on the test laptop: gemma4:12b stays at
  * 7.54–7.81 GiB resident from 8k to 32k context, so these allowances are
  * conservative for it. Other families are not measured; the test run reports
  * the real GPU share after download.

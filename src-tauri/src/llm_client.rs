@@ -205,7 +205,7 @@ fn create_client(provider: &PostProcessProvider, api_key: &str) -> Result<reqwes
 /// Kōrero 1.42: thinking off by default for local and self-hosted providers.
 ///
 /// Thinking models (gemma4, qwen3 and others) think by default in Ollama. For
-/// clean-up and notes that blows every time budget: measured on legion,
+/// clean-up and notes that blows every time budget: measured on the test laptop,
 /// gemma4:12b ran past 120 s with thinking on, and answered in 20–30 s with it
 /// off, fixing the same transcript error. Ollama's OpenAI-compatible endpoint
 /// maps `reasoning_effort: "none"` to `think: false`, and a model without

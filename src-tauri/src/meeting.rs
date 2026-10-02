@@ -1972,7 +1972,7 @@ pub async fn meeting_prewarm_post_process(
         .unwrap_or_default();
     // Kōrero 1.43 (RT-A-01): warm at the context the notes call for THIS
     // transcript will ask for, so Generate notes doesn't reload the model
-    // (~20 s on legion). Resident for 30 min (ollama_chat::KEEP_ALIVE), which
+    // (~20 s on the test laptop). Resident for 30 min (ollama_chat::KEEP_ALIVE), which
     // every later call keeps. Other local providers keep the old warm-up.
     if provider.id == "ollama" {
         let chars = transcript_chars.unwrap_or(0).min(48_000) as usize;
