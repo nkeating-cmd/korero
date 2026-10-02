@@ -285,7 +285,7 @@ mod tidy_reo_tests {
     #[test]
     fn non_loopback_urls_are_not_local() {
         for u in [
-            "http://192.168.1.20:11434/v1",
+            "http://192.0.2.20:11434/v1",
             "https://ollama.example.com/v1",
             "http://mybox.local:11434/v1",
             "http://localhost.evil.com/v1",

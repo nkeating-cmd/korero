@@ -3341,7 +3341,7 @@ mod korero_143_vram_tests {
             false
         ));
         assert!(!should_free_speech_model(
-            "http://192.168.1.20:11434/v1",
+            "http://192.0.2.20:11434/v1",
             40_000,
             false,
             false,

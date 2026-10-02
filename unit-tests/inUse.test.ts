@@ -52,9 +52,9 @@ describe("speechState", () => {
 describe("destination (SEC-143-01)", () => {
   test("loopback Ollama is on this computer", () => expect(cleanupDestination(ollama)).toEqual({ local: true, text: "on this computer" }));
   test("a 'local' provider on a remote host is not local", () => {
-    const d = cleanupDestination({ ...ollama, base_url: "http://192.168.1.20:11434/v1" });
+    const d = cleanupDestination({ ...ollama, base_url: "http://192.0.2.20:11434/v1" });
     expect(d.local).toBe(false);
-    expect(d.text).toBe("sends to 192.168.1.20:11434");
+    expect(d.text).toBe("sends to 192.0.2.20:11434");
   });
   test("a cloud provider is named", () =>
     expect(cleanupDestination({ id: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com/v1" })).toEqual({
