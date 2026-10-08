@@ -19,6 +19,8 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import { commands } from "@/bindings";
+import { isEngineMissing } from "@/lib/briefScript";
+import { useNav } from "./navStore";
 
 // Shared rules every format obeys (audio is linear; write for the ear).
 const BASE_RULES =
@@ -155,7 +157,7 @@ export const useAudioBriefStore = create<AudioBriefState>((set, get) => ({
     set({ drafting: true });
     try {
       const tpl = TEMPLATES.find((t) => t.id === templateId) ?? TEMPLATES[0];
-      const r = await commands.meetingPostProcess(text, tpl.prompt);
+      const r = await commands.meetingPostProcess(text, tpl.prompt, false);
       if (r.status !== "ok") throw new Error(r.error);
       // The script changed, so any previously rendered audio is now stale.
       set({ transcript: r.data.trim(), audioPath: null });
@@ -194,10 +196,16 @@ export const useAudioBriefStore = create<AudioBriefState>((set, get) => ({
       const msg = String(e);
       // The backend says "...voice engine not found..." when no local TTS engine
       // is installed — surface a helpful setup card instead of a bare toast.
-      if (/not found|no such|couldn'?t (find|locate)|engine/i.test(msg)) {
+      // 1.44: only a missing engine shows the setup card. The old pattern also
+      // matched "The voice engine stops after about 330 words…" (a long script).
+      if (isEngineMissing(msg)) {
         set({ engineMissing: true });
       }
-      toast.error(`Audio render failed: ${msg}`);
+      toast.error(`Audio render failed: ${msg}`, {
+        action: isEngineMissing(msg)
+          ? { label: "Open Models", onClick: () => useNav.getState().go("models") }
+          : undefined,
+      });
     } finally {
       set({ rendering: false });
     }

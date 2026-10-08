@@ -1,8 +1,9 @@
 /* eslint-disable i18next/no-literal-string */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask, open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { toast } from "sonner";
 import {
   ChevronDown,
   Globe,
@@ -70,6 +71,22 @@ export const ModelsSettings: React.FC = () => {
   useEffect(() => {
     checkTts();
   }, []);
+
+  // 1.44: point Kōrero at the voice engine's folder. The folder must already
+  // hold the engine (the backend checks); nothing is installed or searched for.
+  const chooseTtsFolder = async () => {
+    const picked = await openFileDialog({
+      directory: true,
+      title: "Choose the voice engine folder (it holds audio_brief.py)",
+    });
+    if (!picked || Array.isArray(picked)) return;
+    const r = await commands.setTtsEngineDir(picked);
+    if (r.status !== "ok") {
+      toast.error(String(r.error));
+      return;
+    }
+    await checkTts();
+  };
 
   // click outside handler for language dropdown
   useEffect(() => {
@@ -495,6 +512,13 @@ export const ModelsSettings: React.FC = () => {
                 >
                   Re-check
                 </button>
+                <button
+                  type="button"
+                  onClick={() => void chooseTtsFolder()}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-glass-border px-2.5 py-1.5 text-xs text-text-muted transition-colors hover:text-aurora-cyan"
+                >
+                  Change folder…
+                </button>
               </div>
             </div>
           )}
@@ -506,22 +530,27 @@ export const ModelsSettings: React.FC = () => {
                 <span className="font-medium">Voice engine not set up</span>
               </div>
               <p>
-                Speech-to-text and post-processing work without it. To enable
-                spoken audio briefs, install the local TTS engine, then set the{" "}
-                <span className="font-mono text-xs">KORERO_TTS_DIR</span>{" "}
-                environment variable to its folder (or place it under{" "}
-                <span className="font-mono text-xs">
-                  %APPDATA%\com.kyt.korero\tts
-                </span>
-                ).
+                Speech-to-text and notes work without it. To enable spoken
+                audio briefs, install the local voice engine, then choose its
+                folder here (the one that holds{" "}
+                <span className="font-mono text-xs">audio_brief.py</span>).
               </p>
-              <button
-                type="button"
-                onClick={checkTts}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-glass-border px-2.5 py-1.5 text-xs text-text-muted transition-colors hover:text-aurora-cyan"
-              >
-                Re-check
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void chooseTtsFolder()}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-glass-border px-2.5 py-1.5 text-xs text-text-muted transition-colors hover:text-aurora-cyan"
+                >
+                  <FolderOpen className="h-3.5 w-3.5" /> Choose folder…
+                </button>
+                <button
+                  type="button"
+                  onClick={checkTts}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-glass-border px-2.5 py-1.5 text-xs text-text-muted transition-colors hover:text-aurora-cyan"
+                >
+                  Re-check
+                </button>
+              </div>
             </div>
           )}
         </div>

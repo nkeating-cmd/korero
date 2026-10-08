@@ -294,26 +294,48 @@ export const sideWords = (m: Meeting): { you: number; others: number } => {
 };
 
 /**
- * The text sent to the notes model: the visible transcript, plus the moments
- * the user flagged, each anchored to the nearest line so the model can give
- * them their own entries. Pure: callers pass the segments (with any trim
- * already applied).
+ * Kōrero 1.44: the first line of the flags block. The backend
+ * (`src-tauri/src/notes_parts.rs`, `FLAGS_INTRO`) recognises the block by
+ * this exact line, and a Rust test checks the two copies match.
+ */
+export const FLAGS_INTRO =
+  "[The person who recorded this flagged these moments as important. Give each one its own line in the notes.]";
+
+/**
+ * The text sent to the notes model: the moments the user flagged, each
+ * anchored to the nearest line so the model can give them their own entries,
+ * then a blank line, then the visible transcript. Pure: callers pass the
+ * segments (with any trim already applied).
+ *
+ * 1.44: the flags come FIRST. Before, they came after the transcript, so on a
+ * meeting longer than the notes limit they were the first thing cut. A long
+ * meeting is now read in parts and every part sees the flags; the block must
+ * not contain a blank line, because the backend ends it at the first one.
  */
 export const notesInput = (m: Meeting, segs: TranscriptSeg[]): string => {
   const body = combine(m.you, m.others, m.youLabel, m.othersLabel, segs, m.speakerNames);
   const flags = (m.flags ?? []).filter((f) => Number.isFinite(f.atSec));
   if (!body.trim() || flags.length === 0) return body;
+  const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
   const lines = flags
     .slice()
     .sort((a, b) => a.atSec - b.atSec)
     .map((f) => {
       const near = nearestSegment(segs, f.atSec * 1000);
-      const quote = near ? near.text.trim().slice(0, 140) : "";
-      const label = f.label.trim();
+      const quote = near ? oneLine(near.text).slice(0, 140) : "";
+      const label = oneLine(f.label);
       return `- ${fmtClock(f.atSec)}${label ? ` (${label})` : ""}${quote ? `: "${quote}"` : ""}`;
     });
-  return `${body}\n\n[The person who recorded this flagged these moments as important. Give each one its own line in the notes.]\n${lines.join("\n")}`;
+  return `${FLAGS_INTRO}\n${lines.join("\n")}\n\n${body}`;
 };
+
+/**
+ * Kōrero 1.44: true when saved notes end with the line 1.41–1.43 added to
+ * notes written from only the first 48,000 characters of a long meeting.
+ * Those notes can now be rewritten from the whole meeting.
+ */
+export const notesCoverPart = (processed: string): boolean =>
+  /\*These notes cover only the first \d+% of the transcript/.test(processed);
 
 export const nearestSegment = (
   segs: TranscriptSeg[],

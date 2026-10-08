@@ -80,8 +80,24 @@ export interface MeetingJob {
   startedAt: number;
   /** Streamed tokens so far — the live preview, kept while the tab is closed. */
   live: string;
+  /** 1.44: what a long meeting's notes job is doing before the notes stream
+   *  ("Reading part 1 of 2…"). Absent for a meeting read in one pass. */
+  phase?: string;
   status: "running";
 }
+
+/** 1.44: the backend's `meeting-postprocess-progress` payload. */
+export interface NotesProgress {
+  stage: "part" | "combine";
+  part: number;
+  of: number;
+}
+
+/** 1.44: the line shown while a long meeting is read in parts. Pure. */
+export const phaseLabel = (p: NotesProgress): string =>
+  p.stage === "combine"
+    ? `Writing the notes from all ${p.of} parts…`
+    : `Long meeting: reading part ${p.part} of ${p.of}…`;
 
 export type MeetingTaskKind = "transcribe" | "both" | "import" | "recover" | "speakers";
 
@@ -236,6 +252,14 @@ function attachDeltaListener(set: SetState) {
   }).catch((err) => {
     deltaListenerAttached = false;
     console.error("Could not attach the post-process delta listener:", err);
+  });
+  // 1.44: a long meeting is read in parts before the notes stream.
+  listen<NotesProgress>("meeting-postprocess-progress", (e) => {
+    set((s) =>
+      s.job ? { job: { ...s.job, phase: phaseLabel(e.payload) } } : {},
+    );
+  }).catch((err) => {
+    console.error("Could not attach the post-process progress listener:", err);
   });
 }
 
@@ -457,7 +481,9 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
       },
     }));
     try {
-      const r = await commands.meetingPostProcess(args.text, args.prompt);
+      // 1.44: only new notes from a transcript are read in parts; a refine
+      // (notes plus feedback) is not a transcript.
+      const r = await commands.meetingPostProcess(args.text, args.prompt, args.kind !== "refine");
       if (r.status !== "ok") throw new Error(r.error);
       const outcome = await meetingsBridge.deliverPatch(
         args.meetingId,

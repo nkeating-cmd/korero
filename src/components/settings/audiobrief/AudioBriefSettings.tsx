@@ -8,13 +8,12 @@ import {
   ShieldCheck,
   Download,
   FolderOpen,
-  Copy,
 } from "lucide-react";
 import { toast } from "sonner";
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Dropdown } from "@/components/ui/Dropdown";
+import { useNav } from "@/stores/navStore";
 import {
   useAudioBriefStore,
   TEMPLATES,
@@ -266,40 +265,17 @@ export const AudioBriefSettings: React.FC = () => {
             The on-device voice engine isn't set up yet
           </p>
           <p>
-            Audio Brief needs a local text-to-speech engine. Point Kōrero at one
-            by setting the{" "}
-            <code className="rounded bg-glass-surface px-1 py-0.5 text-text">
-              KORERO_TTS_DIR
-            </code>{" "}
-            environment variable to the engine folder, or place it at{" "}
-            <code className="rounded bg-glass-surface px-1 py-0.5 text-text">
-              %APPDATA%\com.kyt.korero\tts
-            </code>
-            . Drafting scripts and everything else on this page work without it.
+            Audio Brief needs a local text-to-speech engine. Install it, then
+            choose its folder in Models. Drafting scripts and everything else on
+            this page work without it.
           </p>
-          {/* v1.25.0 (UX batch, audit #9): both paths are long and typo-prone —
-              make them one-click copyable. */}
-          <div className="flex gap-3 pt-0.5">
-            {(
-              [
-                ["Copy variable name", "KORERO_TTS_DIR"],
-                ["Copy folder path", "%APPDATA%\\com.kyt.korero\\tts"],
-              ] as const
-            ).map(([label, value]) => (
-              <button
-                key={label}
-                type="button"
-                onClick={() =>
-                  writeText(value)
-                    .then(() => toast.success("Copied."))
-                    .catch(() => toast.error("Couldn't copy."))
-                }
-                className="inline-flex items-center gap-1 text-aurora-cyan transition-colors hover:text-text"
-              >
-                <Copy size={12} /> {label}
-              </button>
-            ))}
-          </div>
+          <button
+            type="button"
+            onClick={() => useNav.getState().go("models")}
+            className="inline-flex items-center gap-1 text-aurora-cyan transition-colors hover:text-text"
+          >
+            Open Models
+          </button>
         </div>
       )}
     </div>
