@@ -149,7 +149,7 @@ tauri-plugin-window-state = "2"
 # Kōrero (v1.13.6): native WASAPI loopback for the Meetings "Others" stream.
 # The cpal input-stream-on-output-device loopback proved unreliable on real
 # hardware (stream starts, no data). MIT licence; same author as CamillaDSP.
-wasapi = "0.23"
+wasapi = "0.25"
 # Kōrero fork: dropped "whisper-vulkan" feature so we don't need the Vulkan SDK
 # as a build dep. Whisper falls back to CPU (still fine for Small/Medium).
 # Kept "ort-directml" — Parakeet (our default model) still gets GPU acceleration

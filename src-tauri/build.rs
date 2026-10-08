@@ -6,7 +6,29 @@ fn main() {
 
     generate_tray_translations();
 
-    tauri_build::build()
+    // Kōrero 1.44: the Common-Controls v6 manifest goes on EVERY linked target,
+    // not only the app. Since `wasapi` 0.25 (RUSTSEC-2026-0332) shares
+    // `windows` 0.62 with the GUI crates, the binary imports
+    // `TaskDialogIndirect` from comctl32.dll directly. That export exists only
+    // in Common Controls v6, which a process gets from its manifest. Tauri
+    // embeds the manifest in the app binary only, so `cargo test` binaries
+    // failed to load (STATUS_ENTRYPOINT_NOT_FOUND, 0xC0000139). Same manifest
+    // as Tauri's default (windows-app-manifest.xml, copied from tauri-build
+    // 2.5.5), embedded once, by the linker, for app, CLI and test binaries.
+    let windows_msvc = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    if windows_msvc {
+        let manifest = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("windows-app-manifest.xml");
+        println!("cargo:rerun-if-changed=windows-app-manifest.xml");
+        println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
+        let attrs = tauri_build::Attributes::new()
+            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
+        tauri_build::try_build(attrs).expect("tauri-build failed");
+    } else {
+        tauri_build::build()
+    }
 }
 
 /// Korero (v1.40.0, R1.3): stamp the build with its commit, so an eval result
