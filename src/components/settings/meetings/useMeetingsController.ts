@@ -40,6 +40,7 @@ import {
   notesAreStale,
   notesInput,
   parseTrimInput,
+  separationBlocker,
   titleOf,
   trimKeyOf,
   visibleSegs,
@@ -492,6 +493,8 @@ export const useMeetingsController = () => {
       systemCaptured: first.systemCaptured || second.systemCaptured,
       micPath: first.micPath ?? second.micPath,
       systemPath: first.systemPath ?? second.systemPath,
+      // 1.45: lines from two recordings can't be matched to one for speakers.
+      mergedFrom: [first.id, second.id],
     };
     setMeetings((prev) => [m, ...prev]);
     setActiveId(m.id);
@@ -1033,13 +1036,9 @@ export const useMeetingsController = () => {
   }));
   const activeHasAudio = !!active && (!!active.micPath || !!active.systemPath);
   const activeHasTranscript = !!active && (!!active.you.trim() || !!active.others.trim());
-  // 1.45: speakers can be separated on a recorded microphone WAV whose ordered
-  // transcript has microphone lines (imports and pre-1.26 meetings do not).
-  const activeCanSeparate =
-    !!active &&
-    !!active.micPath &&
-    /\.wav$/i.test(active.micPath) &&
-    (active.transcript ?? []).some((s) => s.source === "you" && s.text.trim());
+  // 1.45: why speakers can't be separated on this meeting (null = they can).
+  const separateBlocker = active ? separationBlocker(active) : "No meeting selected.";
+  const activeCanSeparate = separateBlocker === null;
 
   const selectMeeting = (id: string) => {
     activeIdRef.current = id;
@@ -1137,6 +1136,7 @@ export const useMeetingsController = () => {
     onReTranscribe,
     onSeparateSpeakers,
     activeCanSeparate,
+    separateBlocker,
     onPostProcess,
     onBoth,
     mergeWithId,

@@ -562,6 +562,8 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
         const patch = await transcribeAudio(micPath, systemPath);
         const outcome = await meetingsBridge.deliverPatch(meetingId, {
           ...patch,
+          // 1.45: the new lines carry no speakers, so the last separation's count is stale.
+          speakersFound: undefined,
         });
         if (outcome === "missing" || outcome === "failed") {
           reportLanding(outcome, TRANSCRIPT_MSGS, meetingId, "transcript");
@@ -647,7 +649,9 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
           reportLanding(outcome, SPEAKER_MSGS, meetingId, "transcript");
           return false;
         }
-        if (speakers <= 1) {
+        if (speakers === 0) {
+          toast.message("No speech long enough to recognise a voice was found in this recording.");
+        } else if (speakers === 1) {
           toast.message(
             "Only one voice was found in this recording, so the lines were not split between speakers.",
           );

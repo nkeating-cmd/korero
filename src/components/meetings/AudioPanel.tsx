@@ -126,9 +126,7 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
             {c.busy === "speakers" && c.busyMeetingId === m.id ? <Loader2 size={14} className="animate-spin" /> : <Users size={14} />}
             {m.speakersFound != null ? "Separate speakers again" : "Separate speakers"}
           </button>
-          {!c.activeCanSeparate && (
-            <span className="kx-meta">Needs a recorded microphone file and a transcript with your lines.</span>
-          )}
+          {c.separateBlocker && <span className="kx-meta">{c.separateBlocker}</span>}
         </div>
         {c.busy === "speakers" && c.busyMeetingId === m.id && c.task && (
           <div>

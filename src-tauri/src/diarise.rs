@@ -99,36 +99,55 @@ pub(crate) async fn ensure_model(
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let partial = dir.join(format!("{}.partial", m.name));
     let _ = std::fs::remove_file(&partial);
-    let resp = reqwest::get(m.url)
-        .await
-        .map_err(|e| format!("Could not download {}: {e}", m.name))?;
-    if !resp.status().is_success() {
-        return Err(format!("Could not download {}: HTTP {}", m.name, resp.status()));
-    }
-    let mut file = std::fs::File::create(&partial).map_err(|e| format!("{}: {e}", partial.display()))?;
-    let mut hasher = Sha256::new();
-    let (mut done, mut stream) = (0u64, resp.bytes_stream());
-    use futures_util::StreamExt;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Download of {} failed: {e}", m.name))?;
-        done += chunk.len() as u64;
-        if done > m.bytes {
-            drop(file);
-            let _ = std::fs::remove_file(&partial);
-            return Err(format!("{} is larger than expected; download refused.", m.name));
+    // Review M3: a stalled connection must not hold the one job slot until restart.
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(600))
+        .build()
+        .map_err(|e| format!("Could not start the download of {}: {e}", m.name))?;
+    let fetched = async {
+        let resp = client
+            .get(m.url)
+            .send()
+            .await
+            .map_err(|e| format!("Could not download {}: {e}", m.name))?;
+        if !resp.status().is_success() {
+            return Err(format!("Could not download {}: HTTP {}", m.name, resp.status()));
         }
-        hasher.update(&chunk);
-        file.write_all(&chunk).map_err(|e| format!("{}: {e}", partial.display()))?;
-        progress(done, m.bytes);
+        let mut file = std::fs::File::create(&partial).map_err(|e| format!("{}: {e}", partial.display()))?;
+        let mut hasher = Sha256::new();
+        let (mut done, mut last_pct, mut stream) = (0u64, u64::MAX, resp.bytes_stream());
+        use futures_util::StreamExt;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("Download of {} failed: {e}", m.name))?;
+            done += chunk.len() as u64;
+            if done > m.bytes {
+                return Err(format!("{} is larger than expected; download refused.", m.name));
+            }
+            hasher.update(&chunk);
+            file.write_all(&chunk).map_err(|e| format!("{}: {e}", partial.display()))?;
+            // Review L12: one event per percent, not one per network chunk.
+            let pct = done * 100 / m.bytes.max(1);
+            if pct != last_pct {
+                last_pct = pct;
+                progress(done, m.bytes);
+            }
+        }
+        file.flush().map_err(|e| format!("{}: {e}", partial.display()))?;
+        let got = format!("{:x}", hasher.finalize());
+        if done != m.bytes || got != m.sha256 {
+            return Err(format!(
+                "{} did not match its pinned size and checksum; it was discarded.",
+                m.name
+            ));
+        }
+        Ok(())
     }
-    drop(file);
-    let got = format!("{:x}", hasher.finalize());
-    if done != m.bytes || got != m.sha256 {
+    .await;
+    // Review L6: never leave a partial file behind, whatever failed.
+    if let Err(err) = fetched {
         let _ = std::fs::remove_file(&partial);
-        return Err(format!(
-            "{} did not match its pinned size and checksum; it was discarded.",
-            m.name
-        ));
+        return Err(err);
     }
     std::fs::rename(&partial, &path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(path)
@@ -374,8 +393,9 @@ pub struct SpeakerTurn {
 }
 
 /// Labelled segments to turns: sorted by start; a segment joins the previous turn only
-/// when that turn is the same speaker's and they touch (within 50 ms, as at window
-/// boundaries). Pauses are not filled. Turns of different speakers may overlap.
+/// when that turn is the same speaker's and they nearly touch (within 100 ms: consecutive
+/// windows leave a 61 ms gap, because 589 frames x 270 samples fall short of 10 s).
+/// Pauses longer than that are not filled. Turns of different speakers may overlap.
 pub(crate) fn to_turns(segs: &[(f64, f64)], labels: &[Option<usize>]) -> Vec<SpeakerTurn> {
     let mut v: Vec<(f64, f64, usize)> = segs
         .iter()
@@ -387,7 +407,7 @@ pub(crate) fn to_turns(segs: &[(f64, f64)], labels: &[Option<usize>]) -> Vec<Spe
     for (s, e, l) in v {
         let (s_ms, e_ms) = ((s * 1000.0).round() as u64, (e * 1000.0).round() as u64);
         if let Some(prev) = out.last_mut() {
-            if prev.speaker == l as u32 && s_ms <= prev.end_ms + 50 {
+            if prev.speaker == l as u32 && s_ms <= prev.end_ms + 100 {
                 prev.end_ms = prev.end_ms.max(e_ms);
                 continue;
             }
@@ -517,6 +537,10 @@ impl Engine {
             .map_err(e)?;
         let v = outs.get("embs").ok_or("embedding model has no 'embs'")?;
         let (_, data) = v.try_extract_tensor::<f32>().map_err(e)?;
+        // Review L4: one NaN would make its cluster's centroid NaN and pull every line to it.
+        if data.iter().any(|x| !x.is_finite()) {
+            return Ok(None);
+        }
         Ok(Some(data.to_vec()))
     }
 
@@ -545,6 +569,43 @@ pub(crate) fn engine_threads() -> usize {
 
 // ---------------------------------------------------------------------------
 // The command.
+
+/// Why a transcript's lines cannot be matched by time to its microphone recording, if
+/// they cannot (review M1, M2). `None` means it is safe to separate.
+pub(crate) fn timing_problem(segs: &[crate::meeting::TranscriptSeg]) -> Option<&'static str> {
+    let mic: Vec<u64> = segs
+        .iter()
+        .filter(|s| s.source == "you" && !s.text.trim().is_empty())
+        .map(|s| s.start_ms)
+        .collect();
+    if mic.is_empty() {
+        return Some("This meeting has no microphone lines to label.");
+    }
+    if mic.len() >= 2 && mic.iter().all(|&ms| ms == mic[0]) {
+        return Some(
+            "This meeting's lines have no timings (it was recorded before Kōrero 1.26), so they \
+             can't be matched to speakers. Re-transcribe it first.",
+        );
+    }
+    if segs.windows(2).any(|w| w[1].start_ms < w[0].start_ms) {
+        return Some(
+            "This transcript is not in time order (a combined meeting, for example), so its \
+             lines can't be matched to one recording.",
+        );
+    }
+    None
+}
+
+/// One separation at a time (review L8): two runs would write the same model files.
+static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct RunGuard;
+
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 /// Result of "Separate speakers" on a meeting.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -582,6 +643,13 @@ pub async fn meeting_separate_speakers(
     mic_path: String,
     segments: Vec<crate::meeting::TranscriptSeg>,
 ) -> Result<SpeakerSeparation, String> {
+    if let Some(why) = timing_problem(&segments) {
+        return Err(why.to_string());
+    }
+    if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("Speakers are already being separated. Try again when that finishes.".into());
+    }
+    let _running = RunGuard;
     let started = Instant::now();
     let dir = crate::portable::models_dir(&app)
         .map_err(|err| format!("Could not find the models folder: {err}"))?
@@ -591,6 +659,7 @@ pub async fn meeting_separate_speakers(
     let emb_path = ensure_model(&dir, &EMBEDDING, |d, t| emit_progress(&a, "download", d, t)).await?;
     let a = app.clone();
     let (diar, audio_s) = tauri::async_runtime::spawn_blocking(move || -> Result<(Diarisation, f64), String> {
+        emit_progress(&a, "separate", 0, 1);
         let x = decode_wav_16k(&mic_path)?;
         if x.len() < SR * 5 {
             return Err("The recording is too short to separate speakers.".into());
@@ -834,6 +903,28 @@ mod tests {
                 SpeakerTurn { start_ms: 6000, end_ms: 7000, speaker: 1 },
             ]
         );
+    }
+
+    #[test]
+    fn one_speaker_across_window_boundaries_is_one_turn() {
+        let cls = vec![vec![1u8; FRAMES]; 3]; // 30 s, one speaker throughout
+        let s = local_segments(&cls, 3 * WIN);
+        let spans: Vec<(f64, f64)> = s.iter().map(|x| (x.start, x.end)).collect();
+        let t = to_turns(&spans, &vec![Some(0); spans.len()]);
+        assert_eq!(t.len(), 1, "the 61 ms gap between windows must not split a turn");
+    }
+
+    fn seg(source: &str, ms: u64) -> crate::meeting::TranscriptSeg {
+        crate::meeting::TranscriptSeg { source: source.into(), text: "hello there".into(), start_ms: ms, speaker: None }
+    }
+
+    #[test]
+    fn transcripts_that_cannot_be_matched_by_time_are_refused() {
+        assert!(timing_problem(&[seg("you", 0), seg("others", 1_000), seg("you", 2_000)]).is_none());
+        assert!(timing_problem(&[seg("others", 0)]).is_some(), "no microphone lines");
+        assert!(timing_problem(&[seg("you", 0), seg("you", 0), seg("you", 0)]).is_some(), "pre-1.26: no timings");
+        assert!(timing_problem(&[seg("you", 0), seg("you", 9_000), seg("you", 1_000)]).is_some(), "a combined meeting");
+        assert!(timing_problem(&[seg("you", 0)]).is_none(), "a single line at 0 s is a real timing");
     }
 
     #[test]

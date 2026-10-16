@@ -58,6 +58,8 @@ export interface Meeting {
   speakersFound?: number;
   /** 1.45: names for Speaker 1..N, by index; blank or missing = "Speaker n". */
   speakerNames?: string[];
+  /** 1.45: the two meetings this one was combined from (set by Combine). */
+  mergedFrom?: string[];
 }
 
 export interface RecordingFile {
@@ -125,6 +127,27 @@ export const labelFor = (source: string, youLabel: string, othersLabel: string) 
   source === "you" ? youLabel : othersLabel;
 
 /**
+ * Kōrero 1.45: why "Separate speakers" cannot run on this meeting, or null if it can.
+ * Mirrors `timing_problem` in diarise.rs, which refuses the same cases.
+ */
+export const separationBlocker = (m: Meeting): string | null => {
+  if (!m.micPath || !/\.wav$/i.test(m.micPath))
+    return "Needs a recorded microphone file (imports are not supported yet).";
+  if (m.mergedFrom && m.mergedFrom.length > 0)
+    return "A combined meeting mixes two recordings, so its lines can't be matched to one.";
+  const segs = m.transcript ?? [];
+  const mic = segs.filter((s) => s.source === "you" && s.text.trim()).map((s) => s.start_ms ?? 0);
+  if (mic.length === 0) return "There are no microphone lines to label.";
+  if (mic.length >= 2 && mic.every((ms) => ms === mic[0]))
+    return "Its lines have no timings (recorded before Kōrero 1.26). Re-transcribe it first.";
+  for (let i = 1; i < segs.length; i++) {
+    if ((segs[i].start_ms ?? 0) < (segs[i - 1].start_ms ?? 0))
+      return "Its transcript is not in time order (a combined meeting, for example), so its lines can't be matched to one recording.";
+  }
+  return null;
+};
+
+/**
  * Kōrero 1.45: the label for one transcript line. A microphone line that "Separate
  * speakers" assigned shows its speaker ("Speaker 2", or the name given); every other
  * line keeps the two channel labels. The transcript view and `combine` (which feeds
@@ -154,16 +177,18 @@ export const combine = (
   if (transcript && transcript.length > 0) {
     // 1.45: lines are grouped by their label, so separated speakers become separate
     // turns ("Speaker 1: …", "Speaker 2: …") in the text the notes model reads.
-    const merged: { label: string; text: string }[] = [];
+    const merged: { key: string; seg: TranscriptSeg; text: string }[] = [];
     for (const s of transcript) {
       const text = s.text.trim();
       if (!text) continue;
-      const label = speakerLabel({ youLabel, othersLabel, speakerNames }, s);
+      const key = `${s.source}|${s.source === "you" && s.speaker != null ? s.speaker : ""}`;
       const last = merged[merged.length - 1];
-      if (last && last.label === label) last.text += ` ${text}`;
-      else merged.push({ label, text });
+      if (last && last.key === key) last.text += ` ${text}`;
+      else merged.push({ key, seg: s, text });
     }
-    return merged.map((m) => `${m.label}: ${m.text}`).join("\n");
+    return merged
+      .map((m) => `${speakerLabel({ youLabel, othersLabel, speakerNames }, m.seg)}: ${m.text}`)
+      .join("\n");
   }
   return [
     you.trim() ? `${youLabel}:\n${you.trim()}` : "",

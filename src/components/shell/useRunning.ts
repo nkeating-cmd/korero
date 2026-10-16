@@ -73,7 +73,19 @@ export const useRunning = (): RunningItem[] => {
       target: { section: "meetings" },
     });
   }
-  if (task) {
+  if (task && task.kind === "speakers") {
+    const p = task.progress;
+    const pct = p && p.total ? Math.min(100, Math.round((p.window / p.total) * 100)) : null;
+    items.push({
+      id: "task",
+      kind: "transcribe",
+      title: task.stage === "download" ? "Downloading the speaker models" : "Separating speakers",
+      detail: task.label.replace(/^separating speakers in\s+/i, "") + (pct !== null ? ` · ${pct}%` : ""),
+      progress: pct,
+      startedAt: task.startedAt,
+      target: { section: "meetings", meetingId: task.meetingId ?? undefined, tab: "audio" },
+    });
+  } else if (task) {
     const p = task.progress;
     const label =
       task.kind === "import"
