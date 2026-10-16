@@ -70,7 +70,7 @@ A build or enable bet enters Now only on research or a requirement. Keep Now to 
 | B1 | Release 1.44: long-meeting notes read in parts; audio brief finds its engine | build | O1 | E2, E6 | 4 | 1 | now | 2026-10-08 | branch `fix/1.44`; `KORERO_1.44_BUILD_2026-10-08.md` |
 | B2 | M0 probe: can speakers be separated on Kōrero's own runtime, from a room mic? | learn | O2 | E4, E12 | 4 | 1 | done | 2026-10-16 | `KORERO_1.45_IN-ROOM-SPEAKERS-PLAN_2026-10-16.md` |
 | B3 | "In the room" meeting mode: mic only, no false call-audio warning, a speech gate that hears the far end of the table (M1) | build | O2, O1 | E4, E5 | 4 | 2 | now | 2026-10-16 | plan M1 |
-| B4 | Separate speakers after Stop, then name, merge and reassign them; names reach the notes (M2–M3) | build | O2 | E4 | 5 | 4 | next | 2026-10-16 | plan M2–M3; `docs/DECISIONS.md` D-007 |
+| B4 | Separate speakers after Stop, then name, merge and reassign them; names reach the notes (M2–M3) | build | O2 | E4 | 5 | 4 | now | 2026-10-16 | plan M2–M3; `docs/DECISIONS.md` D-007 |
 | B5 | Imports return timed segments and get speakers separated (M4) | build | O2 | E7 | 3 | 2 | next | 2026-10-16 | plan M4 |
 | B6 | Confirm the second laptop is offered the next release on its own | learn | O4 | E9 | 3 | 1 | next | 2026-10-16 | `KORERO_STATE.md` |
 | B7 | Remember voices across meetings | build | O2 | E10 | 2 | 4 | later | 2026-10-16 | plan D2; must meet E11 if built |
@@ -82,11 +82,12 @@ A build or enable bet enters Now only on research or a requirement. Keep Now to 
 Dated one-liners for every reorder, drop or gate decision, newest first. Larger product decisions go to
 `docs/DECISIONS.md`.
 
+- 2026-10-16: Nic: "Execute D007". B4 moves to Now beside B1 and B3 (3 of 3), and is built on its own branch from `main`, ahead of B3 (M1); D-007 is Accepted.
 - 2026-10-16: First brief (dev-product Mode A). Proposed order, for Nic to confirm: B1 then B3 in Now; B6, B4 and B5
   in Next. Nic sets the order; this is the session's proposal.
 - 2026-10-16: B2 done. M0 found in-room separation workable on the room microphone (mean error 23.1% on four AMI
   far-field meetings, collar 0.25), but only with a different embedding model from the one `pyannote-rs` ships
-  (D-007, L-012). B4 stays in Next until Nic accepts D-007.
+  (D-007, L-012). Nic accepted D-007 the same evening.
 - 2026-10-16: The "How many people?" prompt was dropped from B3. Told the count, the clusterer did worse (31.5%) than
   finding the count itself (23.1%).
 - 2026-10-16: B5 rests on a hypothesis (E7: room meetings get recorded on a phone), so it ranks below B4. Asking Nic
