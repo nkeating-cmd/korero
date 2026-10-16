@@ -13,6 +13,10 @@ export interface TranscriptSeg {
   // a trim window. Optional only because meetings recorded before v1.26.0 have
   // segments without it on disk; `normaliseMeetings` defaults those to 0.
   start_ms?: number;
+  /** Kōrero 1.45 (D-007): who said a microphone line, set by "Separate speakers"
+   *  (0-based; shown as "Speaker n+1" or the name given). Absent or null before it
+   *  runs, for call-audio lines, and on every meeting saved before 1.45. */
+  speaker?: number | null;
 }
 
 /** A moment the user flagged while recording (1.42). */
@@ -50,6 +54,10 @@ export interface Meeting {
   durationSec?: number;
   /** The after-Stop wrap-up card was closed by the user. */
   wrapUpDismissed?: boolean;
+  /** 1.45: how many people "Separate speakers" found. Absent until it has run. */
+  speakersFound?: number;
+  /** 1.45: names for Speaker 1..N, by index; blank or missing = "Speaker n". */
+  speakerNames?: string[];
 }
 
 export interface RecordingFile {
@@ -117,6 +125,20 @@ export const labelFor = (source: string, youLabel: string, othersLabel: string) 
   source === "you" ? youLabel : othersLabel;
 
 /**
+ * Kōrero 1.45: the label for one transcript line. A microphone line that "Separate
+ * speakers" assigned shows its speaker ("Speaker 2", or the name given); every other
+ * line keeps the two channel labels. The transcript view and `combine` (which feeds
+ * the notes) both use this, so what you read is what the notes model reads.
+ */
+export const speakerLabel = (
+  m: { youLabel: string; othersLabel: string; speakerNames?: string[] },
+  s: { source: string; speaker?: number | null },
+): string =>
+  s.source === "you" && s.speaker != null
+    ? m.speakerNames?.[s.speaker]?.trim() || `Speaker ${s.speaker + 1}`
+    : labelFor(s.source, m.youLabel, m.othersLabel);
+
+/**
  * The transcript as text, in speaking order (`Label: line` per turn). Consecutive
  * segments from the same speaker merge into one turn. Falls back to the legacy
  * two-block grouping when there is no ordered transcript.
@@ -127,19 +149,21 @@ export const combine = (
   youLabel = "You",
   othersLabel = "Others",
   transcript?: TranscriptSeg[],
+  speakerNames?: string[],
 ): string => {
   if (transcript && transcript.length > 0) {
-    const merged: { source: string; text: string }[] = [];
+    // 1.45: lines are grouped by their label, so separated speakers become separate
+    // turns ("Speaker 1: …", "Speaker 2: …") in the text the notes model reads.
+    const merged: { label: string; text: string }[] = [];
     for (const s of transcript) {
       const text = s.text.trim();
       if (!text) continue;
+      const label = speakerLabel({ youLabel, othersLabel, speakerNames }, s);
       const last = merged[merged.length - 1];
-      if (last && last.source === s.source) last.text += ` ${text}`;
-      else merged.push({ source: s.source, text });
+      if (last && last.label === label) last.text += ` ${text}`;
+      else merged.push({ label, text });
     }
-    return merged
-      .map((m) => `${labelFor(m.source, youLabel, othersLabel)}: ${m.text}`)
-      .join("\n");
+    return merged.map((m) => `${m.label}: ${m.text}`).join("\n");
   }
   return [
     you.trim() ? `${youLabel}:\n${you.trim()}` : "",
@@ -236,7 +260,7 @@ export const sideWords = (m: Meeting): { you: number; others: number } => {
  * already applied).
  */
 export const notesInput = (m: Meeting, segs: TranscriptSeg[]): string => {
-  const body = combine(m.you, m.others, m.youLabel, m.othersLabel, segs);
+  const body = combine(m.you, m.others, m.youLabel, m.othersLabel, segs, m.speakerNames);
   const flags = (m.flags ?? []).filter((f) => Number.isFinite(f.atSec));
   if (!body.trim() || flags.length === 0) return body;
   const lines = flags

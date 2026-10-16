@@ -76,7 +76,7 @@ export const loadSearchSources = async (): Promise<LoadedSources> => {
       kind: "meeting",
       title: titleOf(m),
       // Search honours the trim, as the Meetings search always has.
-      body: `${combine(m.you, m.others, m.youLabel, m.othersLabel, visibleSegs(m))}\n${m.processed}`,
+      body: `${combine(m.you, m.others, m.youLabel, m.othersLabel, visibleSegs(m), m.speakerNames)}\n${m.processed}`,
       meta: meetingMeta(m),
       at: m.createdAt,
     });

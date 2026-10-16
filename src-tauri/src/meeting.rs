@@ -131,6 +131,11 @@ pub struct TranscriptSeg {
     ///
     /// 0 for meetings recorded before v1.26.0 (the frontend defaults it).
     pub start_ms: u64,
+    /// Kōrero 1.45 (D-007): who said a microphone line, from "Separate speakers"
+    /// (0-based; shown as "Speaker {n + 1}"). `None` until speakers are separated,
+    /// for system-audio lines, and for every meeting saved before 1.45.
+    #[serde(default)]
+    pub speaker: Option<u32>,
 }
 
 /// A meeting WAV on disk, for the recovery list.
@@ -252,6 +257,7 @@ fn to_transcript_segs(log: &[(u64, &'static str, String)]) -> Vec<TranscriptSeg>
             source: s.to_string(),
             text: t.clone(),
             start_ms: *ms,
+            speaker: None,
         })
         .collect()
 }

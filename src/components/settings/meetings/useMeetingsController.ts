@@ -106,12 +106,14 @@ export const useMeetingsController = () => {
   const jobRunningHere = job && job.meetingId === activeId ? job : null;
   // Keyed off ANY running work: the engine and the local model are shared,
   // and the store runs one thing at a time.
-  const busy: null | "transcribe" | "post" | "both" | "other" =
+  const busy: null | "transcribe" | "post" | "both" | "speakers" | "other" =
     task?.kind === "transcribe"
       ? "transcribe"
       : task?.kind === "both"
         ? "both"
-        : task
+        : task?.kind === "speakers"
+          ? "speakers"
+          : task
           ? "other"
           : job
             ? job.kind === "both"
@@ -515,6 +517,7 @@ export const useMeetingsController = () => {
       active.youLabel,
       active.othersLabel,
       visibleSegs(active),
+      active.speakerNames,
     );
     if (!transcript.trim()) {
       toast.message("There is no transcript to ask about yet.");
@@ -551,6 +554,16 @@ export const useMeetingsController = () => {
       title: titleOf(active),
       micPath: active.micPath,
       systemPath: active.systemPath,
+    });
+  };
+
+  const onSeparateSpeakers = async () => {
+    if (!active || busy || !active.micPath) return;
+    await useMeetingJobs.getState().separateSpeakers({
+      meetingId: active.id,
+      title: titleOf(active),
+      micPath: active.micPath,
+      transcript: active.transcript ?? [],
     });
   };
 
@@ -676,7 +689,7 @@ export const useMeetingsController = () => {
   // ---- copy / export / brief / notes ------------------------------------
   const copyActive = async () => {
     if (!active) return;
-    const body = combine(active.you, active.others, active.youLabel, active.othersLabel, visibleSegs(active));
+    const body = combine(active.you, active.others, active.youLabel, active.othersLabel, visibleSegs(active), active.speakerNames);
     const text = active.processed.trim()
       ? `${body}\n\n--- Processed ---\n${active.processed.trim()}`
       : body;
@@ -760,6 +773,13 @@ export const useMeetingsController = () => {
 
   const saveSegment = (idx: number, text: string) => {
     if (!active) return;
+    // 1.45: "Separate speakers" will write the whole transcript back when it ends,
+    // so an edit made meanwhile would be overwritten. Refuse it, and say why.
+    if (task?.kind === "speakers" && task.meetingId === active.id) {
+      toast.message("Separating speakers — edit this line when it finishes.");
+      setEditingSegIdx(null);
+      return;
+    }
     const before = (active.transcript ?? [])[idx]?.text ?? "";
     const next = (active.transcript ?? []).map((s, i) => (i === idx ? { ...s, text } : s));
     patchMeeting(active.id, { transcript: next });
@@ -799,7 +819,7 @@ export const useMeetingsController = () => {
     const parts = [
       `# ${titleOf(active)}`,
       "",
-      combine(active.you, active.others, active.youLabel, active.othersLabel, visibleSegs(active)) ||
+      combine(active.you, active.others, active.youLabel, active.othersLabel, visibleSegs(active), active.speakerNames) ||
         "(no transcript)",
     ];
     if (isTrimmed(active)) {
@@ -1013,6 +1033,13 @@ export const useMeetingsController = () => {
   }));
   const activeHasAudio = !!active && (!!active.micPath || !!active.systemPath);
   const activeHasTranscript = !!active && (!!active.you.trim() || !!active.others.trim());
+  // 1.45: speakers can be separated on a recorded microphone WAV whose ordered
+  // transcript has microphone lines (imports and pre-1.26 meetings do not).
+  const activeCanSeparate =
+    !!active &&
+    !!active.micPath &&
+    /\.wav$/i.test(active.micPath) &&
+    (active.transcript ?? []).some((s) => s.source === "you" && s.text.trim());
 
   const selectMeeting = (id: string) => {
     activeIdRef.current = id;
@@ -1108,6 +1135,8 @@ export const useMeetingsController = () => {
     setSearch,
     // actions
     onReTranscribe,
+    onSeparateSpeakers,
+    activeCanSeparate,
     onPostProcess,
     onBoth,
     mergeWithId,

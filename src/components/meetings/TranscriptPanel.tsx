@@ -4,7 +4,7 @@ import { GraduationCap, Pencil, Scissors, TriangleAlert, X, Flag } from "lucide-
 import { AddCorrectionInline } from "../ui/Corrections";
 import type { MeetingsController } from "../settings/meetings/useMeetingsController";
 import { Highlighted, containsFolded } from "./Highlighted";
-import { fmtClock, fmtTrimMs, hiddenCount, isTrimmed, segInWindow, segMs } from "./model";
+import { fmtClock, fmtTrimMs, hiddenCount, isTrimmed, segInWindow, segMs, speakerLabel } from "./model";
 
 /**
  * Kōrero 1.42: the transcript tab. The reading surface leads; speaker labels,
@@ -206,7 +206,7 @@ export const TranscriptPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
         <div className="flex flex-col">
           {(m.transcript ?? []).map((s, i) => {
             if (!s.text.trim() && c.editingSegIdx !== i) return null;
-            const label = s.source === "you" ? m.youLabel : m.othersLabel;
+            const label = speakerLabel(m, s);
             const excluded = !segInWindow(m, s);
             const flagged = flags.some((f) => Math.abs(f.atSec * 1000 - segMs(s)) < 6000);
             const hit = !!c.highlight && containsFolded(s.text, c.highlight);

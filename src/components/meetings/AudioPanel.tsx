@@ -3,7 +3,7 @@ import React from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { FolderOpen, Loader2, RotateCcw, Wand2, GitMerge, Trash2 } from "lucide-react";
+import { FolderOpen, Loader2, RotateCcw, Wand2, GitMerge, Trash2, Users } from "lucide-react";
 import { AudioPlayer } from "../ui/AudioPlayer";
 import { Dropdown } from "../ui/Dropdown";
 import type { MeetingsController } from "../settings/meetings/useMeetingsController";
@@ -79,7 +79,7 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
             Re-transcribe + notes
           </button>
         </div>
-        {c.busy && c.busyMeetingId === m.id && c.task && (
+        {c.busy && c.busy !== "speakers" && c.busyMeetingId === m.id && c.task && (
           <div>
             <div className="flex justify-between kx-meta mb-1">
               <span aria-live="polite">Transcribing</span>
@@ -102,6 +102,56 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
         )}
         {c.busy && c.elsewhereJobTitle && (
           <p className="kx-meta">Busy with “{c.elsewhereJobTitle}” — one at a time.</p>
+        )}
+      </section>
+
+      <section aria-labelledby="kx-speakers" className="kx-card p-4 flex flex-col gap-3">
+        <h2 id="kx-speakers" className="kx-heading">
+          Separate speakers
+        </h2>
+        <p className="kx-meta">
+          For a meeting in a room: works out who said what from your microphone recording and labels
+          each line Speaker 1, Speaker 2 and so on. It runs on this computer. The first time, it
+          downloads two small models (about 32 MB).
+          {m.speakersFound != null &&
+            ` Last run found ${m.speakersFound} ${m.speakersFound === 1 ? "voice" : "voices"}.`}
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="kx-btn kx-btn-secondary"
+            onClick={() => void c.onSeparateSpeakers()}
+            disabled={!!c.busy || !c.activeCanSeparate || meetingLive}
+          >
+            {c.busy === "speakers" && c.busyMeetingId === m.id ? <Loader2 size={14} className="animate-spin" /> : <Users size={14} />}
+            {m.speakersFound != null ? "Separate speakers again" : "Separate speakers"}
+          </button>
+          {!c.activeCanSeparate && (
+            <span className="kx-meta">Needs a recorded microphone file and a transcript with your lines.</span>
+          )}
+        </div>
+        {c.busy === "speakers" && c.busyMeetingId === m.id && c.task && (
+          <div>
+            <div className="flex justify-between kx-meta mb-1">
+              <span aria-live="polite">
+                {c.task.stage === "download" ? "Downloading the speaker models" : "Separating speakers"}
+              </span>
+              <span className="kx-mono">
+                {c.task.progress?.total
+                  ? `${Math.min(100, Math.round((c.task.progress.window / c.task.progress.total) * 100))}%`
+                  : `${c.busyElapsed}s`}
+              </span>
+            </div>
+            <div className={`kx-progress ${c.task.progress?.total ? "" : "kx-progress-indeterminate"}`}>
+              <span
+                style={
+                  c.task.progress?.total
+                    ? { width: `${Math.min(100, Math.round((c.task.progress.window / c.task.progress.total) * 100))}%` }
+                    : undefined
+                }
+              />
+            </div>
+          </div>
         )}
       </section>
 
