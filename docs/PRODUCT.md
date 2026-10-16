@@ -82,6 +82,7 @@ A build or enable bet enters Now only on research or a requirement. Keep Now to 
 Dated one-liners for every reorder, drop or gate decision, newest first. Larger product decisions go to
 `docs/DECISIONS.md`.
 
+- 2026-10-16: B4, first slice built on `feat/diarise`: the engine and a "Separate speakers" action on the Audio tab, with speaker labels reaching copy, export, search, Ask and the notes. Mean error 21.9% on the AMI check (bar 25%). Still to come in B4: naming, merge and split (M3), and splitting lines where the speaker changes mid-sentence.
 - 2026-10-16: Nic: "Execute D007". B4 moves to Now beside B1 and B3 (3 of 3), and is built on its own branch from `main`, ahead of B3 (M1); D-007 is Accepted.
 - 2026-10-16: First brief (dev-product Mode A). Proposed order, for Nic to confirm: B1 then B3 in Now; B6, B4 and B5
   in Next. Nic sets the order; this is the session's proposal.
