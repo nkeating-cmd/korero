@@ -715,24 +715,24 @@ async meetingTranscribeMerge(micPath: string | null, systemPath: string | null) 
 }
 },
 /**
- * Kōrero 1.45 (D-007): separate the speakers in a meeting's microphone recording and
- * say which speaker each microphone line belongs to. Downloads the two models on first
- * use (about 32 MB, checked by sha256). Runs on the CPU; nothing leaves the computer
- * except those two downloads.
- */
-/**
  * Kōrero 1.45 (B3): rebuild an "In the room" meeting's transcript from its
  * microphone recording, one line per speaker turn, each labelled with its speaker.
  * The live transcript is kept by the caller if this fails or finds nothing.
  */
-async meetingRoomTranscript(micPath: string) : Promise<Result<RoomTranscript, string>> {
+async meetingRoomTranscript(micPath: string, existing: { source: string; text: string; start_ms: number; speaker: number | null }[]) : Promise<Result<RoomTranscript, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("meeting_room_transcript", { micPath }) };
+    return { status: "ok", data: await TAURI_INVOKE("meeting_room_transcript", { micPath, existing }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Kōrero 1.45 (D-007): separate the speakers in a meeting's microphone recording and
+ * say which speaker each microphone line belongs to. Downloads the two models on first
+ * use (about 32 MB, checked by sha256). Runs on the CPU; nothing leaves the computer
+ * except those two downloads.
+ */
 async meetingSeparateSpeakers(micPath: string, segments: { source: string; text: string; start_ms: number; speaker: number | null }[]) : Promise<Result<SpeakerSeparation, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("meeting_separate_speakers", { micPath, segments }) };
@@ -797,9 +797,9 @@ async meetingCaptureDevices() : Promise<Result<{ mic: string; system: string }, 
     else return { status: "error", error: e  as any };
 }
 },
-async meetingTestCapture(secs: number) : Promise<Result<{ mic_device: string; system_device: string; mic_samples: number; system_samples: number }, string>> {
+async meetingTestCapture(secs: number, room: boolean | null) : Promise<Result<{ mic_device: string; system_device: string; mic_samples: number; system_samples: number }, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("meeting_test_capture", { secs }) };
+    return { status: "ok", data: await TAURI_INVOKE("meeting_test_capture", { secs, room }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -813,7 +813,7 @@ async meetingDeleteRecording(path: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async meetingRecordingStatus() : Promise<Result<{ elapsed_secs: number; system_captured: boolean; paused: boolean } | null, string>> {
+async meetingRecordingStatus() : Promise<Result<{ elapsed_secs: number; system_captured: boolean; paused: boolean; room: boolean } | null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("meeting_recording_status") };
 } catch (e) {

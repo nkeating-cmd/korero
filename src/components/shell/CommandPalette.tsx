@@ -113,16 +113,29 @@ export const CommandPalette: React.FC = () => {
     const nav = useNav.getState();
     const list: ActionDef[] = [];
     if (!recording) {
-      list.push({
-        id: "record",
-        title: "Record a meeting",
-        keywords: "start meeting record call capture",
-        icon: <Circle size={14} fill="currentColor" />,
-        run: async () => {
-          const ok = await useRecorder.getState().start();
-          if (ok) nav.openMeeting({ id: "live" });
+      // Review H1: two explicit actions, so a remembered type never surprises.
+      list.push(
+        {
+          id: "record",
+          title: "Record a call",
+          keywords: "start meeting record call capture teams zoom online",
+          icon: <Circle size={14} fill="currentColor" />,
+          run: async () => {
+            const ok = await useRecorder.getState().start("call");
+            if (ok) nav.openMeeting({ id: "live" });
+          },
         },
-      });
+        {
+          id: "record-room",
+          title: "Record in the room",
+          keywords: "start meeting record room in person face to face speakers",
+          icon: <UsersRound size={14} />,
+          run: async () => {
+            const ok = await useRecorder.getState().start("room");
+            if (ok) nav.openMeeting({ id: "live" });
+          },
+        },
+      );
     } else {
       list.push(
         {

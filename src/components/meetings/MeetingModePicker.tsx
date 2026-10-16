@@ -1,6 +1,7 @@
 import React from "react";
 import { Headphones, UsersRound } from "lucide-react";
 import { useRecorder } from "../../stores/recorderStore";
+import { useMeetingJobs } from "../../stores/meetingJobsStore";
 import type { MeetingMode } from "./model";
 
 /**
@@ -11,14 +12,29 @@ import type { MeetingMode } from "./model";
 export const MeetingModePicker: React.FC<{ className?: string }> = ({ className }) => {
   const mode = useRecorder((s) => s.mode);
   const recording = useRecorder((s) => s.recording);
+  // Review L6: no change of type while the last meeting is still being saved.
+  const stopping = useMeetingJobs((s) => s.stopping !== null);
+  const locked = recording || stopping;
+  const choose = (value: MeetingMode) => useRecorder.getState().setMode(value);
+  // Review L7: a radio group is one tab stop; the arrow keys move and choose.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (locked || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+    e.preventDefault();
+    const next: MeetingMode = mode === "call" ? "room" : "call";
+    choose(next);
+    const el = e.currentTarget.querySelector<HTMLButtonElement>(`[data-mode="${next}"]`);
+    el?.focus();
+  };
   const option = (value: MeetingMode, label: string, hint: string, icon: React.ReactNode) => (
     <button
       type="button"
       role="radio"
+      data-mode={value}
       aria-checked={mode === value}
+      tabIndex={mode === value ? 0 : -1}
       title={hint}
-      disabled={recording}
-      onClick={() => useRecorder.getState().setMode(value)}
+      disabled={locked}
+      onClick={() => choose(value)}
       className="kx-choice-option"
     >
       {icon}
@@ -26,7 +42,7 @@ export const MeetingModePicker: React.FC<{ className?: string }> = ({ className 
     </button>
   );
   return (
-    <div role="radiogroup" aria-label="Meeting type" className={`kx-choice ${className ?? ""}`}>
+    <div role="radiogroup" aria-label="Meeting type" onKeyDown={onKeyDown} className={`kx-choice ${className ?? ""}`}>
       {option("call", "On a call", "Records your microphone and the call's audio as two sides", <Headphones size={13} />)}
       {option(
         "room",

@@ -61,6 +61,7 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
         <p className="kx-meta">
           Re-run speech-to-text from the saved recording — useful after switching to a different
           speech model, or when a capture went wrong. Your current transcript is kept if it fails.
+          {m.mode === "room" && " For a meeting in the room, this rebuilds the transcript by speaker."}
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <span className="kx-meta">Speech model</span>

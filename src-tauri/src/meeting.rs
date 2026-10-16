@@ -751,7 +751,7 @@ pub async fn meeting_start_capture(
                         continue;
                     }
                     warned.push(issue);
-                    let msg = issue_message(issue, you_h, others_h, true);
+                    let msg = issue_message(issue, you_h, others_h, true, room);
                     log::warn!("Meeting capture health: {msg}");
                     use tauri::Emitter;
                     let _ = app_ev.emit("meeting-capture-warning", msg);
@@ -881,6 +881,8 @@ pub struct MeetingStatus {
     pub system_captured: bool,
     /// v1.19.0: whether the meeting is currently paused.
     pub paused: bool,
+    /// Kōrero 1.45: an "In the room" meeting (microphone only).
+    pub room: bool,
 }
 
 #[tauri::command]
@@ -894,6 +896,7 @@ pub async fn meeting_recording_status(
         elapsed_secs: c.elapsed().as_secs().min(u32::MAX as u64) as u32,
         system_captured: c.system.is_some(),
         paused: c.is_paused(),
+        room: crate::meeting_capture::ROOM_MODE.load(Ordering::Relaxed),
     }))
 }
 
@@ -1020,6 +1023,10 @@ pub async fn meeting_stop_capture(
     let others_h = SourceHealth::of(live_stats("others"));
     let mut warnings: Vec<String> = Vec::new();
     let mut seg_log = live.snapshot();
+    // Kōrero 1.45 (B3, review M4): a room meeting's transcript is rebuilt from the
+    // speaker model's turns right after Stop (`diarise::meeting_room_transcript`), so a
+    // per-source rebuild here would be thrown away, and its warnings would be wrong.
+    let room = crate::meeting_capture::ROOM_MODE.load(Ordering::Relaxed);
 
     // Kōrero (meetings reliability, 2026-09-25): rebuild a speaker from its WAV
     // when the live transcript for it is EMPTY (as before) or INCOMPLETE (new).
@@ -1029,6 +1036,9 @@ pub async fn meeting_stop_capture(
     // transcript with nothing to say it had happened.
     for (source, path) in [("you", mic_path.as_deref()), ("others", system_path.as_deref())] {
         let Some(p) = path else { continue };
+        if room {
+            continue;
+        }
         let has_live = seg_log.iter().any(|(_, s, _)| *s == source);
         let lost = live_stats(source).dropped.load(Ordering::Relaxed) + live.failures(source);
         if !needs_offline_rebuild(has_live, lost) {
@@ -1087,7 +1097,7 @@ pub async fn meeting_stop_capture(
         MIC_SILENT_STOP_SECS,
         SYSTEM_SILENT_STOP_SECS,
     ) {
-        warnings.push(issue_message(issue, you_h, others_h, false));
+        warnings.push(issue_message(issue, you_h, others_h, false, room));
     }
 
     let segments: Vec<TranscriptSeg> = to_transcript_segs(&seg_log);
@@ -2306,11 +2316,13 @@ fn issue_message(
     you: SourceHealth,
     others: SourceHealth,
     live: bool,
+    room: bool,
 ) -> String {
+    let need = fmt_dbfs(crate::meeting_capture::live_floor(room));
     match (issue, live) {
         (CaptureIssue::MicSilent, true) => format!(
             "Kōrero can't hear your microphone: nothing loud enough to be speech in the last {} \
-             (loudest sound {}; speech needs about -40 dBFS). Check which microphone is selected in \
+             (loudest sound {}; speech needs about {need}). Check which microphone is selected in \
              Settings and that it isn't muted. If you just haven't spoken yet, ignore this. The \
              recording is still running.",
             fmt_duration(you.secs),
@@ -2318,7 +2330,7 @@ fn issue_message(
         ),
         (CaptureIssue::MicSilent, false) => format!(
             "Your microphone recorded nothing loud enough to be speech in this meeting (loudest \
-             sound {}; speech needs about -40 dBFS), so your side is empty. If you did speak, check \
+             sound {}; speech needs about {need}), so your side is empty. If you did speak, check \
              which microphone is selected in Settings and that it isn't muted.",
             fmt_dbfs(you.peak_rms),
         ),
@@ -2856,6 +2868,7 @@ pub async fn meeting_test_capture(
     meeting: State<'_, Arc<MeetingRecorder>>,
     recording_manager: State<'_, Arc<AudioRecordingManager>>,
     secs: u32,
+    room: Option<bool>,
 ) -> Result<MeetingTestResult, String> {
     if recording_manager.is_recording() {
         return Err("A dictation recording is in progress. Stop it first.".to_string());
@@ -2871,12 +2884,12 @@ pub async fn meeting_test_capture(
     if MEETING_ACTIVE.swap(true, Ordering::Relaxed) {
         return Err("A meeting is already being recorded.".to_string());
     }
-    let result = run_test_capture(&app, secs.clamp(2, 30)).await;
+    let result = run_test_capture(&app, secs.clamp(2, 30), room.unwrap_or(false)).await;
     MEETING_ACTIVE.store(false, Ordering::Relaxed);
     result
 }
 
-async fn run_test_capture(app: &AppHandle, secs: u32) -> Result<MeetingTestResult, String> {
+async fn run_test_capture(app: &AppHandle, secs: u32, room: bool) -> Result<MeetingTestResult, String> {
     let dir = meetings_dir(app)?;
     let mic_path = dir.join("test-you.wav");
     let sys_path = dir.join("test-others.wav");
@@ -2911,9 +2924,15 @@ async fn run_test_capture(app: &AppHandle, secs: u32) -> Result<MeetingTestResul
         .default_output_device()
         .and_then(|d| d.name().ok())
         .unwrap_or_else(|| "System audio".to_string());
-    let (sys_cap, backend) =
-        start_system_capture(app, sys_path.clone(), None, Arc::new(AtomicBool::new(false)));
-    let system_device = if sys_cap.is_some() {
+    // Kōrero 1.45 (review M2): an "In the room" meeting has no call to test.
+    let (sys_cap, backend) = if room {
+        (None, "not tested (in the room)")
+    } else {
+        start_system_capture(app, sys_path.clone(), None, Arc::new(AtomicBool::new(false)))
+    };
+    let system_device = if room {
+        "not used in the room".to_string()
+    } else if sys_cap.is_some() {
         format!("{sys_name} [{backend}]")
     } else {
         format!("{sys_name} — unavailable (both WASAPI and cpal failed; see log)")
@@ -3287,10 +3306,13 @@ mod korero_meetings_reliability_tests {
     #[test]
     fn messages_name_the_level_and_the_durations() {
         let quiet = health(2067, 0, 0.0073);
-        let m = issue_message(CaptureIssue::MicSilent, quiet, health(0, 0, 0.0), false);
-        assert!(m.contains("-43 dBFS"), "{m}");
+        let m = issue_message(CaptureIssue::MicSilent, quiet, health(0, 0, 0.0), false, false);
+        assert!(m.contains("-43 dBFS") && m.contains("about -40 dBFS"), "{m}");
+        // Review M4: a room meeting's floor is lower, and the message says so.
+        let r = issue_message(CaptureIssue::MicSilent, quiet, health(0, 0, 0.0), false, true);
+        assert!(!r.contains("about -40 dBFS") && r.contains("about -5"), "{r}");
         let long = health(3817, 1, 0.3);
-        let s = issue_message(CaptureIssue::SystemSilent, long, health(12, 1, 0.1), false);
+        let s = issue_message(CaptureIssue::SystemSilent, long, health(12, 1, 0.1), false, false);
         assert!(s.contains("12 s") && s.contains("64 min"), "{s}");
         assert_eq!(fmt_dbfs(0.0), "no sound at all");
         assert_eq!(fmt_duration(89), "89 s");

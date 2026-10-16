@@ -182,7 +182,19 @@ interface MeetingJobsState {
 
   /** 1.45 (B3): rebuild a room meeting's transcript by speaker from its recording.
    *  Resolves true when the new transcript landed. */
-  roomTranscript: (args: { meetingId: string; title: string; micPath: string }) => Promise<boolean>;
+  roomTranscript: (args: {
+    meetingId: string;
+    title: string;
+    micPath: string;
+    /** Review M6: the current lines; any no rebuilt piece covers are kept. */
+    existing: TranscriptSegLike[];
+    /** As for `transcribe`: generate notes from the new transcript after. */
+    thenNotes?: {
+      buildText: (t: TranscriptPatch) => string;
+      prompt: string;
+      trimKey: string;
+    };
+  }) => Promise<boolean>;
 
   /** Stop the running meeting and turn it into a meeting entry. */
   stopMeeting: (args: {
@@ -198,7 +210,7 @@ interface MeetingJobsState {
       /** 1.42: why a side is empty or was rebuilt, in plain English. */
       warnings: string[];
     }) => MeetingDoc;
-    }) => Promise<"saved" | "stop-failed" | "nothing">;
+    }) => Promise<"saved" | "store-failed" | "stop-failed" | "nothing">;
 }
 
 type SetState = (
@@ -683,7 +695,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
       }
     },
 
-    roomTranscript: async ({ meetingId, title, micPath }) => {
+    roomTranscript: async ({ meetingId, title, micPath, existing, thenNotes }) => {
       const claim = claimTask({
         kind: "speakers",
         meetingId,
@@ -691,27 +703,59 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
       });
       if (claim === null) return refuse();
       try {
-        const r = await commands.meetingRoomTranscript(micPath);
+        const r = await commands.meetingRoomTranscript(
+          micPath,
+          existing.map((s) => ({
+            source: s.source,
+            text: s.text,
+            start_ms: s.start_ms ?? 0,
+            speaker: s.speaker ?? null,
+          })),
+        );
         if (r.status !== "ok") throw new Error(r.error);
         const { segments, speakers, failed } = r.data;
         if (segments.length === 0) {
           toast.message("No speech was found in the room recording. The live transcript was kept.");
           return false;
         }
-        const outcome = await meetingsBridge.deliverPatch(meetingId, {
+        const patch = {
           transcript: segments,
           you: segments.map((s) => s.text).join(" "),
           others: "",
+        };
+        const outcome = await meetingsBridge.deliverPatch(meetingId, {
+          ...patch,
           speakersFound: speakers,
+          // The speaker numbers are new, so names given to the old ones no longer apply.
+          speakerNames: undefined,
         });
         if (outcome === "missing" || outcome === "failed") {
           reportLanding(outcome, ROOM_MSGS, meetingId, "transcript");
           return false;
         }
-        reportLanding(outcome, ROOM_MSGS, meetingId, "transcript");
         if (failed > 0) {
-          toast.warning(`${failed} part${failed === 1 ? "" : "s"} of the recording could not be transcribed.`);
+          toast.warning(
+            `${failed} part${failed === 1 ? "" : "s"} of the recording could not be transcribed; the live lines for ${failed === 1 ? "it were" : "them were"} kept.`,
+          );
         }
+        if (!thenNotes) {
+          reportLanding(outcome, ROOM_MSGS, meetingId, "transcript");
+          return true;
+        }
+        const text = thenNotes.buildText(patch as TranscriptPatch);
+        if (!text.trim()) {
+          toast.message("No speech found to post-process.");
+          return true;
+        }
+        releaseTask(claim);
+        void notesJob({
+          meetingId,
+          title,
+          kind: "both",
+          text,
+          prompt: thenNotes.prompt,
+          trimKey: thenNotes.trimKey,
+        });
         return true;
       } catch (e) {
         toast.error(`Transcribing the room failed: ${errText(e)}. The live transcript was kept.`);
@@ -854,7 +898,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
           toast.error(
             "The meeting was recorded, but the meetings store could not be written. The audio is safe — find it under Recordings and transcribe it from there.",
           );
-          return "saved";
+          return "store-failed";
         }
         if (outcome === "disk") {
           toast.success("Meeting saved — open Meetings to see it.");
@@ -865,7 +909,9 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
           detail: warnings.length > 0 ? warnings.join(" ") : undefined,
           target: { section: "meetings", meetingId: m.id },
         });
-        if (you.trim() || others.trim()) {
+        // Review L3: a room meeting goes straight on to its rebuild, which needs the
+        // speech engine; warming the notes model now would compete with it.
+        if ((you.trim() || others.trim()) && !room) {
           // v1.17.0: warm the local notes model so the first "Generate notes"
           // doesn't pay the cold model-load cost.
           // 1.43: sized to this transcript so the notes call reuses the load.

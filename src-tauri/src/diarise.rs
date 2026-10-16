@@ -740,25 +740,26 @@ pub(crate) fn room_pieces(turns: &[SpeakerTurn]) -> Vec<SpeakerTurn> {
 
 /// Transcribe each piece of 16 kHz audio `x`. `transcribe` is the speech engine;
 /// `labelled` says whether speakers were told apart (one voice: lines stay unlabelled).
-/// Returns the lines in time order and how many pieces failed.
+/// Returns the lines in time order, how many pieces failed, and the time ranges that
+/// were transcribed successfully (so the caller can keep live lines outside them).
 pub(crate) fn room_lines(
     x: &[f32],
     pieces: &[SpeakerTurn],
     labelled: bool,
     mut transcribe: impl FnMut(Vec<f32>) -> Result<String, String>,
     mut progress: impl FnMut(usize, usize),
-) -> (Vec<crate::meeting::TranscriptSeg>, usize) {
+) -> (Vec<crate::meeting::TranscriptSeg>, usize, Vec<(u64, u64)>) {
     let at = |ms: u64| ((ms as usize) * SR / 1000).min(x.len());
-    let (mut lines, mut failed) = (Vec::new(), 0usize);
+    let (mut lines, mut failed, mut covered) = (Vec::new(), 0usize, Vec::new());
     for (i, p) in pieces.iter().enumerate() {
         let audio = x[at(p.start_ms)..at(p.end_ms)].to_vec();
-        let peak = audio
-            .chunks(480)
-            .map(|c| (c.iter().map(|s| s * s).sum::<f32>() / c.len().max(1) as f32).sqrt())
-            .fold(0f32, f32::max);
         match transcribe(audio) {
             Ok(text) => {
-                if let Some(text) = crate::meeting::clean_segment_text(&text, Some(peak)) {
+                covered.push((p.start_ms, p.end_ms));
+                // Review M7: no near-floor hallucination drop here. The speaker model has
+                // already decided this is speech, and far-field audio is always "near the
+                // floor", so real one-word replies ("okay", "thank you") were being lost.
+                if let Some(text) = crate::meeting::clean_segment_text(&text, None) {
                     lines.push(crate::meeting::TranscriptSeg {
                         source: "you".into(),
                         text,
@@ -774,7 +775,34 @@ pub(crate) fn room_lines(
         }
         progress(i + 1, pieces.len());
     }
-    (lines, failed)
+    (lines, failed, covered)
+}
+
+/// Review M6: the rebuilt lines, plus every existing line that no successfully
+/// transcribed piece covered (speech the speaker model missed, or a piece that failed).
+/// Kept lines lose their speaker label, since nothing measured who said them.
+pub(crate) fn merge_room(
+    mut lines: Vec<crate::meeting::TranscriptSeg>,
+    existing: Vec<crate::meeting::TranscriptSeg>,
+    covered: &[(u64, u64)],
+) -> Vec<crate::meeting::TranscriptSeg> {
+    for mut s in existing {
+        if s.text.trim().is_empty() || covered.iter().any(|&(a, b)| s.start_ms >= a && s.start_ms < b) {
+            continue;
+        }
+        s.speaker = None;
+        lines.push(s);
+    }
+    lines.sort_by_key(|s| s.start_ms);
+    lines
+}
+
+/// Review M5: the live meeting has the speech engine first. While a meeting (or the
+/// audio test) is recording, a background rebuild waits between steps.
+fn yield_to_meeting() {
+    while crate::meeting::is_meeting_active() {
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }
 
 /// Result of rebuilding a room meeting's transcript.
@@ -792,7 +820,11 @@ pub struct RoomTranscript {
 /// The live transcript is kept by the caller if this fails or finds nothing.
 #[tauri::command]
 #[specta::specta]
-pub async fn meeting_room_transcript(app: tauri::AppHandle, mic_path: String) -> Result<RoomTranscript, String> {
+pub async fn meeting_room_transcript(
+    app: tauri::AppHandle,
+    mic_path: String,
+    existing: Vec<crate::meeting::TranscriptSeg>,
+) -> Result<RoomTranscript, String> {
     use tauri::Manager;
     if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return Err("Speakers are already being separated. Try again when that finishes.".into());
@@ -816,16 +848,23 @@ pub async fn meeting_room_transcript(app: tauri::AppHandle, mic_path: String) ->
         }
         let diar = {
             let mut engine = Engine::load(&seg_path, &emb_path, engine_threads())?;
-            engine.run(&x, |d, t| emit_progress(&a, "separate", d as u64, t as u64))?
+            engine.run(&x, |d, t| {
+                yield_to_meeting();
+                emit_progress(&a, "separate", d as u64, t as u64)
+            })?
         };
         let pieces = room_pieces(&diar.turns);
-        let (segments, failed) = room_lines(
+        let (lines, failed, covered) = room_lines(
             &x,
             &pieces,
             diar.speakers > 1,
-            |audio| crate::meeting::transcribe_retrying(&tm, audio),
+            |audio| {
+                yield_to_meeting();
+                crate::meeting::transcribe_retrying(&tm, audio)
+            },
             |d, t| emit_progress(&a, "transcribe", d as u64, t as u64),
         );
+        let segments = merge_room(lines, existing, &covered);
         if !pieces.is_empty() && failed == pieces.len() {
             return Err("Every part of the recording failed to transcribe. The live transcript was kept.".into());
         }
@@ -1099,15 +1138,35 @@ mod tests {
             SpeakerTurn { start_ms: 0, end_ms: 1_500, speaker: 0 },
             SpeakerTurn { start_ms: 2_000, end_ms: 3_500, speaker: 1 },
         ];
-        let (two, failed) = room_lines(&x, &pieces, true, |_| Ok("kia ora koutou".into()), |_, _| {});
+        let (two, failed, covered) = room_lines(&x, &pieces, true, |_| Ok("kia ora koutou".into()), |_, _| {});
+        assert_eq!(covered, vec![(0, 1_500), (2_000, 3_500)]);
         assert_eq!(failed, 0);
         assert_eq!(two.iter().map(|l| l.speaker).collect::<Vec<_>>(), vec![Some(0), Some(1)]);
         assert_eq!(two[1].start_ms, 2_000);
-        let (one, _) = room_lines(&x, &pieces, false, |_| Ok("kia ora".into()), |_, _| {});
+        let (one, _, _) = room_lines(&x, &pieces, false, |_| Ok("kia ora".into()), |_, _| {});
         assert!(one.iter().all(|l| l.speaker.is_none()));
-        let (none, failed) = room_lines(&x, &pieces, true, |_| Err("engine".into()), |_, _| {});
+        let (none, failed, covered) = room_lines(&x, &pieces, true, |_| Err("engine".into()), |_, _| {});
         assert!(none.is_empty());
         assert_eq!(failed, 2);
+        assert!(covered.is_empty());
+        // Review M7: a genuine short reply in quiet far-field audio is kept.
+        let quiet = vec![0.002f32; SR * 2];
+        let short = vec![SpeakerTurn { start_ms: 0, end_ms: 1_000, speaker: 0 }];
+        let (ok, _, _) = room_lines(&quiet, &short, false, |_| Ok("Okay.".into()), |_, _| {});
+        assert_eq!(ok.len(), 1, "\"Okay.\" in quiet audio is a real reply, not a hallucination");
+    }
+
+    #[test]
+    fn merge_room_keeps_live_lines_nothing_covered_without_their_labels() {
+        let seg = |ms: u64, t: &str, k: Option<u32>| crate::meeting::TranscriptSeg {
+            source: "you".into(), text: t.into(), start_ms: ms, speaker: k,
+        };
+        let rebuilt = vec![seg(1_000, "rebuilt one", Some(0)), seg(9_000, "rebuilt two", Some(1))];
+        let live = vec![seg(1_200, "live inside", Some(1)), seg(5_000, "live in a gap", Some(1)), seg(20_000, "  ", None)];
+        let m = merge_room(rebuilt, live, &[(1_000, 4_000), (9_000, 12_000)]);
+        let texts: Vec<&str> = m.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, vec!["rebuilt one", "live in a gap", "rebuilt two"]);
+        assert_eq!(m[1].speaker, None, "a kept live line has no measured speaker");
     }
 
     /// Plan B3 `room-gate-transcribes-farfield`: words recovered from AMI far-field
@@ -1143,7 +1202,7 @@ mod tests {
             }
             let d = engine.run(&x, |_, _| {}).unwrap();
             let pieces = room_pieces(&d.turns);
-            let (lines, failed) = room_lines(&x, &pieces, d.speakers > 1, &mut words, |_, _| {});
+            let (lines, failed, _) = room_lines(&x, &pieces, d.speakers > 1, &mut words, |_, _| {});
             let room: usize = lines.iter().map(|l| l.text.split_whitespace().count()).sum();
             println!("{m}: energy path {energy} words; room path {room} words in {} lines ({} pieces, {failed} failed, {} speakers)",
                 lines.len(), pieces.len(), d.speakers);

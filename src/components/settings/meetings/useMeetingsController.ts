@@ -550,8 +550,40 @@ export const useMeetingsController = () => {
   };
 
   // ---- transcription / notes: every action hands its work to the store -----
+  // Review M3: a room meeting is always transcribed by speaker turns, never by the
+  // call path's energy gate (which loses far-field speech).
+  const isRoom = (m: Meeting | null | undefined): m is Meeting & { micPath: string } =>
+    !!m && m.mode === "room" && !!m.micPath && /\.wav$/i.test(m.micPath);
+
+  const runRoom = (m: Meeting & { micPath: string }, withNotes: boolean) =>
+    confirmDestructive(
+      "Rebuild the transcript by speaker?",
+      "The lines are replaced with a fresh transcript from the recording, and speaker names you gave are cleared. Lines the rebuild can't cover are kept.",
+      "Rebuild",
+      async () => {
+        if (withNotes) setTab("notes");
+        await useMeetingJobs.getState().roomTranscript({
+          meetingId: m.id,
+          title: titleOf(m),
+          micPath: m.micPath,
+          existing: m.transcript ?? [],
+          thenNotes: withNotes
+            ? {
+                buildText: (t: TranscriptPatch) => {
+                  const next = { ...m, you: t.you, others: t.others, transcript: t.transcript as TranscriptSeg[] };
+                  return notesInput(next, visibleSegs(next));
+                },
+                prompt: customPrompt.trim(),
+                trimKey: trimKeyOf(m),
+              }
+            : undefined,
+        });
+      },
+    );
+
   const onReTranscribe = async () => {
     if (!active || busy) return;
+    if (isRoom(active)) return runRoom(active, false);
     await useMeetingJobs.getState().transcribe({
       meetingId: active.id,
       title: titleOf(active),
@@ -571,12 +603,8 @@ export const useMeetingsController = () => {
   };
 
   const onRoomTranscript = async () => {
-    if (!active || busy || !active.micPath) return;
-    await useMeetingJobs.getState().roomTranscript({
-      meetingId: active.id,
-      title: titleOf(active),
-      micPath: active.micPath,
-    });
+    if (!active || busy || !isRoom(active)) return;
+    runRoom(active, false);
   };
 
   const onPostProcess = async () => {
@@ -604,6 +632,7 @@ export const useMeetingsController = () => {
 
   const onBoth = async () => {
     if (!active || busy) return;
+    if (isRoom(active)) return runRoom(active, true);
     const m = active;
     setTab("notes");
     await useMeetingJobs.getState().transcribe({

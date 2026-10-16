@@ -22,6 +22,7 @@ import { useNav } from "../../stores/navStore";
 import { useRecorder } from "../../stores/recorderStore";
 import { useMeetingJobs } from "../../stores/meetingJobsStore";
 import { elapsedOf } from "../../stores/recorderProtocol";
+import { MeetingModePicker } from "../meetings/MeetingModePicker";
 import { useNotes, noteTitle } from "../../stores/notesStore";
 import { useActivity } from "../../stores/activityStore";
 import { meetingsBridge } from "../../stores/meetingJobsStore";
@@ -64,6 +65,8 @@ export const TodayPage: React.FC = () => {
   const starting = useRecorder((s) => s.starting);
   const elapsedBase = useRecorder((s) => s.elapsedBase);
   const runStartedAt = useRecorder((s) => s.runStartedAt);
+  const mode = useRecorder((s) => s.mode);
+  const stopping = useMeetingJobs((s) => s.stopping !== null);
   const running = useRunning();
   const outcomes = useActivity((s) => s.items);
   const notes = useNotes((s) => s.notes);
@@ -190,6 +193,7 @@ export const TodayPage: React.FC = () => {
           </p>
         </header>
 
+        {!recording && !stopping && <MeetingModePicker className="self-start" />}
         <div className="grid gap-3 kx-today-actions">
           <button
             type="button"
@@ -201,12 +205,14 @@ export const TodayPage: React.FC = () => {
               {recording ? <UsersRound size={20} /> : <Circle size={18} fill="currentColor" />}
             </span>
             <span className="kx-heading text-[14.5px]">
-              {recording ? "Meeting in progress" : "Record a meeting"}
+              {recording ? "Meeting in progress" : mode === "room" ? "Record in the room" : "Record a call"}
             </span>
             <span className="text-[12.5px] text-[var(--kx-selected-ink)]">
               {recording
                 ? `${fmtClock(elapsedOf({ elapsedBase, runStartedAt }))} · show it`
-                : "Your mic and the call's audio, kept apart"}
+                : mode === "room"
+                  ? "Your microphone, sorted by speaker when you stop"
+                  : "Your mic and the call's audio, kept apart"}
             </span>
           </button>
           <button type="button" onClick={newNote} className="kx-action">

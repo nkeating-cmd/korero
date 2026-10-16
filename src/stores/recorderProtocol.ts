@@ -2,7 +2,7 @@
 // companion window. Types and constants only — importing this file must not
 // start anything, because the companion imports it too.
 
-import type { MeetingFlag } from "../components/meetings/model";
+import type { MeetingFlag, MeetingMode } from "../components/meetings/model";
 
 export interface LiveSegment {
   source: string;
@@ -29,6 +29,10 @@ export interface RecorderSnapshot {
   flags: MeetingFlag[];
   warnings: CaptureWarning[];
   devices: { mic: string; system: string } | null;
+  /** 1.45: the meeting type chosen for the next recording. */
+  mode: MeetingMode;
+  /** 1.45: the type of the meeting being recorded, if one is. */
+  recordingMode: MeetingMode | null;
 }
 
 export type RecorderCommand =
@@ -39,7 +43,9 @@ export type RecorderCommand =
   | { action: "title"; title: string }
   | { action: "dismiss-warning"; at: number }
   /** Start a new meeting from the companion. */
-  | { action: "start" }
+  | { action: "start"; mode?: MeetingMode }
+  /** 1.45: choose the meeting type before starting. */
+  | { action: "mode"; mode: MeetingMode }
   /** Bring the main window forward on the meeting (live, or the newest). */
   | { action: "open" }
   | { action: "hello" };

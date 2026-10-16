@@ -115,6 +115,15 @@ pub(crate) const ROOM_QUIET_RMS: f32 = 0.003;
 /// Set for the meeting being recorded: is it "In the room"? Read when a live
 /// segmenter is built (`with_live_stats`), so offline paths never see it.
 pub(crate) static ROOM_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The live energy floor for a meeting type.
+pub(crate) fn live_floor(room: bool) -> f32 {
+    if room {
+        ROOM_QUIET_RMS
+    } else {
+        SEG_QUIET_RMS
+    }
+}
 /// Silero consumes exactly 30 ms frames at 16 kHz (= 480 samples) — the same
 /// frame the capture resampler emits. Off-size frames (e.g. the resampler's
 /// closing tail) bypass the VAD and fall back to the energy gate.
@@ -310,9 +319,7 @@ impl Segmenter {
     /// the two live capture paths call this (cpal and native WASAPI).
     pub(crate) fn with_live_stats(mut self) -> Self {
         self.stats = Some(live_stats(self.source));
-        if ROOM_MODE.load(Ordering::Relaxed) {
-            self.floor = ROOM_QUIET_RMS;
-        }
+        self.floor = live_floor(ROOM_MODE.load(Ordering::Relaxed));
         self
     }
 
@@ -799,15 +806,12 @@ mod korero_live_stats_tests {
 
     #[test]
     fn the_room_floor_applies_only_to_live_segmenters_of_a_room_meeting() {
+        // Pure: no test touches ROOM_MODE, so parallel tests can't see each other's
+        // meeting type (review L10).
+        assert_eq!(live_floor(true), ROOM_QUIET_RMS);
+        assert_eq!(live_floor(false), SEG_QUIET_RMS);
         let (tx, _rx) = mpsc::sync_channel::<LiveSegment>(8);
-        ROOM_MODE.store(true, Ordering::Relaxed);
-        let live = Segmenter::new("you", tx.clone(), None).with_live_stats();
-        let offline = Segmenter::new("you", tx.clone(), None);
-        ROOM_MODE.store(false, Ordering::Relaxed);
-        let call = Segmenter::new("you", tx, None).with_live_stats();
-        assert_eq!(live.floor, ROOM_QUIET_RMS);
-        assert_eq!(offline.floor, SEG_QUIET_RMS, "offline rebuilds never use the room floor");
-        assert_eq!(call.floor, SEG_QUIET_RMS);
+        assert_eq!(Segmenter::new("you", tx, None).floor, SEG_QUIET_RMS, "offline rebuilds never use the room floor");
     }
 
     #[test]

@@ -74,7 +74,7 @@ export const MeetingsLibrary: React.FC<{ c: MeetingsController; wide?: boolean }
     >
       <div className="px-4 pt-5 pb-3 flex flex-col gap-3">
         <h1 className="kx-title">Meetings</h1>
-        {!recording && <MeetingModePicker />}
+        {!recording && !c.stopping && <MeetingModePicker />}
         <div className="flex gap-2">
           <button
             type="button"
