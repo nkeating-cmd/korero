@@ -19,6 +19,9 @@ export interface TranscriptSeg {
   speaker?: number | null;
 }
 
+/** 1.45 (B3): "On a call" (mic + the call's audio) or "In the room" (mic only). */
+export type MeetingMode = "call" | "room";
+
 /** A moment the user flagged while recording (1.42). */
 export interface MeetingFlag {
   /** Seconds into the recording (pause time excluded, so it lines up with the
@@ -60,6 +63,8 @@ export interface Meeting {
   speakerNames?: string[];
   /** 1.45: the two meetings this one was combined from (set by Combine). */
   mergedFrom?: string[];
+  /** 1.45 (B3): how it was recorded. Absent on older meetings, which were calls. */
+  mode?: MeetingMode;
 }
 
 export interface RecordingFile {
@@ -133,6 +138,8 @@ export const labelFor = (source: string, youLabel: string, othersLabel: string) 
 export const separationBlocker = (m: Meeting): string | null => {
   if (!m.micPath || !/\.wav$/i.test(m.micPath))
     return "Needs a recorded microphone file (imports are not supported yet).";
+  // A room meeting's transcript is rebuilt from its recording, so its lines need no timings.
+  if (m.mode === "room") return null;
   if (m.mergedFrom && m.mergedFrom.length > 0)
     return "A combined meeting mixes two recordings, so its lines can't be matched to one.";
   const segs = m.transcript ?? [];
@@ -145,6 +152,14 @@ export const separationBlocker = (m: Meeting): string | null => {
       return "Its transcript is not in time order (a combined meeting, for example), so its lines can't be matched to one recording.";
   }
   return null;
+};
+
+/** 1.45: the second header pill, saying how the meeting was recorded. */
+export const sourceChipLabel = (m: Meeting): string => {
+  if (m.imported) return "Imported file";
+  if (m.mode === "room")
+    return m.speakersFound && m.speakersFound > 1 ? `${m.speakersFound} speakers` : "In the room";
+  return m.systemCaptured ? `${m.youLabel} + ${m.othersLabel}` : `${m.youLabel} only`;
 };
 
 /**

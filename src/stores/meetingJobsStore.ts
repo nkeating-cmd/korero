@@ -96,8 +96,9 @@ export interface MeetingTask {
   path?: string;
   startedAt: number;
   progress: { window: number; total: number | null } | null;
-  /** 1.45 "speakers" task: fetching the models (first use) or separating. */
-  stage?: "download" | "separate";
+  /** 1.45 "speakers" task: fetching the models (first use), separating, or
+   *  transcribing a room meeting by speaker. */
+  stage?: "download" | "separate" | "transcribe";
 }
 
 export interface TranscriptSegLike {
@@ -179,8 +180,14 @@ interface MeetingJobsState {
     makeMeeting: (transcript: string) => MeetingDoc;
   }) => Promise<boolean>;
 
+  /** 1.45 (B3): rebuild a room meeting's transcript by speaker from its recording.
+   *  Resolves true when the new transcript landed. */
+  roomTranscript: (args: { meetingId: string; title: string; micPath: string }) => Promise<boolean>;
+
   /** Stop the running meeting and turn it into a meeting entry. */
   stopMeeting: (args: {
+    /** 1.45: an "In the room" meeting, whose transcript is rebuilt right after. */
+    room?: boolean;
     /** Pure: builds the new meeting from the stop result. */
     makeMeeting: (r: {
       you: string;
@@ -242,7 +249,7 @@ function attachGlobalListeners(set: SetState) {
     console.error("Could not attach the transcription progress listener:", err),
   );
   // 1.45: "Separate speakers" progress (model download on first use, then segments).
-  listen<{ stage: "download" | "separate"; done: number; total: number }>(
+  listen<{ stage: "download" | "separate" | "transcribe"; done: number; total: number }>(
     "meeting-speakers-progress",
     (e) => {
       set((s) =>
@@ -337,6 +344,11 @@ const SPEAKER_MSGS = {
   done: "Speakers separated.",
   saved: "Speakers separated and saved.",
   what: "Separating speakers",
+};
+const ROOM_MSGS = {
+  done: "The room transcript is ready, sorted by speaker.",
+  saved: "The room transcript is ready and saved.",
+  what: "Transcribing the room",
 };
 const TRANSCRIPT_MSGS = {
   done: "Transcription finished.",
@@ -671,6 +683,50 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
       }
     },
 
+    roomTranscript: async ({ meetingId, title, micPath }) => {
+      const claim = claimTask({
+        kind: "speakers",
+        meetingId,
+        label: `transcribing the room in “${title}”`,
+      });
+      if (claim === null) return refuse();
+      try {
+        const r = await commands.meetingRoomTranscript(micPath);
+        if (r.status !== "ok") throw new Error(r.error);
+        const { segments, speakers, failed } = r.data;
+        if (segments.length === 0) {
+          toast.message("No speech was found in the room recording. The live transcript was kept.");
+          return false;
+        }
+        const outcome = await meetingsBridge.deliverPatch(meetingId, {
+          transcript: segments,
+          you: segments.map((s) => s.text).join(" "),
+          others: "",
+          speakersFound: speakers,
+        });
+        if (outcome === "missing" || outcome === "failed") {
+          reportLanding(outcome, ROOM_MSGS, meetingId, "transcript");
+          return false;
+        }
+        reportLanding(outcome, ROOM_MSGS, meetingId, "transcript");
+        if (failed > 0) {
+          toast.warning(`${failed} part${failed === 1 ? "" : "s"} of the recording could not be transcribed.`);
+        }
+        return true;
+      } catch (e) {
+        toast.error(`Transcribing the room failed: ${errText(e)}. The live transcript was kept.`);
+        logActivity({
+          status: "failed",
+          title: "Transcribing the room failed",
+          detail: errText(e),
+          target: { section: "meetings", meetingId, tab: "audio" },
+        });
+        return false;
+      } finally {
+        releaseTask(claim);
+      }
+    },
+
     importFile: async ({ path, label, makeMeeting, notesPrompt }) => {
       const claim = claimTask({
         kind: "import",
@@ -766,7 +822,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
       }
     },
 
-    stopMeeting: async ({ makeMeeting }) => {
+    stopMeeting: async ({ makeMeeting, room }) => {
       if (get().stopping) return "nothing";
       set(() => ({ stopping: { startedAt: Date.now() } }));
       try {
@@ -814,7 +870,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
           // doesn't pay the cold model-load cost.
           // 1.43: sized to this transcript so the notes call reuses the load.
           commands.meetingPrewarmPostProcess(you.length + others.length).catch(() => {});
-        } else if (warnings.length === 0) {
+        } else if (warnings.length === 0 && !room) {
           toast.message(
             "Audio saved, but transcription was empty — you can re-transcribe it.",
           );

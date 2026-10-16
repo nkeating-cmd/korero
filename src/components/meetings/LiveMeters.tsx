@@ -32,7 +32,9 @@ export const LiveMeters: React.FC<{
   devices: { mic: string; system: string } | null;
   startedAt: number;
   compact?: boolean;
-}> = memo(({ active, paused, devices, startedAt, compact }) => {
+  /** 1.45: an "In the room" meeting: one microphone, no call. */
+  room?: boolean;
+}> = memo(({ active, paused, devices, startedAt, compact, room }) => {
   const [sides, setSides] = useState<{ you: SideState; others: SideState }>({
     you: empty(),
     others: empty(),
@@ -128,13 +130,13 @@ export const LiveMeters: React.FC<{
   // means, while it can still be fixed.
   const othersSince = sides.others.lastHeard ?? startedRef.current;
   const othersQuiet = Math.max(0, Math.floor((Date.now() - othersSince) / 1000));
-  const showQuietHint = active && !paused && !quietOk && othersQuiet >= QUIET_CALL_HINT_SECS;
+  const showQuietHint = !room && active && !paused && !quietOk && othersQuiet >= QUIET_CALL_HINT_SECS;
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid grid-cols-2 gap-3">
-        {card("you", "You", devices?.mic ?? "Microphone")}
-        {card("others", "Others", devices?.system ?? "Call audio")}
+      <div className={`grid gap-3 ${room ? "grid-cols-1" : "grid-cols-2"}`}>
+        {card("you", room ? "Room" : "You", devices?.mic ?? "Microphone")}
+        {!room && card("others", "Others", devices?.system ?? "Call audio")}
       </div>
       {showQuietHint && (
         <div role="status" className="kx-banner kx-banner-warn">

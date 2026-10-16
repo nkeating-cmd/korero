@@ -570,6 +570,15 @@ export const useMeetingsController = () => {
     });
   };
 
+  const onRoomTranscript = async () => {
+    if (!active || busy || !active.micPath) return;
+    await useMeetingJobs.getState().roomTranscript({
+      meetingId: active.id,
+      title: titleOf(active),
+      micPath: active.micPath,
+    });
+  };
+
   const onPostProcess = async () => {
     if (!active || busy) return;
     // The trim is applied HERE, and flagged moments are added for the model.
@@ -1135,6 +1144,7 @@ export const useMeetingsController = () => {
     // actions
     onReTranscribe,
     onSeparateSpeakers,
+    onRoomTranscript,
     activeCanSeparate,
     separateBlocker,
     onPostProcess,

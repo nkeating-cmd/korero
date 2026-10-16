@@ -71,7 +71,7 @@ export const TranscriptPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
       <div className="flex flex-wrap items-center gap-2">
         <span className="kx-meta">Speakers</span>
         {speaker("you")}
-        {speaker("others")}
+        {m.mode !== "room" && speaker("others")}
         <div className="flex-1" />
         {c.teachWrong === null && (
           <button
@@ -88,7 +88,7 @@ export const TranscriptPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
         <AddCorrectionInline initialWrong={c.teachWrong} onDone={() => c.setTeachWrong(null)} />
       )}
 
-      {!m.systemCaptured && !m.imported && (
+      {!m.systemCaptured && !m.imported && m.mode !== "room" && (
         <p className="kx-banner kx-banner-warn">
           <TriangleAlert size={16} />
           <span>The call's audio was not captured for this meeting — only your mic was recorded.</span>

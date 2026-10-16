@@ -107,8 +107,16 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
 
       <section aria-labelledby="kx-speakers" className="kx-card p-4 flex flex-col gap-3">
         <h2 id="kx-speakers" className="kx-heading">
-          Separate speakers
+          {m.mode === "room" ? "Transcript by speaker" : "Separate speakers"}
         </h2>
+        {m.mode === "room" ? (
+          <p className="kx-meta">
+            Kōrero rebuilt this meeting's transcript from the room recording when it ended, one line
+            per speaker turn. Run it again after changing the speech model.
+            {m.speakersFound != null &&
+              ` It found ${m.speakersFound} ${m.speakersFound === 1 ? "voice" : "voices"}.`}
+          </p>
+        ) : (
         <p className="kx-meta">
           For a meeting in a room: works out who said what from your microphone recording and labels
           each line Speaker 1, Speaker 2 and so on. It runs on this computer. The first time, it
@@ -116,15 +124,20 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
           {m.speakersFound != null &&
             ` Last run found ${m.speakersFound} ${m.speakersFound === 1 ? "voice" : "voices"}.`}
         </p>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             className="kx-btn kx-btn-secondary"
-            onClick={() => void c.onSeparateSpeakers()}
+            onClick={() => void (m.mode === "room" ? c.onRoomTranscript() : c.onSeparateSpeakers())}
             disabled={!!c.busy || !c.activeCanSeparate || meetingLive}
           >
             {c.busy === "speakers" && c.busyMeetingId === m.id ? <Loader2 size={14} className="animate-spin" /> : <Users size={14} />}
-            {m.speakersFound != null ? "Separate speakers again" : "Separate speakers"}
+            {m.mode === "room"
+              ? "Rebuild by speaker"
+              : m.speakersFound != null
+                ? "Separate speakers again"
+                : "Separate speakers"}
           </button>
           {c.separateBlocker && <span className="kx-meta">{c.separateBlocker}</span>}
         </div>
@@ -132,7 +145,11 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
           <div>
             <div className="flex justify-between kx-meta mb-1">
               <span aria-live="polite">
-                {c.task.stage === "download" ? "Downloading the speaker models" : "Separating speakers"}
+                {c.task.stage === "download"
+                  ? "Downloading the speaker models"
+                  : c.task.stage === "transcribe"
+                    ? "Transcribing each speaker"
+                    : "Separating speakers"}
               </span>
               <span className="kx-mono">
                 {c.task.progress?.total

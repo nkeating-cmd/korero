@@ -694,6 +694,158 @@ pub async fn meeting_separate_speakers(
     })
 }
 
+
+// ---------------------------------------------------------------------------
+// Kōrero 1.45 (B3): the transcript of an "In the room" meeting, built from turns.
+//
+// The live transcript cuts speech with an energy gate, and on a far-field room
+// microphone most speech sits below it (AMI: 2-9% of labelled speech passed 0.010 in
+// three of four meetings). The segmentation model finds that speech well (7-15%
+// missed in M0), so the saved transcript of a room meeting is rebuilt from its turns:
+// each turn is transcribed on its own, so every line already has its speaker and its
+// real start time, and no line straddles a change of speaker.
+
+/// The longest piece transcribed in one call, and the shortest worth a call.
+const PIECE_MAX_MS: u64 = 20_000;
+const PIECE_MIN_MS: u64 = 400;
+
+/// Turns to transcription pieces: sorted by start; where a turn overlaps the piece
+/// before it, it starts where that piece ends (overlapping speech is transcribed once,
+/// for whoever was already speaking); pieces under `PIECE_MIN_MS` are dropped; longer
+/// than `PIECE_MAX_MS` are split into equal parts.
+pub(crate) fn room_pieces(turns: &[SpeakerTurn]) -> Vec<SpeakerTurn> {
+    let mut v: Vec<SpeakerTurn> = turns.to_vec();
+    v.sort_by_key(|t| (t.start_ms, t.speaker));
+    let mut out: Vec<SpeakerTurn> = Vec::new();
+    let mut covered = 0u64;
+    for t in v {
+        let start = t.start_ms.max(covered);
+        if t.end_ms <= start || t.end_ms - start < PIECE_MIN_MS {
+            continue;
+        }
+        let len = t.end_ms - start;
+        let parts = len.div_ceil(PIECE_MAX_MS).max(1);
+        let step = len.div_ceil(parts);
+        for k in 0..parts {
+            let s = start + k * step;
+            let e = (s + step).min(t.end_ms);
+            if e > s {
+                out.push(SpeakerTurn { start_ms: s, end_ms: e, speaker: t.speaker });
+            }
+        }
+        covered = covered.max(t.end_ms);
+    }
+    out
+}
+
+/// Transcribe each piece of 16 kHz audio `x`. `transcribe` is the speech engine;
+/// `labelled` says whether speakers were told apart (one voice: lines stay unlabelled).
+/// Returns the lines in time order and how many pieces failed.
+pub(crate) fn room_lines(
+    x: &[f32],
+    pieces: &[SpeakerTurn],
+    labelled: bool,
+    mut transcribe: impl FnMut(Vec<f32>) -> Result<String, String>,
+    mut progress: impl FnMut(usize, usize),
+) -> (Vec<crate::meeting::TranscriptSeg>, usize) {
+    let at = |ms: u64| ((ms as usize) * SR / 1000).min(x.len());
+    let (mut lines, mut failed) = (Vec::new(), 0usize);
+    for (i, p) in pieces.iter().enumerate() {
+        let audio = x[at(p.start_ms)..at(p.end_ms)].to_vec();
+        let peak = audio
+            .chunks(480)
+            .map(|c| (c.iter().map(|s| s * s).sum::<f32>() / c.len().max(1) as f32).sqrt())
+            .fold(0f32, f32::max);
+        match transcribe(audio) {
+            Ok(text) => {
+                if let Some(text) = crate::meeting::clean_segment_text(&text, Some(peak)) {
+                    lines.push(crate::meeting::TranscriptSeg {
+                        source: "you".into(),
+                        text,
+                        start_ms: p.start_ms,
+                        speaker: labelled.then_some(p.speaker),
+                    });
+                }
+            }
+            Err(err) => {
+                failed += 1;
+                log::warn!("room transcript: piece {} of {} failed: {err}", i + 1, pieces.len());
+            }
+        }
+        progress(i + 1, pieces.len());
+    }
+    (lines, failed)
+}
+
+/// Result of rebuilding a room meeting's transcript.
+#[derive(Clone, Serialize, Deserialize, Type)]
+pub struct RoomTranscript {
+    pub segments: Vec<crate::meeting::TranscriptSeg>,
+    pub speakers: u32,
+    pub failed: u32,
+    pub audio_s: f64,
+    pub took_s: f64,
+}
+
+/// Kōrero 1.45 (B3): rebuild an "In the room" meeting's transcript from its
+/// microphone recording, one line per speaker turn, each labelled with its speaker.
+/// The live transcript is kept by the caller if this fails or finds nothing.
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_room_transcript(app: tauri::AppHandle, mic_path: String) -> Result<RoomTranscript, String> {
+    use tauri::Manager;
+    if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("Speakers are already being separated. Try again when that finishes.".into());
+    }
+    let _running = RunGuard;
+    let started = Instant::now();
+    let dir = crate::portable::models_dir(&app)
+        .map_err(|err| format!("Could not find the models folder: {err}"))?
+        .join("diarise");
+    let a = app.clone();
+    let seg_path = ensure_model(&dir, &SEGMENTATION, |d, t| emit_progress(&a, "download", d, t)).await?;
+    let emb_path = ensure_model(&dir, &EMBEDDING, |d, t| emit_progress(&a, "download", d, t)).await?;
+    let tm = app.state::<std::sync::Arc<crate::managers::transcription::TranscriptionManager>>().inner().clone();
+    tm.initiate_model_load();
+    let a = app.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<RoomTranscript, String> {
+        emit_progress(&a, "separate", 0, 1);
+        let x = decode_wav_16k(&mic_path)?;
+        if x.len() < SR * 2 {
+            return Err("The recording is too short to transcribe.".into());
+        }
+        let diar = {
+            let mut engine = Engine::load(&seg_path, &emb_path, engine_threads())?;
+            engine.run(&x, |d, t| emit_progress(&a, "separate", d as u64, t as u64))?
+        };
+        let pieces = room_pieces(&diar.turns);
+        let (segments, failed) = room_lines(
+            &x,
+            &pieces,
+            diar.speakers > 1,
+            |audio| crate::meeting::transcribe_retrying(&tm, audio),
+            |d, t| emit_progress(&a, "transcribe", d as u64, t as u64),
+        );
+        if !pieces.is_empty() && failed == pieces.len() {
+            return Err("Every part of the recording failed to transcribe. The live transcript was kept.".into());
+        }
+        log::info!(
+            "room transcript: {} speakers, {} pieces, {} lines, {} failed, {:.0} s audio in {:.1} s",
+            diar.speakers, pieces.len(), segments.len(), failed, x.len() as f64 / SR as f64,
+            started.elapsed().as_secs_f64()
+        );
+        Ok(RoomTranscript {
+            segments,
+            speakers: diar.speakers,
+            failed: failed as u32,
+            audio_s: x.len() as f64 / SR as f64,
+            took_s: started.elapsed().as_secs_f64(),
+        })
+    })
+    .await
+    .map_err(|err| format!("The room transcript stopped unexpectedly: {err}"))?
+}
+
 // ---------------------------------------------------------------------------
 // Scoring (used by the AMI regression check; kept here so the check and the engine
 // cannot drift apart).
@@ -925,6 +1077,81 @@ mod tests {
         assert!(timing_problem(&[seg("you", 0), seg("you", 0), seg("you", 0)]).is_some(), "pre-1.26: no timings");
         assert!(timing_problem(&[seg("you", 0), seg("you", 9_000), seg("you", 1_000)]).is_some(), "a combined meeting");
         assert!(timing_problem(&[seg("you", 0)]).is_none(), "a single line at 0 s is a real timing");
+    }
+
+    #[test]
+    fn room_pieces_transcribe_overlap_once_drop_slivers_and_split_long_turns() {
+        let t = |s: u64, e: u64, k: u32| SpeakerTurn { start_ms: s, end_ms: e, speaker: k };
+        let p = room_pieces(&[t(0, 5_000, 0), t(4_000, 9_000, 1), t(8_900, 9_100, 0), t(10_000, 55_000, 1)]);
+        assert_eq!(p[0], t(0, 5_000, 0));
+        assert_eq!(p[1], t(5_000, 9_000, 1), "the overlap goes to whoever was already speaking");
+        assert!(!p.iter().any(|x| x.start_ms >= 8_900 && x.end_ms <= 9_100), "a 200 ms sliver is dropped");
+        let long: Vec<_> = p.iter().filter(|x| x.start_ms >= 10_000).collect();
+        assert_eq!(long.len(), 3, "45 s is split into three parts of 15 s");
+        assert!(long.iter().all(|x| x.end_ms - x.start_ms <= 20_000 && x.speaker == 1));
+        assert_eq!(long.last().unwrap().end_ms, 55_000);
+    }
+
+    #[test]
+    fn room_lines_label_speakers_only_when_there_is_more_than_one() {
+        let x = vec![0.05f32; SR * 4];
+        let pieces = vec![
+            SpeakerTurn { start_ms: 0, end_ms: 1_500, speaker: 0 },
+            SpeakerTurn { start_ms: 2_000, end_ms: 3_500, speaker: 1 },
+        ];
+        let (two, failed) = room_lines(&x, &pieces, true, |_| Ok("kia ora koutou".into()), |_, _| {});
+        assert_eq!(failed, 0);
+        assert_eq!(two.iter().map(|l| l.speaker).collect::<Vec<_>>(), vec![Some(0), Some(1)]);
+        assert_eq!(two[1].start_ms, 2_000);
+        let (one, _) = room_lines(&x, &pieces, false, |_| Ok("kia ora".into()), |_, _| {});
+        assert!(one.iter().all(|l| l.speaker.is_none()));
+        let (none, failed) = room_lines(&x, &pieces, true, |_| Err("engine".into()), |_, _| {});
+        assert!(none.is_empty());
+        assert_eq!(failed, 2);
+    }
+
+    /// Plan B3 `room-gate-transcribes-farfield`: words recovered from AMI far-field
+    /// meetings by today's energy path (the Stop rebuild) against the room path.
+    /// Local and manual, like `diar_ami_der`; also needs KORERO_PARAKEET_DIR.
+    #[test]
+    #[ignore]
+    fn room_transcript_recovers_far_field_speech() {
+        use transcribe_rs::onnx::parakeet::{ParakeetModel, ParakeetParams};
+        use transcribe_rs::onnx::Quantization;
+        let ami = std::path::PathBuf::from(std::env::var("KORERO_AMI_DIR").expect("KORERO_AMI_DIR"));
+        let models = std::path::PathBuf::from(std::env::var("KORERO_DIARISE_MODELS").expect("KORERO_DIARISE_MODELS"));
+        let pk = std::path::PathBuf::from(std::env::var("KORERO_PARAKEET_DIR").expect("KORERO_PARAKEET_DIR"));
+        let mut engine = Engine::load(&models.join(SEGMENTATION.name), &models.join(EMBEDDING.name), 4).unwrap();
+        let mut asr = ParakeetModel::load(&pk, &Quantization::Int8).unwrap();
+        let mut words = |audio: Vec<f32>| -> Result<String, String> {
+            asr.transcribe_with(&audio, &ParakeetParams::default()).map(|r| r.text).map_err(|e| e.to_string())
+        };
+        let (mut total_energy, mut total_room) = (0usize, 0usize);
+        for m in ["ES2004a", "TS3003a", "IS1009a"] {
+            let x = decode_wav_16k(ami.join("wav").join(format!("{m}.Array1-01.wav")).to_str().unwrap()).unwrap();
+            // Today's Stop rebuild: the energy segmenter, no VAD.
+            let (tx, rx) = std::sync::mpsc::sync_channel::<crate::meeting_capture::LiveSegment>(100_000);
+            let mut seg = crate::meeting_capture::Segmenter::new("you", tx, None);
+            for f in x.chunks(480) {
+                seg.push(f);
+            }
+            seg.finish();
+            drop(seg);
+            let mut energy = 0usize;
+            for s in rx.try_iter() {
+                energy += words(s.samples).map(|t| t.split_whitespace().count()).unwrap_or(0);
+            }
+            let d = engine.run(&x, |_, _| {}).unwrap();
+            let pieces = room_pieces(&d.turns);
+            let (lines, failed) = room_lines(&x, &pieces, d.speakers > 1, &mut words, |_, _| {});
+            let room: usize = lines.iter().map(|l| l.text.split_whitespace().count()).sum();
+            println!("{m}: energy path {energy} words; room path {room} words in {} lines ({} pieces, {failed} failed, {} speakers)",
+                lines.len(), pieces.len(), d.speakers);
+            total_energy += energy;
+            total_room += room;
+        }
+        println!("total: energy {total_energy} words, room {total_room} words");
+        assert!(total_room > total_energy, "the room path must recover more far-field speech");
     }
 
     #[test]

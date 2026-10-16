@@ -32,7 +32,18 @@ import {
   defaultMeetingTitle,
   newId,
   type Meeting,
+  type MeetingMode,
 } from "../components/meetings/model";
+
+// 1.45 (B3): the meeting type is chosen before Record and remembered on this computer.
+const MODE_KEY = "korero.meetingMode";
+const savedMode = (): MeetingMode => {
+  try {
+    return localStorage.getItem(MODE_KEY) === "room" ? "room" : "call";
+  } catch {
+    return "call";
+  }
+};
 
 interface RecorderState extends Omit<RecorderSnapshot, "stopping"> {
   starting: boolean;
@@ -41,6 +52,11 @@ interface RecorderState extends Omit<RecorderSnapshot, "stopping"> {
   /** When the last capture test finished, and what it found (this session). */
   lastTest: { at: number; micOk: boolean; systemOk: boolean } | null;
   captureError: string | null;
+  /** 1.45: the type the next meeting will be recorded as. */
+  mode: MeetingMode;
+  /** 1.45: the type of the meeting being recorded now (fixed at Start). */
+  recordingMode: MeetingMode | null;
+  setMode: (mode: MeetingMode) => void;
   restore: () => Promise<void>;
   start: () => Promise<boolean>;
   stop: () => Promise<void>;
@@ -171,6 +187,17 @@ export const useRecorder = create<RecorderState>((set, get) => {
     warnings: [],
     devices: null,
     captureError: null,
+    mode: savedMode(),
+    recordingMode: null,
+
+    setMode: (mode) => {
+      set({ mode });
+      try {
+        localStorage.setItem(MODE_KEY, mode);
+      } catch {
+        /* a per-computer convenience only */
+      }
+    },
 
     restore: async () => {
       attach();
@@ -184,6 +211,9 @@ export const useRecorder = create<RecorderState>((set, get) => {
             elapsedBase: d.elapsed_secs,
             runStartedAt: d.paused ? null : Date.now(),
             systemCaptured: d.system_captured,
+            // Back after a reload mid-meeting: a meeting without call audio was most
+            // likely chosen as "In the room"; otherwise it is a call.
+            recordingMode: get().recordingMode ?? (d.system_captured ? "call" : get().mode),
             title: get().title || defaultMeetingTitle(Date.now() - d.elapsed_secs * 1000),
           });
           void get().refreshDevices();
@@ -202,7 +232,8 @@ export const useRecorder = create<RecorderState>((set, get) => {
       set({ starting: true, captureError: null });
       void get().refreshDevices();
       try {
-        const res = await commands.meetingStartCapture();
+        const mode = get().mode;
+        const res = await commands.meetingStartCapture(mode === "room");
         if (res.status !== "ok") {
           toast.error(res.error);
           return false;
@@ -213,12 +244,13 @@ export const useRecorder = create<RecorderState>((set, get) => {
           elapsedBase: 0,
           runStartedAt: Date.now(),
           systemCaptured: res.data,
+          recordingMode: mode,
           title: defaultMeetingTitle(Date.now()),
           live: [],
           flags: [],
           warnings: [],
         });
-        if (!res.data) {
+        if (!res.data && mode !== "room") {
           toast.message("System audio couldn't be captured — recording your mic only.");
         }
         return true;
@@ -235,6 +267,9 @@ export const useRecorder = create<RecorderState>((set, get) => {
       if (!st.recording) return;
       const durationSec = Math.round(now());
       const captured = st.systemCaptured ?? false;
+      const mode: MeetingMode = st.recordingMode ?? "call";
+      const room = mode === "room";
+      let saved: { id: string; micPath: string | null; title: string } | null = null;
       const flags = st.flags;
       const title = st.title.trim() || defaultMeetingTitle(Date.now());
       const liveWarnings = st.warnings.map((w) => w.text);
@@ -244,8 +279,9 @@ export const useRecorder = create<RecorderState>((set, get) => {
         runStartedAt: st.runStartedAt,
         systemCaptured: st.systemCaptured,
       };
-      set({ recording: false, paused: false, runStartedAt: null, systemCaptured: null });
+      set({ recording: false, paused: false, runStartedAt: null, systemCaptured: null, recordingMode: null });
       const outcome = await useMeetingJobs.getState().stopMeeting({
+        room,
         makeMeeting: ({ you, others, segments, mic_path, system_path, warnings }) => {
           const m: Meeting = {
             id: newId(),
@@ -259,8 +295,10 @@ export const useRecorder = create<RecorderState>((set, get) => {
             systemCaptured: captured,
             micPath: mic_path,
             systemPath: system_path,
-            youLabel: "You",
+            // 1.45: a room meeting's unlabelled lines are the room, not "You".
+            youLabel: room ? "Room" : "You",
             othersLabel: "Others",
+            mode,
             imported: false,
             flags,
             durationSec,
@@ -271,6 +309,7 @@ export const useRecorder = create<RecorderState>((set, get) => {
               ...liveWarnings.filter((w) => !warnings.includes(w)),
             ],
           };
+          saved = { id: m.id, micPath: mic_path, title };
           return m as unknown as MeetingDoc;
         },
       });
@@ -283,6 +322,12 @@ export const useRecorder = create<RecorderState>((set, get) => {
         return;
       }
       set({ elapsedBase: 0, live: [], flags: [], warnings: [] });
+      // 1.45 (B3): a room meeting's transcript is rebuilt by speaker straight away. The
+      // live lines stay if this fails or finds nothing.
+      const s = saved as { id: string; micPath: string | null; title: string } | null;
+      if (room && outcome === "saved" && s?.micPath && /\.wav$/i.test(s.micPath)) {
+        void useMeetingJobs.getState().roomTranscript({ meetingId: s.id, title: s.title, micPath: s.micPath });
+      }
     },
 
     togglePause: async () => {

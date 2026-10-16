@@ -484,7 +484,7 @@ fn collapse_ngram_runs(text: &str) -> String {
 /// hallucination phrases. `peak_rms` is the segment's peak frame RMS; `None`
 /// (offline path) skips the energy test but still collapses repeats. Returns
 /// `None` when the whole segment should be discarded.
-fn clean_segment_text(text: &str, peak_rms: Option<f32>) -> Option<String> {
+pub(crate) fn clean_segment_text(text: &str, peak_rms: Option<f32>) -> Option<String> {
     let collapsed = collapse_repeats(text);
     let trimmed = collapsed.trim();
     if trimmed.is_empty() {
@@ -661,7 +661,11 @@ pub async fn meeting_start_capture(
     meeting: State<'_, Arc<MeetingRecorder>>,
     recording_manager: State<'_, Arc<AudioRecordingManager>>,
     transcription_manager: State<'_, Arc<TranscriptionManager>>,
+    room: Option<bool>,
 ) -> Result<bool, String> {
+    // Kōrero 1.45 (B3): an "In the room" meeting records the microphone only (there is
+    // no call to capture) and its live segmenter uses the lower room floor.
+    let room = room.unwrap_or(false);
     if recording_manager.is_recording() {
         return Err("A dictation recording is in progress. Stop it before starting a meeting.".to_string());
     }
@@ -703,6 +707,7 @@ pub async fn meeting_start_capture(
     // meeting, and a flag the consumer reads to know whether a system-audio
     // capture exists at all (it is only known after the consumer starts).
     reset_live_stats();
+    crate::meeting_capture::ROOM_MODE.store(room, Ordering::Relaxed);
     let system_on = Arc::new(AtomicBool::new(false));
     let consumer = {
         let live = live.clone();
@@ -835,11 +840,20 @@ pub async fn meeting_start_capture(
     // fallback. Best-effort: mic-only if both fail. `seg_tx` is MOVED here so
     // no sender survives outside the capture workers — that's what lets the
     // consumer exit when the workers finish.
-    let (system, backend) = start_system_capture(&app, others_path, Some(seg_tx), paused.clone());
+    let (system, backend) = if room {
+        // No system capture, so drop the last sender here: the consumer exits when
+        // the microphone worker finishes, exactly as before.
+        drop(seg_tx);
+        (None, "none (in the room)")
+    } else {
+        start_system_capture(&app, others_path, Some(seg_tx), paused.clone())
+    };
     let system_captured = system.is_some();
     system_on.store(system_captured, Ordering::Relaxed);
     if system_captured {
         log::info!("Meeting system capture started (backend: {backend}).");
+    } else if room {
+        log::info!("Meeting in the room: recording the microphone only.");
     } else {
         log::warn!("Meeting: system-loopback capture unavailable; recording microphone only.");
     }
@@ -2185,7 +2199,7 @@ struct OfflineTranscript {
 /// nothing on the meeting paths ever triggered that reload: `transcribe()`
 /// only WAITS for a load already in progress. One bad segment therefore
 /// failed every segment after it, for the rest of the meeting or file.
-fn transcribe_retrying(tm: &TranscriptionManager, samples: Vec<f32>) -> Result<String, String> {
+pub(crate) fn transcribe_retrying(tm: &TranscriptionManager, samples: Vec<f32>) -> Result<String, String> {
     match tm.transcribe(samples.clone()) {
         Ok(t) => Ok(t),
         Err(first) => {

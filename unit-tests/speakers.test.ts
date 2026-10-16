@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   combine,
   separationBlocker,
+  sourceChipLabel,
   speakerLabel,
   type Meeting,
   type TranscriptSeg,
@@ -85,5 +86,22 @@ describe("separationBlocker", () => {
 
   test("no microphone lines is refused", () => {
     expect(separationBlocker(meeting({ transcript: [seg("others", "hi", 0)] }))).not.toBeNull();
+  });
+});
+
+describe("in the room (1.45, B3)", () => {
+  test("a room meeting can be rebuilt by speaker even with untimed lines", () => {
+    const untimed = [seg("you", "a", 0), seg("you", "b", 0)];
+    expect(separationBlocker(meeting({ mode: "room", transcript: untimed }))).toBeNull();
+    expect(separationBlocker(meeting({ mode: "room", micPath: null }))).not.toBeNull();
+  });
+
+  test("the header pill says how the meeting was recorded", () => {
+    expect(sourceChipLabel(meeting({ systemCaptured: true }))).toBe("You + Others");
+    expect(sourceChipLabel(meeting({ systemCaptured: false }))).toBe("You only");
+    expect(sourceChipLabel(meeting({ mode: "room" }))).toBe("In the room");
+    expect(sourceChipLabel(meeting({ mode: "room", speakersFound: 1 }))).toBe("In the room");
+    expect(sourceChipLabel(meeting({ mode: "room", speakersFound: 3 }))).toBe("3 speakers");
+    expect(sourceChipLabel(meeting({ imported: true }))).toBe("Imported file");
   });
 });
