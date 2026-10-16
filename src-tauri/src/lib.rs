@@ -10,6 +10,7 @@ mod crash; // Kōrero (v1.12.0): global panic hook + crash report files
 mod corrections; // Kōrero (v1.15.0): user-taught transcription corrections
 mod update_check; // Kōrero (v1.16.0): notify-only update check (own repo only)
 mod window_info; // Kōrero (v1.18.1): contextual-routing spike (active window title)
+mod diarise; // Kōrero 1.45 (D-007): in-room speaker separation
 mod meeting; // Kōrero (v1.13.0): meeting recorder (mic + system loopback)
 mod meeting_capture; // Kōrero (v1.13.2, Phase A): streaming-to-disk meeting capture
 #[cfg(windows)]
@@ -618,6 +619,7 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
             meeting::meeting_stop_capture,
             meeting::meeting_transcribe_file,
             meeting::meeting_transcribe_merge,
+            diarise::meeting_separate_speakers,
             meeting::meeting_list_recordings,
             meeting::meeting_export_transcript,
             meeting::meeting_query,

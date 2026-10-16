@@ -83,7 +83,7 @@ export interface MeetingJob {
   status: "running";
 }
 
-export type MeetingTaskKind = "transcribe" | "both" | "import" | "recover";
+export type MeetingTaskKind = "transcribe" | "both" | "import" | "recover" | "speakers";
 
 export interface MeetingTask {
   kind: MeetingTaskKind;
@@ -96,12 +96,16 @@ export interface MeetingTask {
   path?: string;
   startedAt: number;
   progress: { window: number; total: number | null } | null;
+  /** 1.45 "speakers" task: fetching the models (first use) or separating. */
+  stage?: "download" | "separate";
 }
 
 export interface TranscriptSegLike {
   source: string;
   text: string;
   start_ms?: number;
+  /** 1.45: set by "Separate speakers" on microphone lines. */
+  speaker?: number | null;
 }
 
 /** The transcript fields a (re-)transcription produces. */
@@ -147,6 +151,15 @@ interface MeetingJobsState {
       prompt: string;
       trimKey: string;
     };
+  }) => Promise<boolean>;
+
+  /** 1.45 (D-007): separate the speakers in a meeting's microphone recording and
+   *  label each microphone line. Resolves true when the labels landed. */
+  separateSpeakers: (args: {
+    meetingId: string;
+    title: string;
+    micPath: string;
+    transcript: TranscriptSegLike[];
   }) => Promise<boolean>;
 
   /** Transcribe an audio file into a new meeting; optionally generate notes.
@@ -228,6 +241,25 @@ function attachGlobalListeners(set: SetState) {
   ).catch((err) =>
     console.error("Could not attach the transcription progress listener:", err),
   );
+  // 1.45: "Separate speakers" progress (model download on first use, then segments).
+  listen<{ stage: "download" | "separate"; done: number; total: number }>(
+    "meeting-speakers-progress",
+    (e) => {
+      set((s) =>
+        s.task && s.task.kind === "speakers"
+          ? {
+              task: {
+                ...s.task,
+                stage: e.payload.stage,
+                progress: { window: e.payload.done, total: e.payload.total },
+              },
+            }
+          : {},
+      );
+    },
+  ).catch((err) =>
+    console.error("Could not attach the speakers progress listener:", err),
+  );
   // Capture-health warnings raised DURING a meeting (silent microphone, no
   // system audio). A toast rather than Meetings-page state: the point is to
   // reach the user wherever they are in the app, while they can still fix it.
@@ -300,6 +332,11 @@ const NOTES_MSGS = {
   done: "Meeting notes are ready.",
   saved: "Meeting notes are ready and saved — open Meetings to see them.",
   what: "Post-processing",
+};
+const SPEAKER_MSGS = {
+  done: "Speakers separated.",
+  saved: "Speakers separated and saved.",
+  what: "Separating speakers",
 };
 const TRANSCRIPT_MSGS = {
   done: "Transcription finished.",
@@ -525,6 +562,8 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
         const patch = await transcribeAudio(micPath, systemPath);
         const outcome = await meetingsBridge.deliverPatch(meetingId, {
           ...patch,
+          // 1.45: the new lines carry no speakers, so the last separation's count is stale.
+          speakersFound: undefined,
         });
         if (outcome === "missing" || outcome === "failed") {
           reportLanding(outcome, TRANSCRIPT_MSGS, meetingId, "transcript");
@@ -567,6 +606,62 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
         logActivity({
           status: "failed",
           title: `${thenNotes ? "Transcribe + notes" : "Re-transcription"} failed`,
+          detail: errText(e),
+          target: { section: "meetings", meetingId, tab: "audio" },
+        });
+        return false;
+      } finally {
+        releaseTask(claim);
+      }
+    },
+
+    separateSpeakers: async ({ meetingId, title, micPath, transcript }) => {
+      const claim = claimTask({
+        kind: "speakers",
+        meetingId,
+        label: `separating speakers in “${title}”`,
+      });
+      if (claim === null) return refuse();
+      try {
+        const r = await commands.meetingSeparateSpeakers(
+          micPath,
+          transcript.map((s) => ({
+            source: s.source,
+            text: s.text,
+            start_ms: s.start_ms ?? 0,
+            speaker: s.speaker ?? null,
+          })),
+        );
+        if (r.status !== "ok") throw new Error(r.error);
+        const { segment_speakers, speakers } = r.data;
+        // Microphone lines get their speaker; call-audio lines are left as they were.
+        // With one voice there is nothing to separate: lines stay "You", unlabelled.
+        const updated = transcript.map((s, i) =>
+          s.source === "you"
+            ? { ...s, speaker: speakers > 1 ? (segment_speakers[i] ?? null) : null }
+            : s,
+        );
+        const outcome = await meetingsBridge.deliverPatch(meetingId, {
+          transcript: updated,
+          speakersFound: speakers,
+        });
+        if (outcome === "missing" || outcome === "failed") {
+          reportLanding(outcome, SPEAKER_MSGS, meetingId, "transcript");
+          return false;
+        }
+        if (speakers === 0) {
+          toast.message("No speech long enough to recognise a voice was found in this recording.");
+        } else if (speakers === 1) {
+          toast.message(
+            "Only one voice was found in this recording, so the lines were not split between speakers.",
+          );
+        } else reportLanding(outcome, SPEAKER_MSGS, meetingId, "transcript");
+        return true;
+      } catch (e) {
+        toast.error(`Separating speakers failed: ${errText(e)}`);
+        logActivity({
+          status: "failed",
+          title: "Separating speakers failed",
           detail: errText(e),
           target: { section: "meetings", meetingId, tab: "audio" },
         });

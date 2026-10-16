@@ -29,6 +29,8 @@ storage, and Windows build hardening. See the commit history for specifics.
 | `transcribe-rs` | _(verify)_ | crate on crates.io |
 | Silero VAD (via `vad-rs`, cjpais fork) | MIT _(verify the fork)_ | https://github.com/snakers4/silero-vad |
 | ONNX Runtime (`ort`) | MIT | https://github.com/microsoft/onnxruntime |
+| `knf-rs` (filterbank features for speaker separation, 1.45) | MIT (verified on crates.io, 2026-10-16) | https://github.com/thewh1teagle/pyannote-rs |
+| kaldi-native-fbank (C++, built through `knf-rs-sys`) | Apache-2.0 _(verify)_ | https://github.com/csukuangfj/kaldi-native-fbank |
 | React | MIT | https://react.dev |
 | Vite | MIT | https://vitejs.dev |
 | Tailwind CSS | MIT | https://tailwindcss.com |
@@ -42,6 +44,9 @@ own licence at the point of download:
 
 - **Whisper** (ggml/`.bin`) — OpenAI Whisper weights, MIT _(verify per model)_.
 - **Parakeet V3** (`nvidia/parakeet-tdt-0.6b-v3`, redistributed as an int8 ONNX export) — **CC-BY-4.0** (verified 2026-05-30; "ready for commercial/non-commercial use"). Redistributable with attribution. The offline portable edition bundles this model and ships a `PARAKEET-MODEL-LICENCE.txt` crediting NVIDIA, linking CC-BY-4.0, and noting the int8 quantization as a modification.
+- **Speaker separation (1.45), downloaded on first use of "Separate speakers" and checked by sha256:**
+  - **pyannote segmentation-3.0** (ONNX export, from the `pyannote-rs` v0.1.0 release) - MIT _(verify)_. https://huggingface.co/pyannote/segmentation-3.0
+  - **WeSpeaker ResNet34-LM** (ONNX export, from the sherpa-onnx speaker-recognition-models release) - **CC-BY-4.0**, following the VoxCeleb dataset (verified 2026-10-16 on pyannote's model card, citing WeSpeaker's pretrained-models page). Credit: Wang et al., "Wespeaker: A research and production oriented speaker embedding learning toolkit", ICASSP 2023.
 
 ## Fonts
 

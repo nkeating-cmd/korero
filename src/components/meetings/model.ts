@@ -13,6 +13,10 @@ export interface TranscriptSeg {
   // a trim window. Optional only because meetings recorded before v1.26.0 have
   // segments without it on disk; `normaliseMeetings` defaults those to 0.
   start_ms?: number;
+  /** Kōrero 1.45 (D-007): who said a microphone line, set by "Separate speakers"
+   *  (0-based; shown as "Speaker n+1" or the name given). Absent or null before it
+   *  runs, for call-audio lines, and on every meeting saved before 1.45. */
+  speaker?: number | null;
 }
 
 /** A moment the user flagged while recording (1.42). */
@@ -50,6 +54,12 @@ export interface Meeting {
   durationSec?: number;
   /** The after-Stop wrap-up card was closed by the user. */
   wrapUpDismissed?: boolean;
+  /** 1.45: how many people "Separate speakers" found. Absent until it has run. */
+  speakersFound?: number;
+  /** 1.45: names for Speaker 1..N, by index; blank or missing = "Speaker n". */
+  speakerNames?: string[];
+  /** 1.45: the two meetings this one was combined from (set by Combine). */
+  mergedFrom?: string[];
 }
 
 export interface RecordingFile {
@@ -117,6 +127,41 @@ export const labelFor = (source: string, youLabel: string, othersLabel: string) 
   source === "you" ? youLabel : othersLabel;
 
 /**
+ * Kōrero 1.45: why "Separate speakers" cannot run on this meeting, or null if it can.
+ * Mirrors `timing_problem` in diarise.rs, which refuses the same cases.
+ */
+export const separationBlocker = (m: Meeting): string | null => {
+  if (!m.micPath || !/\.wav$/i.test(m.micPath))
+    return "Needs a recorded microphone file (imports are not supported yet).";
+  if (m.mergedFrom && m.mergedFrom.length > 0)
+    return "A combined meeting mixes two recordings, so its lines can't be matched to one.";
+  const segs = m.transcript ?? [];
+  const mic = segs.filter((s) => s.source === "you" && s.text.trim()).map((s) => s.start_ms ?? 0);
+  if (mic.length === 0) return "There are no microphone lines to label.";
+  if (mic.length >= 2 && mic.every((ms) => ms === mic[0]))
+    return "Its lines have no timings (recorded before Kōrero 1.26). Re-transcribe it first.";
+  for (let i = 1; i < segs.length; i++) {
+    if ((segs[i].start_ms ?? 0) < (segs[i - 1].start_ms ?? 0))
+      return "Its transcript is not in time order (a combined meeting, for example), so its lines can't be matched to one recording.";
+  }
+  return null;
+};
+
+/**
+ * Kōrero 1.45: the label for one transcript line. A microphone line that "Separate
+ * speakers" assigned shows its speaker ("Speaker 2", or the name given); every other
+ * line keeps the two channel labels. The transcript view and `combine` (which feeds
+ * the notes) both use this, so what you read is what the notes model reads.
+ */
+export const speakerLabel = (
+  m: { youLabel: string; othersLabel: string; speakerNames?: string[] },
+  s: { source: string; speaker?: number | null },
+): string =>
+  s.source === "you" && s.speaker != null
+    ? m.speakerNames?.[s.speaker]?.trim() || `Speaker ${s.speaker + 1}`
+    : labelFor(s.source, m.youLabel, m.othersLabel);
+
+/**
  * The transcript as text, in speaking order (`Label: line` per turn). Consecutive
  * segments from the same speaker merge into one turn. Falls back to the legacy
  * two-block grouping when there is no ordered transcript.
@@ -127,18 +172,22 @@ export const combine = (
   youLabel = "You",
   othersLabel = "Others",
   transcript?: TranscriptSeg[],
+  speakerNames?: string[],
 ): string => {
   if (transcript && transcript.length > 0) {
-    const merged: { source: string; text: string }[] = [];
+    // 1.45: lines are grouped by their label, so separated speakers become separate
+    // turns ("Speaker 1: …", "Speaker 2: …") in the text the notes model reads.
+    const merged: { key: string; seg: TranscriptSeg; text: string }[] = [];
     for (const s of transcript) {
       const text = s.text.trim();
       if (!text) continue;
+      const key = `${s.source}|${s.source === "you" && s.speaker != null ? s.speaker : ""}`;
       const last = merged[merged.length - 1];
-      if (last && last.source === s.source) last.text += ` ${text}`;
-      else merged.push({ source: s.source, text });
+      if (last && last.key === key) last.text += ` ${text}`;
+      else merged.push({ key, seg: s, text });
     }
     return merged
-      .map((m) => `${labelFor(m.source, youLabel, othersLabel)}: ${m.text}`)
+      .map((m) => `${speakerLabel({ youLabel, othersLabel, speakerNames }, m.seg)}: ${m.text}`)
       .join("\n");
   }
   return [
@@ -236,7 +285,7 @@ export const sideWords = (m: Meeting): { you: number; others: number } => {
  * already applied).
  */
 export const notesInput = (m: Meeting, segs: TranscriptSeg[]): string => {
-  const body = combine(m.you, m.others, m.youLabel, m.othersLabel, segs);
+  const body = combine(m.you, m.others, m.youLabel, m.othersLabel, segs, m.speakerNames);
   const flags = (m.flags ?? []).filter((f) => Number.isFinite(f.atSec));
   if (!body.trim() || flags.length === 0) return body;
   const lines = flags
