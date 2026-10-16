@@ -265,6 +265,55 @@ body {
     color: var(--kx-ink-soft);
     white-space: nowrap;
   }
+  /* 1.45: a row of chips that read as a set. Short ones ("26 s") no longer look like
+     stubs beside long ones; every chip is the same height and centres its content. */
+  .kx-chips-even > .kx-chip {
+    min-width: 72px;
+    min-height: 22px;
+    justify-content: center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 1.45: a two-way choice (meeting type). One control height, the chosen option
+     filled with the selection colour, the other quiet. */
+  .kx-choice {
+    display: inline-flex;
+    align-self: flex-start;
+    padding: 2px;
+    gap: 2px;
+    border-radius: 10px;
+    background: var(--kx-raised);
+    border: 1px solid var(--kx-hairline);
+  }
+  .kx-choice-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    padding: 0 12px;
+    border-radius: 8px;
+    font-size: 12.5px;
+    color: var(--kx-ink-soft);
+    background: transparent;
+    white-space: nowrap;
+  }
+  .kx-choice-option:hover:not(:disabled) {
+    color: #ffffff;
+  }
+  .kx-choice-option[aria-checked="true"] {
+    background: var(--kx-selected);
+    color: var(--kx-accent-ink);
+    font-weight: var(--kx-bold);
+  }
+  .kx-choice-option:focus-visible {
+    outline: 2px solid var(--kx-accent-ink);
+    outline-offset: 1px;
+  }
+  .kx-choice-option:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
   .kx-chip-accent {
     background: var(--kx-selected);
     color: var(--kx-accent-ink);

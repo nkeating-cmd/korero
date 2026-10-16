@@ -32,7 +32,26 @@ import {
   defaultMeetingTitle,
   newId,
   type Meeting,
+  type MeetingMode,
 } from "../components/meetings/model";
+
+// 1.45 (B3): the meeting type is chosen before Record and remembered on this computer.
+const MODE_KEY = "korero.meetingMode";
+
+/** What Stop hands the room rebuild. */
+type RoomSaved = {
+  id: string;
+  micPath: string | null;
+  title: string;
+  segments: NonNullable<Meeting["transcript"]>;
+};
+const savedMode = (): MeetingMode => {
+  try {
+    return localStorage.getItem(MODE_KEY) === "room" ? "room" : "call";
+  } catch {
+    return "call";
+  }
+};
 
 interface RecorderState extends Omit<RecorderSnapshot, "stopping"> {
   starting: boolean;
@@ -41,8 +60,14 @@ interface RecorderState extends Omit<RecorderSnapshot, "stopping"> {
   /** When the last capture test finished, and what it found (this session). */
   lastTest: { at: number; micOk: boolean; systemOk: boolean } | null;
   captureError: string | null;
+  /** 1.45: the type the next meeting will be recorded as. */
+  mode: MeetingMode;
+  /** 1.45: the type of the meeting being recorded now (fixed at Start). */
+  recordingMode: MeetingMode | null;
+  setMode: (mode: MeetingMode) => void;
   restore: () => Promise<void>;
-  start: () => Promise<boolean>;
+  /** 1.45: `mode` chooses the meeting type (and remembers it) before starting. */
+  start: (mode?: MeetingMode) => Promise<boolean>;
   stop: () => Promise<void>;
   togglePause: () => Promise<void>;
   flag: (label?: string) => void;
@@ -102,7 +127,10 @@ export const useRecorder = create<RecorderState>((set, get) => {
           st.dismissWarning(e.payload.at);
           break;
         case "start":
-          if (!st.recording && !st.starting) void st.start();
+          if (!st.recording && !st.starting) void st.start(e.payload.mode);
+          break;
+        case "mode":
+          if (!st.recording) st.setMode(e.payload.mode);
           break;
         case "open":
           void commands.showMainWindowCommand().catch(() => {});
@@ -133,6 +161,8 @@ export const useRecorder = create<RecorderState>((set, get) => {
       flags: s.flags,
       warnings: s.warnings,
       devices: s.devices,
+      mode: s.mode,
+      recordingMode: s.recordingMode,
     };
     void emit(RECORDER_STATE_EVENT, snap).catch(() => {});
   };
@@ -171,6 +201,17 @@ export const useRecorder = create<RecorderState>((set, get) => {
     warnings: [],
     devices: null,
     captureError: null,
+    mode: savedMode(),
+    recordingMode: null,
+
+    setMode: (mode) => {
+      set({ mode });
+      try {
+        localStorage.setItem(MODE_KEY, mode);
+      } catch {
+        /* a per-computer convenience only */
+      }
+    },
 
     restore: async () => {
       attach();
@@ -184,6 +225,9 @@ export const useRecorder = create<RecorderState>((set, get) => {
             elapsedBase: d.elapsed_secs,
             runStartedAt: d.paused ? null : Date.now(),
             systemCaptured: d.system_captured,
+            // Review L5: the backend knows the meeting type, so a reload mid-meeting
+            // no longer guesses it.
+            recordingMode: d.room ? "room" : "call",
             title: get().title || defaultMeetingTitle(Date.now() - d.elapsed_secs * 1000),
           });
           void get().refreshDevices();
@@ -193,16 +237,18 @@ export const useRecorder = create<RecorderState>((set, get) => {
       }
     },
 
-    start: async () => {
+    start: async (modeOverride) => {
       const st = get();
       if (st.recording || st.starting || useMeetingJobs.getState().stopping) {
         return false;
       }
+      if (modeOverride) get().setMode(modeOverride);
       attach();
       set({ starting: true, captureError: null });
       void get().refreshDevices();
       try {
-        const res = await commands.meetingStartCapture();
+        const mode = get().mode;
+        const res = await commands.meetingStartCapture(mode === "room");
         if (res.status !== "ok") {
           toast.error(res.error);
           return false;
@@ -213,12 +259,18 @@ export const useRecorder = create<RecorderState>((set, get) => {
           elapsedBase: 0,
           runStartedAt: Date.now(),
           systemCaptured: res.data,
+          recordingMode: mode,
           title: defaultMeetingTitle(Date.now()),
           live: [],
           flags: [],
           warnings: [],
         });
-        if (!res.data) {
+        // Review H1: a room start always says so, so a remembered choice is never a surprise.
+        if (mode === "room") {
+          toast.message(
+            "Recording in the room: your microphone only. The transcript is sorted by speaker when you stop.",
+          );
+        } else if (!res.data) {
           toast.message("System audio couldn't be captured — recording your mic only.");
         }
         return true;
@@ -235,6 +287,9 @@ export const useRecorder = create<RecorderState>((set, get) => {
       if (!st.recording) return;
       const durationSec = Math.round(now());
       const captured = st.systemCaptured ?? false;
+      const mode: MeetingMode = st.recordingMode ?? "call";
+      const room = mode === "room";
+      let saved: RoomSaved | null = null;
       const flags = st.flags;
       const title = st.title.trim() || defaultMeetingTitle(Date.now());
       const liveWarnings = st.warnings.map((w) => w.text);
@@ -244,8 +299,9 @@ export const useRecorder = create<RecorderState>((set, get) => {
         runStartedAt: st.runStartedAt,
         systemCaptured: st.systemCaptured,
       };
-      set({ recording: false, paused: false, runStartedAt: null, systemCaptured: null });
+      set({ recording: false, paused: false, runStartedAt: null, systemCaptured: null, recordingMode: null });
       const outcome = await useMeetingJobs.getState().stopMeeting({
+        room,
         makeMeeting: ({ you, others, segments, mic_path, system_path, warnings }) => {
           const m: Meeting = {
             id: newId(),
@@ -259,8 +315,10 @@ export const useRecorder = create<RecorderState>((set, get) => {
             systemCaptured: captured,
             micPath: mic_path,
             systemPath: system_path,
-            youLabel: "You",
+            // 1.45: a room meeting's unlabelled lines are the room, not "You".
+            youLabel: room ? "Room" : "You",
             othersLabel: "Others",
+            mode,
             imported: false,
             flags,
             durationSec,
@@ -271,6 +329,7 @@ export const useRecorder = create<RecorderState>((set, get) => {
               ...liveWarnings.filter((w) => !warnings.includes(w)),
             ],
           };
+          saved = { id: m.id, micPath: mic_path, title, segments: segments ?? [] };
           return m as unknown as MeetingDoc;
         },
       });
@@ -283,6 +342,14 @@ export const useRecorder = create<RecorderState>((set, get) => {
         return;
       }
       set({ elapsedBase: 0, live: [], flags: [], warnings: [] });
+      // 1.45 (B3): a room meeting's transcript is rebuilt by speaker straight away. The
+      // live lines stay if this fails or finds nothing.
+      const s = saved as RoomSaved | null;
+      if (room && outcome === "saved" && s?.micPath && /\.wav$/i.test(s.micPath)) {
+        void useMeetingJobs
+          .getState()
+          .roomTranscript({ meetingId: s.id, title: s.title, micPath: s.micPath, existing: s.segments });
+      }
     },
 
     togglePause: async () => {
@@ -340,11 +407,15 @@ export const useRecorder = create<RecorderState>((set, get) => {
       if (st.recording || st.testing || useMeetingJobs.getState().stopping) return;
       set({ testing: true });
       void get().refreshDevices();
+      // Review M2: an "In the room" meeting has no call, so only the microphone is tested.
+      const room = get().mode === "room";
       toast.message(
-        "Testing for 8 seconds — play any audio now so the call-audio meter has something to capture.",
+        room
+          ? "Testing the microphone for 8 seconds: say a few words now."
+          : "Testing for 8 seconds — play any audio now so the call-audio meter has something to capture.",
       );
       try {
-        const res = await commands.meetingTestCapture(8);
+        const res = await commands.meetingTestCapture(8, room);
         if (res.status !== "ok") {
           toast.error(res.error);
           return;
@@ -352,13 +423,15 @@ export const useRecorder = create<RecorderState>((set, get) => {
         const { mic_device, system_device, mic_samples, system_samples } = res.data;
         const micOk = mic_samples > 0;
         const systemOk = system_samples > 0;
-        set({ lastTest: { at: Date.now(), micOk, systemOk } });
+        set({ lastTest: { at: Date.now(), micOk, systemOk: room || systemOk } });
         if (micOk) toast.success(`Microphone OK — ${mic_device}`);
         else
           toast.error(
             `No audio from the microphone (${mic_device}). Check it isn't muted or in use by another app.`,
           );
-        if (systemOk) toast.success(`Call audio OK — ${system_device}`);
+        if (room) {
+          /* no call to test */
+        } else if (systemOk) toast.success(`Call audio OK — ${system_device}`);
         else
           toast.error(
             `No call audio captured (${system_device}). Kōrero records the DEFAULT output device — if your call plays through a different device (a headset, say), make that the Windows default output, then test again with audio playing.`,

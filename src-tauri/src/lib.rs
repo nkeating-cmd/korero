@@ -620,6 +620,7 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
             meeting::meeting_transcribe_file,
             meeting::meeting_transcribe_merge,
             diarise::meeting_separate_speakers,
+            diarise::meeting_room_transcript,
             meeting::meeting_list_recordings,
             meeting::meeting_export_transcript,
             meeting::meeting_query,

@@ -21,7 +21,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { MeetingsController } from "../settings/meetings/useMeetingsController";
 import type { MeetingTab } from "../../stores/navStore";
-import { durationOf, fmtDuration, isTrimmed, hiddenCount, sideWords, titleOf, wordCount } from "./model";
+import { durationOf, fmtDuration, isTrimmed, hiddenCount, sideWords, sourceChipLabel, titleOf, wordCount } from "./model";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { NotesPanel } from "./NotesPanel";
 import { AudioPanel } from "./AudioPanel";
@@ -113,9 +113,9 @@ export const MeetingView: React.FC<{ c: MeetingsController; onBack?: () => void 
           </button>
         </div>
 
-        <div className="flex flex-wrap gap-2 mt-2.5">
+        <div className="kx-chips-even flex flex-wrap gap-2 mt-2.5">
           {d && <span className="kx-chip">{fmtDuration(d)}</span>}
-          <span className="kx-chip">{m.imported ? "Imported file" : m.systemCaptured ? `${m.youLabel} + ${m.othersLabel}` : `${m.youLabel} only`}</span>
+          <span className="kx-chip">{sourceChipLabel(m)}</span>
           {(m.flags ?? []).length > 0 && (
             <span className="kx-chip kx-chip-warn">
               <Flag size={11} /> {(m.flags ?? []).length} flagged
@@ -128,12 +128,18 @@ export const MeetingView: React.FC<{ c: MeetingsController; onBack?: () => void 
           )}
           {/* About the notes model now; worded for whether notes exist yet. */}
           {c.providerLocal === false ? (
-            <span className="kx-chip kx-chip-warn" title="The notes model is a cloud service">
-              <Cloud size={11} /> {m.processed.trim() ? "Notes by a cloud model" : "Notes would use a cloud model"}
+            <span
+              className="kx-chip kx-chip-warn"
+              title={m.processed.trim() ? "These notes were written by a cloud model" : "Notes would be written by a cloud model"}
+            >
+              <Cloud size={11} /> Cloud notes
             </span>
           ) : c.providerLocal ? (
-            <span className="kx-chip kx-chip-ok" title="The notes model runs on this computer">
-              <Lock size={11} /> {m.processed.trim() ? "Notes made on this computer" : "Notes stay on this computer"}
+            <span
+              className="kx-chip kx-chip-ok"
+              title={m.processed.trim() ? "These notes were made on this computer" : "Notes stay on this computer"}
+            >
+              <Lock size={11} /> On this computer
             </span>
           ) : null}
         </div>
@@ -240,7 +246,12 @@ const WrapUp: React.FC<{ c: MeetingsController }> = ({ c }) => {
             <div>
               <div className="text-[13.5px] text-white">Audio saved</div>
               <div className="kx-meta">
-                {m.micPath && m.systemPath ? "Two recordings, You and Others" : "One recording"} · see the Audio tab
+                {m.mode === "room"
+                  ? "The room microphone"
+                  : m.micPath && m.systemPath
+                    ? "Two recordings, You and Others"
+                    : "One recording"}{" "}
+                · see the Audio tab
               </div>
             </div>
           </li>
@@ -254,7 +265,9 @@ const WrapUp: React.FC<{ c: MeetingsController }> = ({ c }) => {
               {youWords + othersWords > 0 ? "Transcript ready" : "No speech was transcribed"}
             </div>
             <div className="kx-meta">
-              {m.youLabel} {youWords.toLocaleString()} words · {m.othersLabel} {othersWords.toLocaleString()} words
+              {m.mode === "room"
+                ? `${(youWords + othersWords).toLocaleString()} words${m.speakersFound && m.speakersFound > 1 ? ` · ${m.speakersFound} speakers` : ""}`
+                : `${m.youLabel} ${youWords.toLocaleString()} words · ${m.othersLabel} ${othersWords.toLocaleString()} words`}
             </div>
           </div>
         </li>

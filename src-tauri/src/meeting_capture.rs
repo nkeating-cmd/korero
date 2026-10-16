@@ -105,6 +105,25 @@ const SEG_MIN_SAMPLES: usize = TARGET_RATE / 2;
 /// uses it as the "near the energy floor" threshold for its hallucination
 /// guard.)
 pub(crate) const SEG_QUIET_RMS: f32 = 0.010;
+/// Kōrero 1.45 (B3): the live energy floor for an "In the room" meeting. Far-field
+/// speech is quiet: on four AMI room-microphone meetings the median speech frame was
+/// RMS 0.0024-0.0029 in three, and the 0.010 floor passed only 2-9% of labelled
+/// speech. At 0.003, 36-49% passes and Silero still has to agree it is speech.
+/// The live transcript is only a preview in a room meeting; the saved one is rebuilt
+/// from the speaker model's turns (`diarise::meeting_room_transcript`).
+pub(crate) const ROOM_QUIET_RMS: f32 = 0.003;
+/// Set for the meeting being recorded: is it "In the room"? Read when a live
+/// segmenter is built (`with_live_stats`), so offline paths never see it.
+pub(crate) static ROOM_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The live energy floor for a meeting type.
+pub(crate) fn live_floor(room: bool) -> f32 {
+    if room {
+        ROOM_QUIET_RMS
+    } else {
+        SEG_QUIET_RMS
+    }
+}
 /// Silero consumes exactly 30 ms frames at 16 kHz (= 480 samples) — the same
 /// frame the capture resampler emits. Off-size frames (e.g. the resampler's
 /// closing tail) bypass the VAD and fall back to the energy gate.
@@ -269,6 +288,9 @@ pub(crate) struct Segmenter {
     /// this source. `None` on the offline re-segmenting path, which must never
     /// count towards the health of a meeting that may be recording right now.
     stats: Option<&'static LiveSourceStats>,
+    /// Kōrero 1.45: the energy floor for this segmenter: `SEG_QUIET_RMS`, or
+    /// `ROOM_QUIET_RMS` for a live segmenter in an "In the room" meeting.
+    floor: f32,
 }
 
 impl Segmenter {
@@ -289,6 +311,7 @@ impl Segmenter {
             vad,
             had_voice: false,
             stats: None,
+            floor: SEG_QUIET_RMS,
         }
     }
 
@@ -296,6 +319,7 @@ impl Segmenter {
     /// the two live capture paths call this (cpal and native WASAPI).
     pub(crate) fn with_live_stats(mut self) -> Self {
         self.stats = Some(live_stats(self.source));
+        self.floor = live_floor(ROOM_MODE.load(Ordering::Relaxed));
         self
     }
 
@@ -314,7 +338,7 @@ impl Segmenter {
         self.samples_seen += frame.len();
         if let Some(st) = self.stats {
             st.samples.fetch_add(frame.len() as u64, Ordering::Relaxed);
-            if rms >= SEG_QUIET_RMS {
+            if rms >= self.floor {
                 st.loud_frames.fetch_add(1, Ordering::Relaxed);
             }
             st.peak_rms_micro
@@ -327,7 +351,7 @@ impl Segmenter {
         // Typing/click transients clear stage 1 but Silero rejects them, which
         // is exactly the non-speech audio that used to be hallucinated into
         // "Thank you." With no VAD this reduces to the original energy test.
-        let voiced = if rms < SEG_QUIET_RMS {
+        let voiced = if rms < self.floor {
             false
         } else if let Some(vad) = self.vad.as_mut() {
             if frame.len() == VAD_FRAME_SAMPLES {
@@ -373,7 +397,7 @@ impl Segmenter {
         if self.vad.is_some() {
             self.had_voice
         } else {
-            self.speech_peak >= SEG_QUIET_RMS * 2.0
+            self.speech_peak >= self.floor * 2.0
         }
     }
 
@@ -779,6 +803,16 @@ where
 #[cfg(test)]
 mod korero_live_stats_tests {
     use super::*;
+
+    #[test]
+    fn the_room_floor_applies_only_to_live_segmenters_of_a_room_meeting() {
+        // Pure: no test touches ROOM_MODE, so parallel tests can't see each other's
+        // meeting type (review L10).
+        assert_eq!(live_floor(true), ROOM_QUIET_RMS);
+        assert_eq!(live_floor(false), SEG_QUIET_RMS);
+        let (tx, _rx) = mpsc::sync_channel::<LiveSegment>(8);
+        assert_eq!(Segmenter::new("you", tx, None).floor, SEG_QUIET_RMS, "offline rebuilds never use the room floor");
+    }
 
     #[test]
     fn live_segmenters_count_audio_loudness_and_drops_offline_ones_do_not() {

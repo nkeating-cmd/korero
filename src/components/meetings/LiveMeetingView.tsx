@@ -21,6 +21,7 @@ import { useRecorder } from "../../stores/recorderStore";
 import { elapsedOf } from "../../stores/recorderProtocol";
 import { useMeetingJobs } from "../../stores/meetingJobsStore";
 import { LiveMeters } from "./LiveMeters";
+import { MeetingModePicker } from "./MeetingModePicker";
 import { fmtClock } from "./model";
 
 /**
@@ -52,6 +53,10 @@ export const LiveMeetingView: React.FC = () => {
   const devices = useRecorder((s) => s.devices);
   const systemCaptured = useRecorder((s) => s.systemCaptured);
   const captureError = useRecorder((s) => s.captureError);
+  const mode = useRecorder((s) => s.mode);
+  const recordingMode = useRecorder((s) => s.recordingMode);
+  const room = (recording ? recordingMode : mode) === "room";
+  const who = (source: string) => (source === "you" ? (room ? "Room" : "You") : "Others");
   const stopping = useMeetingJobs((s) => s.stopping);
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<{ q: string; a: string } | null>(null);
@@ -88,7 +93,7 @@ export const LiveMeetingView: React.FC = () => {
   const askNow = async () => {
     const q = question.trim();
     if (!q || asking) return;
-    const transcript = live.map((s) => `${s.source === "you" ? "You" : "Others"}: ${s.text}`).join("\n");
+    const transcript = live.map((s) => `${who(s.source)}: ${s.text}`).join("\n");
     if (!transcript.trim()) {
       toast.message("Nothing has been transcribed yet.");
       return;
@@ -122,7 +127,7 @@ export const LiveMeetingView: React.FC = () => {
             </span>
             <div>
               <div className="kx-heading">Audio saved</div>
-              <div className="kx-meta">Your mic and the call, as separate recordings</div>
+              <div className="kx-meta">{room ? "The room microphone" : "Your mic and the call, as separate recordings"}</div>
             </div>
           </li>
           <li className="flex gap-3.5 items-start">
@@ -132,7 +137,9 @@ export const LiveMeetingView: React.FC = () => {
             <div className="flex-1">
               <div className="kx-heading">Finishing the transcript</div>
               <div className="kx-meta">
-                Anything live transcription missed is rebuilt from the recording. Long meetings take a minute or two.
+                {room
+                  ? "Next, Kōrero transcribes the room recording again, one line per speaker. It carries on if you leave this page."
+                  : "Anything live transcription missed is rebuilt from the recording. Long meetings take a minute or two."}
               </div>
               <div className="kx-progress kx-progress-indeterminate mt-2.5 max-w-[420px]">
                 <span />
@@ -149,10 +156,11 @@ export const LiveMeetingView: React.FC = () => {
     return (
       <div className="kx-page" style={{ maxWidth: 760 }}>
         <h1 className="kx-title">Record a meeting</h1>
-        <p className="kx-meta mt-1 mb-5">
-          Kōrero records your microphone (You) and the call's audio (Others) as separate files,
-          saved to disk as it goes, so a crash never loses a meeting. Everything stays on this
-          computer.
+        <MeetingModePicker className="mt-4" />
+        <p className="kx-meta mt-3 mb-5">
+          {room
+            ? "Kōrero records your microphone only, since everyone is in the room. When you stop, it transcribes the recording again and sorts the lines by speaker. Saved to disk as it goes; everything stays on this computer."
+            : "Kōrero records your microphone (You) and the call's audio (Others) as separate files, saved to disk as it goes, so a crash never loses a meeting. Everything stays on this computer."}
         </p>
         <div className="flex flex-wrap gap-2.5">
           <button
@@ -176,14 +184,25 @@ export const LiveMeetingView: React.FC = () => {
         </div>
         {testing && (
           <div className="mt-5">
-            <LiveMeters active={testing} paused={false} devices={devices} startedAt={Date.now()} />
-            <p className="kx-meta mt-2">Play a video or song now — the Others card should move with it.</p>
+            <LiveMeters active={testing} paused={false} devices={devices} startedAt={Date.now()} room={room} />
+            <p className="kx-meta mt-2">
+              {room
+                ? "Talk from where people will sit: the Room card should move with your voice."
+                : "Play a video or song now — the Others card should move with it."}
+            </p>
           </div>
         )}
-        <p className="kx-banner kx-banner-info mt-6">
-          Use a headset for a clean You/Others split. With speakers, your mic also hears the other
-          side, so their words bleed into You.
-        </p>
+        {room ? (
+          <p className="kx-banner kx-banner-info mt-6">
+            Put the computer where it can hear everyone, close to the middle of the table. A webcam
+            microphone across the room picks up little.
+          </p>
+        ) : (
+          <p className="kx-banner kx-banner-info mt-6">
+            Use a headset for a clean You/Others split. With speakers, your mic also hears the other
+            side, so their words bleed into You.
+          </p>
+        )}
       </div>
     );
   }
@@ -234,9 +253,9 @@ export const LiveMeetingView: React.FC = () => {
           </span>
         </div>
 
-        <LiveMeters active={recording} paused={paused} devices={devices} startedAt={startedAt} />
+        <LiveMeters active={recording} paused={paused} devices={devices} startedAt={startedAt} room={room} />
 
-        {systemCaptured === false && (
+        {systemCaptured === false && !room && (
           <p className="kx-banner kx-banner-warn">
             <TriangleAlert size={16} />
             <span>
@@ -288,7 +307,7 @@ export const LiveMeetingView: React.FC = () => {
                 return (
                   <p key={i} className="kx-live-line">
                     <span className={`kx-live-who ${s.source === "you" ? "kx-accent-ink" : "text-[var(--kx-ink-soft)]"}`}>
-                      {s.source === "you" ? "You" : "Others"}
+                      {who(s.source)}
                     </span>
                     <span className="kx-read">
                       {s.text}

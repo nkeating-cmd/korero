@@ -79,8 +79,15 @@ export const useRunning = (): RunningItem[] => {
     items.push({
       id: "task",
       kind: "transcribe",
-      title: task.stage === "download" ? "Downloading the speaker models" : "Separating speakers",
-      detail: task.label.replace(/^separating speakers in\s+/i, "") + (pct !== null ? ` · ${pct}%` : ""),
+      title:
+        task.stage === "download"
+          ? "Downloading the speaker models"
+          : task.stage === "transcribe"
+            ? "Transcribing the room by speaker"
+            : "Separating speakers",
+      detail:
+        task.label.replace(/^(separating speakers|transcribing the room) in\s+/i, "") +
+        (pct !== null ? ` · ${pct}%` : ""),
       progress: pct,
       startedAt: task.startedAt,
       target: { section: "meetings", meetingId: task.meetingId ?? undefined, tab: "audio" },

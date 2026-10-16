@@ -209,6 +209,22 @@ export const RecorderCompanion: React.FC = () => {
             </>
           )}
           {!snap.stopping && (
+            <div role="radiogroup" aria-label="Meeting type" className="kx-choice mt-2 self-start">
+              {(["call", "room"] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  role="radio"
+                  aria-checked={snap.mode === v}
+                  className="kx-choice-option"
+                  onClick={() => send({ action: "mode", mode: v })}
+                >
+                  {v === "call" ? "On a call" : "In the room"}
+                </button>
+              ))}
+            </div>
+          )}
+          {!snap.stopping && (
             <div className="flex flex-wrap gap-2 mt-2">
               <button
                 type="button"
@@ -216,12 +232,18 @@ export const RecorderCompanion: React.FC = () => {
                 disabled={startPending}
                 onClick={() => {
                   setStartPending(true);
-                  send({ action: "start" });
+                  send({ action: "start", mode: snap.mode });
                   window.setTimeout(() => setStartPending(false), 8000);
                 }}
               >
                 {startPending ? <Loader2 size={14} className="animate-spin" /> : <Circle size={11} fill="currentColor" />}
-                {justSaved ? "Record another" : "Record a meeting"}
+                {snap.mode === "room"
+                  ? justSaved
+                    ? "Record another in the room"
+                    : "Record in the room"
+                  : justSaved
+                    ? "Record another call"
+                    : "Record a call"}
               </button>
               <button type="button" className="kx-btn kx-btn-secondary" onClick={() => send({ action: "open" })}>
                 <ExternalLink size={14} /> Open in Kōrero
@@ -302,9 +324,16 @@ export const RecorderCompanion: React.FC = () => {
           </button>
         </div>
 
-        <LiveMeters active={recording} paused={paused} devices={snap.devices} startedAt={startedAt} compact />
+        <LiveMeters
+          active={recording}
+          paused={paused}
+          devices={snap.devices}
+          startedAt={startedAt}
+          compact
+          room={snap.recordingMode === "room"}
+        />
 
-        {snap.systemCaptured === false && (
+        {snap.systemCaptured === false && snap.recordingMode !== "room" && (
           <p className="kx-banner kx-banner-warn">
             <TriangleAlert size={15} />
             <span>The call’s audio isn’t being captured — only your mic.</span>
@@ -337,7 +366,7 @@ export const RecorderCompanion: React.FC = () => {
                 className="font-semibold mr-1.5"
                 style={{ color: l.source === "you" ? "var(--kx-accent-ink)" : "var(--kx-ink-soft)" }}
               >
-                {l.source === "you" ? "You" : "Others"}
+                {snap.recordingMode === "room" ? "Room" : l.source === "you" ? "You" : "Others"}
               </span>
               {l.text}
             </p>
