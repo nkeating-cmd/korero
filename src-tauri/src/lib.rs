@@ -20,6 +20,7 @@ mod eval; // Kōrero (v1.40.0): --eval-transcribe entry point (accuracy harness)
 mod helpers;
 mod input;
 mod llm_client;
+mod notes_parts; // Kōrero 1.44: long meetings read in parts
 mod ollama_chat; // Kōrero 1.43: native Ollama chat with a sized context
 mod managers;
 mod overlay;
@@ -558,6 +559,7 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
             // Kōrero (v1.24.0, paths): configurable recording folder + Save-As export.
             settings::set_meeting_recording_dir,
             settings::set_meeting_export_dir,
+            settings::set_tts_engine_dir, // Kōrero 1.44: voice engine folder (Models)
             meeting::meeting_dirs_info,
             meeting::meeting_export_transcript_to,
             meeting::meeting_move_recordings,

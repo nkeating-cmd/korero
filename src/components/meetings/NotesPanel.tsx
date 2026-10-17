@@ -21,7 +21,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Markdown } from "../ui/Markdown";
 import { Dropdown } from "../ui/Dropdown";
 import type { MeetingsController } from "../settings/meetings/useMeetingsController";
-import { notesAreStale, wordCount } from "./model";
+import { notesAreStale, notesCoverPart, wordCount } from "./model";
 
 /**
  * Kōrero 1.42: the notes tab — the deliverable. The notes lead on a reading
@@ -35,6 +35,7 @@ export const NotesPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
 
   const running = c.jobRunningHere;
   const stale = notesAreStale(m);
+  const partial = notesCoverPart(m.processed);
   const hasNotes = !!m.processed.trim();
 
   return (
@@ -55,7 +56,9 @@ export const NotesPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
               <Markdown>{running.live}</Markdown>
             </div>
           ) : (
-            <p className="kx-meta">Waiting for the model to start writing… a local model can take a moment to load.</p>
+            <p className="kx-meta">
+              {running.phase ?? "Waiting for the model to start writing… a local model can take a moment to load."}
+            </p>
           )}
           <p className="kx-meta mt-3">You can leave this page; the notes are saved when they finish.</p>
         </section>
@@ -88,6 +91,23 @@ export const NotesPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
               <span>These notes were written before the current trim. Regenerate them to match.</span>
             </p>
           )}
+          {partial && !stale && (
+            <div role="status" className="kx-banner kx-banner-warn flex items-center gap-2">
+              <TriangleAlert size={16} />
+              <span className="flex-1">
+                These notes were written from only the first part of the meeting. Kōrero now reads long
+                meetings in parts, so it can write them from the whole meeting.
+              </span>
+              <button
+                type="button"
+                className="kx-btn kx-btn-secondary kx-btn-sm shrink-0"
+                disabled={!!c.busy || !c.activeHasTranscript}
+                onClick={() => void c.onPostProcess()}
+              >
+                <RotateCcw size={14} /> Write full notes
+              </button>
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-2">
             <span className="kx-meta flex items-center gap-1.5">
               <Cpu size={13} /> {c.ppLabel}
@@ -113,7 +133,7 @@ export const NotesPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
               type="button"
               className="kx-btn kx-btn-ghost kx-btn-sm"
               onClick={() => void c.genAudioBrief()}
-              disabled={c.briefBusy || stale}
+              disabled={c.briefBusy || stale || !!c.busy}
               title={
                 stale
                   ? "These notes predate the current trim — regenerate them before rendering audio."
@@ -121,7 +141,7 @@ export const NotesPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
               }
             >
               {c.briefBusy ? <Loader2 size={14} className="animate-spin" /> : <Volume2 size={14} />}
-              {c.briefBusy ? "Rendering…" : "Audio brief"}
+              {c.briefBusy ? (c.briefStage === "script" ? "Writing script…" : "Rendering…") : "Audio brief"}
             </button>
           </div>
 
@@ -156,8 +176,10 @@ export const NotesPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
 
           {c.briefBusy && (
             <p className="kx-meta flex items-center gap-1.5">
-              <Loader2 size={12} className="animate-spin" /> Rendering audio on this computer — this can
-              take a few minutes for long notes. Leave it running.
+              <Loader2 size={12} className="animate-spin" />{" "}
+              {c.briefStage === "script"
+                ? "Writing a short spoken script from the notes…"
+                : "Rendering audio on this computer — this can take a few minutes. Leave it running."}
             </p>
           )}
           {c.briefUrl && !c.briefBusy && (

@@ -128,6 +128,58 @@ mod wasapi_error_tests {
     }
 }
 
+/// Kōrero 1.44: live proof that loopback capture still works after moving
+/// `wasapi` 0.23 -> 0.25 (RUSTSEC-2026-0332). Needs a Windows machine with a
+/// default output device and something playing on it (the runner plays a
+/// quiet tone). Run with:
+/// cargo test --lib meeting_capture_wasapi::live_tests -- --ignored --nocapture --test-threads=1
+#[cfg(test)]
+mod live_tests {
+    use super::WasapiLoopback;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[test]
+    #[ignore = "live: needs a Windows output device with audio playing"]
+    fn live_loopback_captures_what_is_playing() {
+        let path =
+            std::env::temp_dir().join(format!("korero-144-loopback-{}.wav", std::process::id()));
+        let cap = WasapiLoopback::start(
+            path.clone(),
+            None,
+            "others",
+            None,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("loopback starts");
+        std::thread::sleep(Duration::from_secs(4));
+        let written = cap.stop().expect("loopback stops");
+        let mut r = hound::WavReader::open(&path).expect("wav readable");
+        let spec = r.spec();
+        let samples: Vec<i16> = r.samples::<i16>().map(|s| s.unwrap()).collect();
+        let peak = samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+        let rms = (samples.iter().map(|&s| (s as f64).powi(2)).sum::<f64>()
+            / samples.len().max(1) as f64)
+            .sqrt();
+        println!(
+            "LIVE loopback: {} Hz, {} ch, {written} samples written, {} read ({:.2} s), peak {peak}, rms {rms:.1}",
+            spec.sample_rate,
+            spec.channels,
+            samples.len(),
+            samples.len() as f64 / spec.sample_rate as f64
+        );
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(spec.sample_rate, 16_000);
+        assert_eq!(spec.channels, 1);
+        assert!(samples.len() >= 16_000 * 3, "under 3 s of audio captured");
+        assert!(
+            peak > 200,
+            "captured only silence (peak {peak}): is anything playing?"
+        );
+    }
+}
+
 /// Native WASAPI loopback capture of the default output device to a streaming
 /// 16 kHz mono WAV. Public surface mirrors `StreamCapture`.
 pub struct WasapiLoopback {

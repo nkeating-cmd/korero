@@ -610,6 +610,12 @@ pub struct AppSettings {
     // each export, so the dialog reopens where the user last saved.
     #[serde(default)]
     pub meeting_export_dir: Option<String>,
+    // Kōrero 1.44: the folder of the on-device voice engine (audio brief),
+    // chosen in Settings → Models. None = look in the usual places
+    // (KORERO_TTS_DIR, %APPDATA%\com.kyt.korero\tts, next to the app).
+    // Accepted only if it holds the engine (meeting::is_tts_engine_dir).
+    #[serde(default)]
+    pub tts_engine_dir: Option<String>,
     #[serde(default)]
     pub mute_while_recording: bool,
     #[serde(default)]
@@ -1099,6 +1105,38 @@ fn validate_custom_dir(path: &str) -> Result<std::path::PathBuf, String> {
     Ok(p)
 }
 
+/// Kōrero 1.44: set (or reset with None) the voice engine folder. The folder
+/// must already hold the engine; it is never created, written to or searched.
+#[tauri::command]
+#[specta::specta]
+pub fn set_tts_engine_dir(app: AppHandle, dir: Option<String>) -> Result<(), String> {
+    let cleaned = match dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        Some(d) => {
+            // A network path would run a python.exe from another computer.
+            if d.starts_with(r"\\") || d.starts_with("//") {
+                return Err("Choose a folder on this computer, not a network path.".to_string());
+            }
+            let p = std::path::PathBuf::from(d);
+            if !p.is_absolute() || !p.is_dir() {
+                return Err("Choose the voice engine's folder.".to_string());
+            }
+            if !crate::meeting::is_tts_engine_dir(&p) {
+                return Err(
+                    "That folder doesn't hold the voice engine: it needs audio_brief.py and \
+                     .venv\\Scripts\\python.exe."
+                        .to_string(),
+                );
+            }
+            Some(p.to_string_lossy().to_string())
+        }
+        None => None,
+    };
+    let mut settings = get_settings(&app);
+    settings.tts_engine_dir = cleaned;
+    write_settings(&app, settings);
+    Ok(())
+}
+
 /// Kōrero (v1.24.0, paths): set (or reset with None) the custom meeting
 /// recording folder. Forward-only for existing files — the recovery list and
 /// delete guard scan both this dir and the default; an explicit Move action
@@ -1509,6 +1547,7 @@ pub fn get_default_settings() -> AppSettings {
         post_process_app_routes: Vec::new(),
         meeting_recording_dir: None,
         meeting_export_dir: None,
+        tts_engine_dir: None,
         mute_while_recording: false,
         append_trailing_space: true,  // Kōrero: smoother inline dictation
         app_language: default_app_language(),

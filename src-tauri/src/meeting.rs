@@ -1338,14 +1338,31 @@ pub async fn meeting_list_recordings(app: AppHandle) -> Result<Vec<RecordingFile
     Ok(out)
 }
 
+/// Kōrero 1.44: a folder is the voice engine only if it holds both the
+/// engine's Python and its render script. Used for every candidate below and
+/// to validate the folder chosen in Settings → Models.
+pub(crate) fn is_tts_engine_dir(dir: &std::path::Path) -> bool {
+    dir.join(r".venv\Scripts\python.exe").exists() && dir.join("audio_brief.py").exists()
+}
+
 /// Kōrero (v1.22.0): resolve the local TTS (audio-brief) engine directory at
 /// run time. Order — first that actually contains the engine wins:
-/// KORERO_TTS_DIR env, per-user app-data (%APPDATA%\com.kyt.korero\tts),
-/// next-to-exe (<exe>\tts or <exe>\resources\tts), then the legacy dev path.
+/// the folder chosen in Settings → Models (1.44), KORERO_TTS_DIR env,
+/// per-user app-data (%APPDATA%\com.kyt.korero\tts), then next-to-exe
+/// (<exe>\tts or <exe>\resources\tts).
 /// Returns the engine dir, or an error listing where it looked. Shared by the
 /// audio-brief renderer and the Models-page status probe so they never disagree.
-fn resolve_tts_engine() -> Result<PathBuf, String> {
+///
+/// 1.44: the chosen folder exists because PRIV-1 (25 July) removed the
+/// developer-machine fallback, which is where the engine was actually installed,
+/// and nothing replaced it: Audio brief then failed on that machine. It is
+/// never discovered by searching; the user picks it, and it must pass
+/// `is_tts_engine_dir`, like every other candidate.
+fn resolve_tts_engine(configured: Option<&str>) -> Result<PathBuf, String> {
     let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(p) = configured.map(str::trim).filter(|p| !p.is_empty()) {
+        candidates.push(PathBuf::from(p));
+    }
     if let Ok(p) = std::env::var("KORERO_TTS_DIR") {
         let p = p.trim();
         if !p.is_empty() {
@@ -1369,9 +1386,7 @@ fn resolve_tts_engine() -> Result<PathBuf, String> {
 
     candidates
         .iter()
-        .find(|dir| {
-            dir.join(r".venv\Scripts\python.exe").exists() && dir.join("audio_brief.py").exists()
-        })
+        .find(|dir| is_tts_engine_dir(dir))
         .cloned()
         .ok_or_else(|| {
             let looked = candidates
@@ -1380,7 +1395,7 @@ fn resolve_tts_engine() -> Result<PathBuf, String> {
                 .collect::<Vec<_>>()
                 .join("; ");
             format!(
-                "On-device voice engine not found. Set KORERO_TTS_DIR, or install it under %APPDATA%\\com.kyt.korero\\tts. (Looked in: {looked})"
+                "On-device voice engine not found. Choose its folder in Settings → Models → Text-to-speech. (Looked in: {looked})"
             )
         })
 }
@@ -1390,8 +1405,26 @@ fn resolve_tts_engine() -> Result<PathBuf, String> {
 /// Err(message) = not found, with the locations it looked in. Read-only probe.
 #[tauri::command]
 #[specta::specta]
-pub fn tts_engine_status() -> Result<String, String> {
-    resolve_tts_engine().map(|p| p.to_string_lossy().to_string())
+pub fn tts_engine_status(app: AppHandle) -> Result<String, String> {
+    let configured = crate::settings::get_settings(&app).tts_engine_dir;
+    resolve_tts_engine(configured.as_deref()).map(|p| p.to_string_lossy().to_string())
+}
+
+/// Kōrero 1.44: the voice engine renders a script in one generation and stops
+/// after about this many words, silently (audio-brief skill, reviewed 1 Oct
+/// 2026: 2,048 codec tokens at 12 Hz). A longer script is refused instead of
+/// coming back cut off.
+pub(crate) const MAX_BRIEF_WORDS: usize = 330;
+
+/// The refusal for a script too long to render whole, or None if it fits.
+pub(crate) fn brief_too_long(script: &str) -> Option<String> {
+    let words = script.split_whitespace().count();
+    (words > MAX_BRIEF_WORDS).then(|| {
+        format!(
+            "This script is {words} words. The voice engine stops after about {MAX_BRIEF_WORDS}, so the \
+             end would be cut off. Shorten it on the Audio Brief page, then render again."
+        )
+    })
 }
 
 /// Kōrero (v1.22.0): render a spoken "audio brief" MP3 from text (meeting notes
@@ -1417,6 +1450,9 @@ pub async fn meeting_generate_audio_brief(
     if text.is_empty() {
         return Err("Nothing to narrate — generate notes first.".to_string());
     }
+    if let Some(msg) = brief_too_long(&text) {
+        return Err(msg);
+    }
     // Audio is linear and can't be skimmed; keep briefs short. Capping the input
     // also stops a huge transcript from queueing a 30-minute render.
     const MAX_CHARS: usize = 6_000;
@@ -1427,12 +1463,13 @@ pub async fn meeting_generate_audio_brief(
     };
 
     let dir = meetings_dir(&app)?;
+    let configured = crate::settings::get_settings(&app).tts_engine_dir;
 
     tauri::async_runtime::spawn_blocking(move || {
         // Resolve the local TTS engine directory at run time (see
         // resolve_tts_engine) — shared with the Models-page status probe so the
         // two never disagree about whether the engine is installed.
-        let engine = resolve_tts_engine()?;
+        let engine = resolve_tts_engine(configured.as_deref())?;
         let py = engine.join(r".venv\Scripts\python.exe");
         let script = engine.join("audio_brief.py");
 
@@ -1738,8 +1775,11 @@ pub async fn meeting_query(
         .unwrap_or_default();
 
     // Cap the transcript so a very long meeting can't blow the model's context.
+    // 1.44: the answer now says when it read only the first part (notes read
+    // every part; a question still reads one pass).
     const MAX_CHARS: usize = 48_000;
-    let transcript = if transcript.chars().count() > MAX_CHARS {
+    let total_chars = transcript.chars().count();
+    let transcript = if total_chars > MAX_CHARS {
         let kept: String = transcript.chars().take(MAX_CHARS).collect();
         format!("{kept}\n\n[Transcript truncated to fit the model's context window.]")
     } else {
@@ -1765,7 +1805,15 @@ pub async fn meeting_query(
         crate::ollama_chat::CallKind::Ask,
     )
     .await?;
-    answer.ok_or_else(|| "The model returned no answer.".to_string())
+    let answer = answer.ok_or_else(|| "The model returned no answer.".to_string())?;
+    Ok(if total_chars > MAX_CHARS && !answer.trim().is_empty() {
+        format!(
+            "{answer}{}",
+            crate::notes_parts::ask_coverage_note(MAX_CHARS, total_chars)
+        )
+    } else {
+        answer
+    })
 }
 
 /// v1.20.0: strip a leaked instruction preamble from a post-processed result.
@@ -1779,7 +1827,7 @@ pub async fn meeting_query(
 ///   * a leading run of lines that are verbatim echoes of the prompt.
 /// Genuine output (speaker turns, minutes) is never touched, and an all-or-
 /// nothing guard returns the original text if stripping would empty the result.
-fn strip_llm_preamble(answer: &str, system_prompt: &str) -> String {
+pub(crate) fn strip_llm_preamble(answer: &str, system_prompt: &str) -> String {
     use std::collections::HashSet;
 
     let mut text = answer.trim().to_string();
@@ -1868,29 +1916,21 @@ fn strip_llm_preamble(answer: &str, system_prompt: &str) -> String {
     }
 }
 
-/// Kōrero (meetings reliability, 2026-09-25): the line appended to notes made
-/// from a transcript that was cut to fit the model. `kept`/`total` are char
-/// counts. Floors the percentage, so it never over-states the coverage.
-fn truncation_note(kept: usize, total: usize) -> String {
-    let pct = (kept.min(total) * 100).checked_div(total).unwrap_or(100);
-    format!(
-        "\n\n---\n\n*These notes cover only the first {pct}% of the transcript: the meeting is \
-         longer than the {},{:03}-character limit for notes. To cover a different part, set the \
-         trim markers to that part and generate the notes again.*",
-        kept / 1000,
-        kept % 1000
-    )
-}
-
 /// Post-process a meeting transcript with a custom, per-meeting prompt, using the
 /// configured post-processing provider/model. `prompt` becomes the system
 /// instruction; `text` (the transcript) is the content. Returns the result.
+///
+/// 1.44: `in_parts` is true only for new meeting notes from a transcript; a
+/// long one is then read in parts. Other callers (refine, the Audio Brief
+/// page's draft) send something that is not a transcript, so they keep one
+/// pass over the first 48 000 characters, as before.
 #[tauri::command]
 #[specta::specta]
 pub async fn meeting_post_process(
     app: AppHandle,
     text: String,
     prompt: String,
+    in_parts: Option<bool>,
 ) -> Result<String, String> {
     let settings = crate::settings::get_settings(&app);
     let provider = settings
@@ -1916,20 +1956,13 @@ pub async fn meeting_post_process(
         .cloned()
         .unwrap_or_default();
 
-    // Cap the transcript so it can't blow the model's context window.
-    const MAX_CHARS: usize = 48_000;
-    // Kōrero (meetings reliability, 2026-09-25): remember HOW MUCH was cut.
-    // The model was told, but the saved notes never were, so the notes for 6
-    // of 60 meetings in one real store silently skipped their final third. The
-    // notes now say so, and point at the trim markers as the way to choose
-    // the part that matters.
+    // Kōrero 1.44: a transcript longer than one pass is read in parts (see
+    // notes_parts.rs). Up to 1.43 everything after the first 48 000 characters
+    // was cut, with a note saying so (25 Sept); the flagged moments, which came
+    // after the transcript, were cut with it.
+    use crate::notes_parts as np;
+    use tauri::Emitter;
     let total_chars = text.chars().count();
-    let text = if total_chars > MAX_CHARS {
-        let kept: String = text.chars().take(MAX_CHARS).collect();
-        format!("{kept}\n\n[Transcript truncated to fit the model's context window.]")
-    } else {
-        text
-    };
 
     let mut system = if prompt.trim().is_empty() {
         "Summarise this meeting transcript: key points, decisions, and action items with owners."
@@ -1951,67 +1984,73 @@ pub async fn meeting_post_process(
         system = trimmed[..cut].trim_end().to_string();
     }
     // v1.15.0: known mis-transcription glossary so the model corrects
-    // near-miss variants while it works.
-    if let Some(g) = crate::corrections::glossary_block(&settings.transcript_corrections) {
-        system.push_str(&g);
-    }
+    // near-miss variants while it works. 1.44: kept apart so it can follow the
+    // combine instruction, and go on every part too.
+    let glossary =
+        crate::corrections::glossary_block(&settings.transcript_corrections).unwrap_or_default();
 
-    // v1.17.0: stream the summary so tokens render as they generate instead of
-    // the user staring at a spinner until the whole thing is done. Each delta is
-    // emitted as a `meeting-postprocess-delta` event; the full text is also
-    // returned so callers that don't listen still get the result.
-    use tauri::Emitter;
-    let app_ev = app.clone();
-    // Keep copies for the non-streaming fallback below.
-    let text_fallback = text.clone();
-    let system_fallback = system.clone();
-    // v1.20.0: kept for the post-generation preamble strip (both copies above
-    // are moved into the LLM calls).
-    let system_for_strip = system.clone();
-    let api_key_fallback = api_key.clone();
-    free_speech_model_for_local_llm(&app, &provider.base_url, text.chars().count());
-    let answer = crate::llm_client::stream_chat_completion(
-        &provider,
-        api_key,
-        &model,
-        text,
-        Some(system),
-        |delta| {
-            let _ = app_ev.emit("meeting-postprocess-delta", delta.to_string());
-        },
-    )
-    .await?;
-
-    // Safety net: a provider that ignores `stream: true` (i.e. doesn't emit
-    // OpenAI-style SSE deltas) yields no streamed text. Rather than regress to
-    // an empty result, fall back to one ordinary non-streaming request.
-    //
-    // v1.30.2: this used the DICTATION helper, which caps at 1500 tokens and
-    // 30 s. For a meeting that combination cannot succeed — it would truncate
-    // the notes if it returned at all. Now uses the meeting-shaped request.
-    let answer = if answer.trim().is_empty() {
-        crate::llm_client::send_chat_completion_meeting(
+    let (answer, strip_with) = if !in_parts.unwrap_or(false) || !np::needs_parts(&text) {
+        // One pass, exactly as before 1.44: over the limit, the first 48 000
+        // characters, and the result says so.
+        let system = format!("{system}{glossary}");
+        let cut = total_chars > np::SINGLE_PASS_MAX;
+        let text = if cut {
+            let kept: String = text.chars().take(np::SINGLE_PASS_MAX).collect();
+            format!("{kept}\n\n[Text truncated to fit the model's context window.]")
+        } else {
+            text
+        };
+        let answer = stream_notes(&app, &provider, api_key, &model, text, system.clone()).await?;
+        let answer = if cut && !answer.trim().is_empty() {
+            format!(
+                "{answer}{}",
+                np::partial_note(np::SINGLE_PASS_MAX, total_chars)
+            )
+        } else {
+            answer
+        };
+        (answer, system)
+    } else {
+        let app_ev = app.clone();
+        let app_free = app.clone();
+        let base_url = provider.base_url.clone();
+        np::write_in_parts(
             &provider,
-            api_key_fallback,
+            &api_key,
             &model,
-            text_fallback,
-            Some(system_fallback),
+            &system,
+            &glossary,
+            &text,
+            move |largest| free_speech_model_for_local_llm(&app_free, &base_url, largest),
+            move |stage, part, of| {
+                let _ = app_ev.emit(
+                    "meeting-postprocess-progress",
+                    NotesProgress {
+                        stage: stage.into(),
+                        part,
+                        of,
+                    },
+                );
+            },
+            |user, combine_system| {
+                stream_notes(
+                    &app,
+                    &provider,
+                    api_key.clone(),
+                    &model,
+                    user,
+                    combine_system,
+                )
+            },
         )
         .await?
-    } else {
-        answer
     };
 
     // v1.20.0: remove any leaked instruction preamble / "Here's the …:" lead-in
     // the model may have prepended (common with small local models) so the saved
     // notes begin at the real content. Applied once to the final text; the live
     // streaming preview is transient and intentionally left untouched.
-    let answer = strip_llm_preamble(&answer, &system_for_strip);
-    let answer = if total_chars > MAX_CHARS && !answer.trim().is_empty() {
-        format!("{answer}{}", truncation_note(MAX_CHARS, total_chars))
-    } else {
-        answer
-    };
+    let answer = strip_llm_preamble(&answer, &strip_with);
 
     // Signal completion so the UI can stop its streaming indicator.
     let _ = app.emit("meeting-postprocess-done", answer.clone());
@@ -2019,6 +2058,67 @@ pub async fn meeting_post_process(
         return Err("The model returned no output.".to_string());
     }
     Ok(answer)
+}
+
+/// Kōrero 1.44: progress of a notes job that reads a long meeting in parts.
+/// `stage` is "part" (reading part `part` of `of`) or "combine" (writing the
+/// notes from the parts).
+#[derive(Clone, Serialize)]
+struct NotesProgress {
+    stage: String,
+    part: u32,
+    of: u32,
+}
+
+/// Kōrero 1.44 (moved out of `meeting_post_process`): one streamed notes call.
+///
+/// v1.17.0: stream the summary so tokens render as they generate instead of
+/// the user staring at a spinner until the whole thing is done. Each delta is
+/// emitted as a `meeting-postprocess-delta` event; the full text is also
+/// returned so callers that don't listen still get the result.
+///
+/// Safety net: a provider that ignores `stream: true` (i.e. doesn't emit
+/// OpenAI-style SSE deltas) yields no streamed text. Rather than regress to an
+/// empty result, fall back to one ordinary non-streaming request. v1.30.2: that
+/// fallback is the meeting-shaped request (the dictation helper capped at 1500
+/// tokens and 30 s, which a meeting cannot meet).
+async fn stream_notes(
+    app: &AppHandle,
+    provider: &crate::settings::PostProcessProvider,
+    api_key: String,
+    model: &str,
+    user: String,
+    system: String,
+) -> Result<String, String> {
+    use tauri::Emitter;
+    let app_ev = app.clone();
+    let user_fallback = user.clone();
+    let system_fallback = system.clone();
+    let api_key_fallback = api_key.clone();
+    free_speech_model_for_local_llm(app, &provider.base_url, user.chars().count());
+    let answer = crate::llm_client::stream_chat_completion(
+        provider,
+        api_key,
+        model,
+        user,
+        Some(system),
+        |delta| {
+            let _ = app_ev.emit("meeting-postprocess-delta", delta.to_string());
+        },
+    )
+    .await?;
+    if answer.trim().is_empty() {
+        crate::llm_client::send_chat_completion_meeting(
+            provider,
+            api_key_fallback,
+            model,
+            user_fallback,
+            Some(system_fallback),
+        )
+        .await
+    } else {
+        Ok(answer)
+    }
 }
 
 /// v1.17.0: pre-warm the post-processing model so the FIRST "Generate notes"
@@ -3343,16 +3443,6 @@ mod korero_meetings_reliability_tests {
         assert_eq!(live.failures("you"), 2);
         assert_eq!(live.failures("others"), 1);
     }
-
-    #[test]
-    fn truncated_notes_say_how_much_they_cover() {
-        // A real 73,594-character transcript, cut to 48,000.
-        let n = truncation_note(48_000, 73_594);
-        assert!(n.contains("first 65%"), "{n}");
-        assert!(n.contains("48,000-character"), "{n}");
-        assert!(truncation_note(48_000, 48_000).contains("100%"));
-        assert!(truncation_note(0, 0).contains("100%"), "no divide by zero");
-    }
 }
 
 #[cfg(test)]
@@ -3424,5 +3514,73 @@ mod korero_143_vram_tests {
             false,
             false
         ));
+    }
+}
+
+#[cfg(test)]
+mod korero_144_tts_tests {
+    use super::{brief_too_long, is_tts_engine_dir, resolve_tts_engine, MAX_BRIEF_WORDS};
+    use std::fs;
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("korero-144-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn fake_engine(name: &str, with_python: bool, with_script: bool) -> std::path::PathBuf {
+        let d = temp_dir(name);
+        if with_python {
+            let py = d.join(r".venv\Scripts\python.exe");
+            fs::create_dir_all(py.parent().unwrap()).unwrap();
+            fs::write(&py, b"").unwrap();
+        }
+        if with_script {
+            fs::write(d.join("audio_brief.py"), b"").unwrap();
+        }
+        d
+    }
+
+    #[test]
+    fn tts_setting_first() {
+        let chosen = fake_engine("chosen", true, true);
+        let found = resolve_tts_engine(Some(chosen.to_str().unwrap())).unwrap();
+        assert_eq!(found, chosen);
+        let _ = fs::remove_dir_all(&chosen);
+    }
+
+    #[test]
+    fn tts_requires_both_files() {
+        let half = fake_engine("half", true, false);
+        assert!(!is_tts_engine_dir(&half));
+        let other_half = fake_engine("otherhalf", false, true);
+        assert!(!is_tts_engine_dir(&other_half));
+        // A chosen folder that is not an engine is passed over, never run.
+        if let Ok(p) = resolve_tts_engine(Some(half.to_str().unwrap())) {
+            assert_ne!(p, half);
+        }
+        let _ = fs::remove_dir_all(&half);
+        let _ = fs::remove_dir_all(&other_half);
+    }
+
+    #[test]
+    fn tts_missing_names_the_setting() {
+        if let Err(e) = resolve_tts_engine(Some(r"Z:\no\such\folder")) {
+            assert!(e.contains("Settings → Models"), "{e}");
+            assert!(
+                e.contains(r"Z:\no\such\folder"),
+                "lists the chosen folder: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn brief_word_guard() {
+        let fits = "word ".repeat(MAX_BRIEF_WORDS);
+        assert!(brief_too_long(&fits).is_none());
+        let long = "word ".repeat(MAX_BRIEF_WORDS + 1);
+        let msg = brief_too_long(&long).expect("refused");
+        assert!(msg.contains("331 words"), "{msg}");
     }
 }

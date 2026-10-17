@@ -26,7 +26,9 @@ import {
 } from "../../../stores/meetingJobsStore";
 import type { MeetingDoc } from "../../../stores/meetingsBridge";
 import { logActivity } from "../../../stores/activityStore";
-import type { MeetingTab } from "../../../stores/navStore";
+import { useNav, type MeetingTab } from "../../../stores/navStore";
+import { TEMPLATES } from "../../../stores/audioBriefStore";
+import { draftSpokenScript, isEngineMissing } from "../../../lib/briefScript";
 import { useRecorder } from "../../../stores/recorderStore";
 import {
   DEFAULT_PROMPT,
@@ -87,6 +89,8 @@ export const useMeetingsController = () => {
   const transcribeProgress = task?.progress ?? null;
 
   const [briefBusy, setBriefBusy] = useState(false);
+  // 1.44: which half of the audio brief is running (a script, then audio).
+  const [briefStage, setBriefStage] = useState<"script" | "audio" | null>(null);
   const [briefUrl, setBriefUrl] = useState<string | null>(null);
   const [briefPath, setBriefPath] = useState<string | null>(null);
   const [briefFor, setBriefFor] = useState<string | null>(null);
@@ -608,7 +612,8 @@ export const useMeetingsController = () => {
   };
 
   const onPostProcess = async () => {
-    if (!active || busy) return;
+    // 1.44: not while an audio brief's script is being written (same model).
+    if (!active || busy || briefStage === "script") return;
     // The trim is applied HERE, and flagged moments are added for the model.
     const text = notesInput(active, visibleSegs(active));
     if (!text.trim()) {
@@ -631,7 +636,7 @@ export const useMeetingsController = () => {
   };
 
   const onBoth = async () => {
-    if (!active || busy) return;
+    if (!active || busy || briefStage === "script") return;
     if (isRoom(active)) return runRoom(active, true);
     const m = active;
     setTab("notes");
@@ -745,6 +750,12 @@ export const useMeetingsController = () => {
 
   const genAudioBrief = async () => {
     if (!active || briefBusy) return;
+    // 1.44: the script is written by the notes model. One model job at a time:
+    // its streamed text would otherwise land in the running job's preview.
+    if (busy) {
+      toast.message("Wait for the current job to finish, then make the audio brief.");
+      return;
+    }
     const text = active.processed.trim();
     if (!text) {
       toast.message("Generate notes first.");
@@ -756,7 +767,15 @@ export const useMeetingsController = () => {
     setBriefUrl(null);
     setBriefFor(forId);
     try {
-      const r = await commands.meetingGenerateAudioBrief(text, null, null, null);
+      // 1.44: write a spoken script first, as the Audio Brief page does. The raw
+      // notes are Markdown and can run to ~1,000 words; the engine reads about
+      // 330 and stops, silently.
+      setBriefStage("script");
+      const script = await draftSpokenScript(text, TEMPLATES[0].prompt, (t, p) =>
+        commands.meetingPostProcess(t, p, false),
+      );
+      setBriefStage("audio");
+      const r = await commands.meetingGenerateAudioBrief(script, null, null, null);
       if (r.status !== "ok") throw new Error(r.error);
       setBriefUrl(convertFileSrc(r.data, "asset"));
       setBriefPath(r.data);
@@ -768,10 +787,16 @@ export const useMeetingsController = () => {
         target: { section: "meetings", meetingId: forId, tab: "notes" },
       });
     } catch (e) {
-      toast.error(`Audio brief failed: ${String(e)}`);
-      logActivity({ status: "failed", title: "Audio brief failed", detail: String(e) });
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error(`Audio brief failed: ${msg}`, {
+        action: isEngineMissing(msg)
+          ? { label: "Open Models", onClick: () => useNav.getState().go("models") }
+          : undefined,
+      });
+      logActivity({ status: "failed", title: "Audio brief failed", detail: msg });
     } finally {
       setBriefBusy(false);
+      setBriefStage(null);
     }
   };
 
@@ -1199,6 +1224,7 @@ export const useMeetingsController = () => {
     refineNotes,
     copyProcessed,
     briefBusy,
+    briefStage,
     briefUrl: briefFor === activeId ? briefUrl : null,
     briefPath: briefFor === activeId ? briefPath : null,
     genAudioBrief,

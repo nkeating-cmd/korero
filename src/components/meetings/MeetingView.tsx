@@ -312,7 +312,9 @@ const WrapUp: React.FC<{ c: MeetingsController }> = ({ c }) => {
             </div>
             <div className="kx-meta">
               {running
-                ? `${wordCount(running.live).toLocaleString()} words so far · ${c.ppLabel}`
+                ? running.phase && !running.live.trim()
+                  ? running.phase
+                  : `${wordCount(running.live).toLocaleString()} words so far · ${c.ppLabel}`
                 : m.processed.trim()
                   ? "Open the Notes tab to read, edit or refine them."
                   : c.ppLabel === "not configured"
