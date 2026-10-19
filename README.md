@@ -17,19 +17,23 @@ Two things do reach the network, and it is worth naming them rather than roundin
 speech models are downloaded on first use, and the app asks GitHub once at startup whether a newer
 release exists. Neither carries audio, transcripts, or anything about you. No telemetry, ever.
 
-Current version: **v1.43.0** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.43.0)).
+Current version: **v1.45.0** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.45.0)).
 
 ---
 
 ## What Kōrero adds over Handy
 
-### Meetings — record both sides of a call (v1.13–1.14)
+### Meetings — record both sides of a call (v1.13–1.14), or everyone in the room (v1.45)
+- **On a call or in the room** (v1.45). Choose before you press Record (on Today, Meetings, the pop-out recorder, or Ctrl K: *Record a call* / *Record in the room*), and Kōrero remembers it. *In the room* records your microphone only, so nothing warns about missing call audio, and it picks up quieter speech from across the table. When you stop, the transcript is rebuilt from the recording one speaker turn at a time and labelled Speaker 1, Speaker 2, and so on.
+- **Separate speakers** (v1.45). On any meeting's Audio tab, Kōrero works out who said what from the microphone recording and labels each line. It runs on this computer; the first time, it downloads two small models (about 32 MB, checked against pinned hashes). On four public meeting recordings (AMI), about a fifth of the speech was missed or given the wrong speaker (21.5% diarisation error), so check the labels before you rely on them.
 - **A meetings library and a live view** (v1.42). Meetings are grouped by day beside the open meeting, with Transcript, Notes, Audio and Ask tabs. While you record, the live view shows both sides' levels and the transcript as it arrives. Press **F** to flag a moment and the notes give it its own line. After Stop, a short wrap-up says what was saved and what to check. Recording carries on whichever page you are on.
 - **Pop-out recorder** (v1.42): a small always-on-top window with the clock, both sides' levels, Pause, Flag and Stop, so you can keep it beside the call. If the call goes quiet for 90 seconds, Kōrero says it may be playing through a different device.
 - **Live transcript while you record** (v1.14): speech is segmented and transcribed on the fly, streaming into the Meetings page — and you can **ask your configured model about the meeting so far**, mid-meeting. Stopping is near-instant because the transcript already exists.
 - **Live input meters + device test** (v1.13.5–6): per-stream level meters with device names and captured-time counters, a no-risk *Test audio* button that exercises the real capture path, and **native WASAPI loopback** (with cpal fallback) for reliable system-audio capture.
 - **Dual capture**: your microphone ("You") **and system audio via WASAPI loopback ("Others")** — a free speaker split without diarization models.
 - **Failsafe by design**: audio streams straight to WAV on disk *while recording* (header flushed every ~5 s), so a crash never loses a meeting; bounded memory even on long calls; on-disk recordings can be recovered and re-transcribed any time.
+- **Notes for long meetings read the whole meeting** (v1.44). Over 48,000 characters, the transcript is read in parts and the notes are written from all of them, with progress shown ("reading part 1 of 3…"). Flagged moments always make it in. Notes written by an earlier version from part of a meeting show a *Write full notes* button.
+- **Audio brief, fixed** (v1.44). Choose the voice engine's folder in Settings → Models → Text-to-speech. The Meetings *Audio brief* button now writes a short spoken script first, and a script too long to read in full is refused instead of being cut off.
 - Pick the **transcription model** per meeting; **re-transcribe**, **post-process with a custom per-meeting prompt** (rendered as markdown — tables and all), or both; rename, copy, and **export** the transcript + processed notes.
 - **Import audio files** — WAV, **M4A**, MP3, FLAC, OGG (v1.16.1), plus **CAF** and **AIFF** (v1.30.1) — and have them transcribed + post-processed through the same bounded-memory pipeline. Both common `.m4a` payloads decode: **AAC** and **ALAC (Apple Lossless)**, so a lossless Voice Memo or QuickTime recording works without converting it first.
 - Privacy guard: a warning whenever the configured LLM provider is a cloud endpoint, plus a Rust-side egress allowlist so a tampered config can't redirect transcripts to an unknown host.
