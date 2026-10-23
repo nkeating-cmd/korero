@@ -434,7 +434,7 @@ pub fn show_processing_overlay(app_handle: &AppHandle, prompt_name: Option<Strin
 /// window is usually hidden in the tray. So a dictation that could not be
 /// pasted, or could not start, says so here as well as in the main window.
 /// `kind` is the overlay state ("notice-paste-copied", "notice-no-mic",
-/// "notice-mic-denied"). If anything else shows or hides the pill before
+/// "notice-mic-denied", "notice-cleanup-late"). If anything else shows or hides the pill before
 /// `hide_after_ms` is up, the notice leaves it alone.
 pub fn show_overlay_notice(app_handle: &AppHandle, kind: &str, hide_after_ms: u64) {
     show_overlay_state(app_handle, kind);

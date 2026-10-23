@@ -17,7 +17,7 @@ Two things do reach the network, and it is worth naming them rather than roundin
 speech models are downloaded on first use, and the app asks GitHub once at startup whether a newer
 release exists. Neither carries audio, transcripts, or anything about you. No telemetry, ever.
 
-Current version: **v1.45.0** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.45.0)).
+Current version: **v1.45.1** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.45.1)).
 
 ---
 
@@ -51,6 +51,7 @@ Current version: **v1.45.0** ([release notes](https://github.com/nkeating-cmd/ko
 - **Latch / hands-free mode** — double-tap a shortcut to lock recording on for long dictation; tap once to stop.
 
 ### Reliability
+- **Clean-up survives a slow local model** (v1.45.1, Ollama). When you start a clean-up dictation and your Ollama model isn't loaded, Kōrero starts loading it straight away, so the load happens while you speak. If the clean-up still isn't ready 30 seconds after you stop, your words go in as you said them, the pill says *Pasted as spoken · clean-up continues*, and the clean-up keeps going: if it succeeds, the cleaned version appears on that dictation in History (it never replaces a correction you made in the meantime). Before, a model that took longer than 30 seconds to load lost the clean-up entirely, and giving up made Ollama throw away the half-loaded model. Cloud and custom providers keep their 30-second limit. Kōrero also keeps its last five log files instead of one.
 - **Nothing lost, nothing hidden** (v1.42). If a paste fails, the text goes to the clipboard and the dictation pill says so. No microphone shows on the pill with a Fix button. A note's dictation always lands in the note it started in, even if you change page, and a failed clean-up is labelled instead of passing as done.
 - **Meetings keep working when you leave the tab** (v1.41). Stop, re-transcribe, import, recover, notes and refine all run in the background, and the spinner and progress are still there when you come back. One queue now handles every read and write of the meetings store, so a page you return to can no longer save its older copy over a finished result.
 - **Capture warnings while there's still time to fix them** (v1.41). If the microphone hears nothing for two minutes, or almost nothing comes through from the computer's audio output after 90 seconds, Kōrero warns you mid-meeting with a toast and a taskbar flash. Stop explains why a side came back empty.

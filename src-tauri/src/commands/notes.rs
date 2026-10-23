@@ -77,7 +77,15 @@ pub async fn note_stop_dictation(
 
     // Reuse the shared text pipeline (Chinese-variant conversion + optional
     // post-processing). No paste, no History write — just hand the text back.
-    let processed = crate::actions::process_transcription_output(&app, &raw, post_process).await;
+    // Kōrero 1.45.1 (D-010): nothing is pasted here, so wait for the clean-up
+    // rather than give up at the cursor limit.
+    let processed = crate::actions::process_transcription_output(
+        &app,
+        &raw,
+        post_process,
+        crate::actions::CleanupWait::UntilDone,
+    )
+    .await;
     Ok(processed.final_text)
 }
 

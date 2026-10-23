@@ -649,6 +649,69 @@ impl HistoryManager {
         Ok(())
     }
 
+    /// Kōrero 1.45.1 (D-010): file a clean-up that finished after its words were
+    /// pasted as spoken. Fills the entry only while it still has no clean-up,
+    /// so a correction or "Tidy te reo" made in the meantime is never
+    /// overwritten, and only while the entry still holds `spoken`, the words the
+    /// clean-up read (a Retry may have re-transcribed it). `Ok(None)` otherwise,
+    /// or when the entry was deleted.
+    pub fn set_late_post_process(
+        &self,
+        id: i64,
+        text: String,
+        prompt: Option<String>,
+        spoken: &str,
+    ) -> Result<Option<HistoryEntry>> {
+        let conn = self.get_connection()?;
+        let entry =
+            Self::set_late_post_process_with_conn(&conn, id, &text, prompt.as_deref(), spoken)?;
+        if let Some(entry) = &entry {
+            if let Err(e) = (HistoryUpdatePayload::Updated {
+                entry: entry.clone(),
+            })
+            .emit(&self.app_handle)
+            {
+                error!("Failed to emit history-updated event: {}", e);
+            }
+        } else {
+            debug!(
+                "Late clean-up for entry {} not filed: cleaned, edited, re-transcribed or gone",
+                id
+            );
+        }
+        Ok(entry)
+    }
+
+    fn set_late_post_process_with_conn(
+        conn: &Connection,
+        id: i64,
+        text: &str,
+        prompt: Option<&str>,
+        spoken: &str,
+    ) -> Result<Option<HistoryEntry>> {
+        // Blank means blank to the History page too, whose JavaScript trim()
+        // also drops tabs and line breaks (review, Minor 6).
+        let updated = conn.execute(
+            "UPDATE transcription_history
+                SET post_processed_text = ?1, post_process_prompt = ?2
+              WHERE id = ?3
+                AND transcription_text = ?4
+                AND (post_processed_text IS NULL
+                     OR trim(post_processed_text, ' ' || char(9) || char(10) || char(13)) = '')",
+            params![text, prompt, id, spoken],
+        )?;
+        if updated == 0 {
+            return Ok(None);
+        }
+        let entry = conn.query_row(
+            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+             FROM transcription_history WHERE id = ?1",
+            params![id],
+            Self::map_history_entry,
+        )?;
+        Ok(Some(entry))
+    }
+
     /// Update only the post-processed text for a history entry.
     ///
     /// Korero (v1.4.0): used by the inline correction UI in the History panel.
@@ -805,6 +868,73 @@ mod tests {
             ],
         )
         .expect("insert history entry");
+    }
+
+    /// D-010: a late clean-up fills an entry that has none, keeps the words
+    /// as spoken, and never overwrites a clean-up or correction made since.
+    #[test]
+    fn late_clean_up_fills_only_an_empty_entry() {
+        let conn = setup_conn();
+        insert_entry(&conn, 100, "as spoken", None);
+        insert_entry(&conn, 200, "edited", Some("my own correction"));
+        insert_entry(&conn, 300, "blank", Some(" \n\t "));
+
+        let filled = HistoryManager::set_late_post_process_with_conn(
+            &conn,
+            1,
+            "Cleaned.",
+            Some("p"),
+            "as spoken",
+        )
+        .expect("update")
+        .expect("filled");
+        assert_eq!(filled.post_processed_text.as_deref(), Some("Cleaned."));
+        assert_eq!(filled.post_process_prompt.as_deref(), Some("p"));
+        assert_eq!(filled.transcription_text, "as spoken");
+
+        let kept =
+            HistoryManager::set_late_post_process_with_conn(&conn, 2, "Cleaned.", None, "edited")
+                .expect("update");
+        assert!(
+            kept.is_none(),
+            "a correction made in the meantime must survive"
+        );
+        let text: String = conn
+            .query_row(
+                "SELECT post_processed_text FROM transcription_history WHERE id = 2",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(text, "my own correction");
+
+        assert!(
+            HistoryManager::set_late_post_process_with_conn(&conn, 3, "Cleaned.", None, "blank")
+                .expect("update")
+                .is_some(),
+            "whitespace-only counts as no clean-up"
+        );
+        assert!(
+            HistoryManager::set_late_post_process_with_conn(&conn, 99, "x", None, "x")
+                .expect("missing entry is not an error")
+                .is_none()
+        );
+
+        // Review Minor 3: a Retry re-transcribed the entry while the late
+        // clean-up ran; the clean-up of the old words must not be filed on it.
+        insert_entry(&conn, 400, "new words", None);
+        assert!(
+            HistoryManager::set_late_post_process_with_conn(
+                &conn,
+                4,
+                "Cleaned old words.",
+                None,
+                "old words",
+            )
+            .expect("update")
+            .is_none(),
+            "a clean-up of other words must not be filed"
+        );
     }
 
     #[test]
