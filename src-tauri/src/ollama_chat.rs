@@ -705,6 +705,22 @@ pub async fn chat_stream<F: FnMut(&str)>(
     p.into_result().map(Outcome::Done)
 }
 
+/// D-010: warm only a model that is not loaded at all. A dictation pre-warm
+/// must never reload a model that is already resident at another context:
+/// the request may fit it as it is, and a reload costs as much as a cold load.
+pub async fn warm_if_cold(base_url: &str, model: &str, prompt_tokens: u32, num_predict: u32) {
+    if model.trim().is_empty() {
+        return;
+    }
+    if loaded_context(&native_base(base_url), model)
+        .await
+        .is_some()
+    {
+        return;
+    }
+    warm(base_url, model, prompt_tokens, num_predict).await;
+}
+
 /// Load a model ahead of use, at the context the coming call will want, so
 /// the call itself doesn't pay for a reload. Best-effort; never errors.
 pub async fn warm(base_url: &str, model: &str, prompt_tokens: u32, num_predict: u32) {

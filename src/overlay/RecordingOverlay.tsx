@@ -23,7 +23,8 @@ type OverlayState =
   | "notice-no-mic"
   | "notice-mic-denied"
   // Kōrero 1.45.1 (D-010): the clean-up outlasted the cursor wait, so the words
-  // went in as spoken; the cleaned version is filed in History when it finishes.
+  // went in as spoken; the clean-up carries on and, if it succeeds, is filed on
+  // the dictation's History entry. Says only what is true when it shows.
   | "notice-cleanup-late";
 
 const isRecordingState = (s: OverlayState) => s === "recording" || s === "recording-latched";
@@ -227,7 +228,7 @@ const RecordingOverlay: React.FC = () => {
   //   notice-paste-…     clipboard  | "Couldn't paste · copied" | —
   //   notice-no-mic      warning    | "No microphone found"     | Fix
   //   notice-mic-denied  warning    | "Microphone is blocked"   | Fix
-  //   notice-cleanup-late clock     | "Pasted as spoken · see History" | —
+  //   notice-cleanup-late clock     | "Pasted as spoken · clean-up continues" | —
   const elapsed = startedAtRef.current ? (Date.now() - startedAtRef.current) / 1000 : 0;
   const notice = state.startsWith("notice-");
   const cleaningLabel = promptName
