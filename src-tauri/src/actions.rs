@@ -433,6 +433,17 @@ pub(crate) struct LateCleanup {
     prompt: Option<String>,
 }
 
+/// D-010: only a local Ollama clean-up can outlast the cursor wait. Every
+/// other path (cloud providers, `custom`, an `ollama` entry pointing at a
+/// non-Ollama server) has its own 30 s client limit (`llm_client`), so a
+/// "late" result would never arrive (independent review, M1). Those wait
+/// as before: their own limit bounds them.
+fn can_finish_late(settings: &AppSettings) -> bool {
+    settings
+        .active_post_process_provider()
+        .is_some_and(|p| p.id == "ollama")
+}
+
 pub(crate) struct ProcessedTranscription {
     pub final_text: String,
     pub post_processed_text: Option<String>,
@@ -445,8 +456,14 @@ pub(crate) struct ProcessedTranscription {
 /// D-010: let a clean-up that outlasted the cursor wait finish, and file the
 /// result on the dictation's History entry (`entry_id`), which then shows the
 /// cleaned text in place of "Post-processing unavailable". Never pastes: by
-/// now the person may be typing somewhere else.
-pub(crate) fn finish_late_cleanup(app: &AppHandle, late: LateCleanup, entry_id: Option<i64>) {
+/// now the person may be typing somewhere else. `spoken` is the transcript the
+/// clean-up read; the result is filed only while the entry still holds it.
+pub(crate) fn finish_late_cleanup(
+    app: &AppHandle,
+    late: LateCleanup,
+    entry_id: Option<i64>,
+    spoken: String,
+) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let started = Instant::now();
@@ -454,14 +471,15 @@ pub(crate) fn finish_late_cleanup(app: &AppHandle, late: LateCleanup, entry_id: 
         match (result, entry_id) {
             (Some(text), Some(id)) => {
                 let hm = app.state::<Arc<HistoryManager>>();
-                match hm.set_late_post_process(id, text, late.prompt) {
+                match hm.set_late_post_process(id, text, late.prompt, &spoken) {
                     Ok(Some(_)) => log::info!(
                         "Late clean-up filed in History entry {} after a further {:?}",
                         id,
                         started.elapsed()
                     ),
                     Ok(None) => log::info!(
-                        "Late clean-up for History entry {} not filed: it already has one",
+                        "Late clean-up for History entry {} not filed: it was cleaned, edited, \
+                         re-transcribed or deleted in the meantime",
                         id
                     ),
                     Err(e) => error!("Late clean-up finished but could not be saved: {}", e),
@@ -477,27 +495,37 @@ pub(crate) fn finish_late_cleanup(app: &AppHandle, late: LateCleanup, entry_id: 
     });
 }
 
-/// The text of the prompt clean-up uses when it succeeds (stored with the
-/// History entry).
-fn selected_prompt_text(settings: &AppSettings) -> Option<String> {
-    let prompt_id = settings.post_process_selected_prompt_id.as_ref()?;
+/// The text of the prompt clean-up uses (stored with the History entry): the
+/// per-app routed prompt when one applies, as `post_process_transcription`
+/// chooses it. Until 1.45.1 History stored the globally selected prompt even
+/// when a routed one was used (review, Minor 4).
+fn resolved_prompt_text(settings: &AppSettings) -> Option<String> {
+    let prompt_id = resolve_prompt_id(settings)?;
     settings
         .post_process_prompts
         .iter()
-        .find(|prompt| &prompt.id == prompt_id)
+        .find(|prompt| prompt.id == prompt_id)
         .map(|prompt| prompt.prompt.clone())
 }
+
+/// Characters of transcript the pre-warm leaves room for (D-010, review M2).
+/// Sized so a dictation of up to about 4,000 characters (some three minutes
+/// of speech) reuses the warmed model; with the default clean-up prompt that
+/// is a 6,144-token context. A longer dictation asks for a bigger context,
+/// and Ollama reloads the model for it.
+const PREWARM_TRANSCRIPT_CHARS: usize = 4_000;
 
 /// Kōrero 1.45.1 (D-010): start loading the local clean-up model when a
 /// clean-up dictation starts, so the load (15-19 s on the test laptop, 108 s
 /// when it was short of memory) runs while the person is still speaking. A
 /// clean-up request that arrives during the load joins it (probe C, 23 Oct:
-/// one load, answered 17.6 s after it was sent, against about 20 s cold).
+/// one load, answered 17.6 s after it was sent, against about 20 s cold) when
+/// the context sizes match, which `PREWARM_TRANSCRIPT_CHARS` arranges for
+/// dictations up to about 4,000 characters.
 ///
 /// Ollama only: other providers have no load to hide, and a cloud provider is
-/// never contacted before there is something to send. Sends no transcript text;
-/// the model is loaded at the context a dictation of the selected prompt asks
-/// for, so the request that follows reuses it. Best-effort and never blocks.
+/// never contacted before there is something to send. Sends no transcript
+/// text. Only when the model is not loaded at all. Best-effort, never blocks.
 fn prewarm_cleanup_model(app: &AppHandle) {
     let settings = get_settings(app);
     if !settings.post_process_enabled {
@@ -517,18 +545,15 @@ fn prewarm_cleanup_model(app: &AppHandle) {
     if model.trim().is_empty() {
         return;
     }
-    let prompt = resolve_prompt_id(&settings)
-        .and_then(|id| {
-            settings
-                .post_process_prompts
-                .iter()
-                .find(|p| p.id == id)
-                .map(|p| p.prompt.clone())
-        })
-        .unwrap_or_default();
-    let prompt_tokens = crate::ollama_chat::estimate_tokens(&prompt);
+    let prompt = resolved_prompt_text(&settings).unwrap_or_default();
+    let prompt_tokens = crate::ollama_chat::estimate_tokens(&prompt).saturating_add(
+        crate::ollama_chat::estimate_tokens(&"a".repeat(PREWARM_TRANSCRIPT_CHARS)),
+    );
     tauri::async_runtime::spawn(async move {
-        crate::ollama_chat::warm(
+        // Cold only: a model that is already loaded, at any context, is left
+        // alone. The request itself reuses or resizes it, so a warm-up never
+        // causes a reload that the dictation would not have needed.
+        crate::ollama_chat::warm_if_cold(
             &provider.base_url,
             &model,
             prompt_tokens,
@@ -558,6 +583,12 @@ pub(crate) async fn process_transcription_output(
         // D-010: the clean-up runs as its own task, so that giving up waiting
         // at the cursor does not cancel it. Cancelling it made Ollama abort a
         // half-finished model load (probe B, 23 Oct).
+        let wait = if wait == CleanupWait::AtCursor && !can_finish_late(&settings) {
+            CleanupWait::UntilDone
+        } else {
+            wait
+        };
+        let prompt_text = resolved_prompt_text(&settings);
         let task_settings = settings.clone();
         let task_text = final_text.clone();
         let mut handle = tauri::async_runtime::spawn(async move {
@@ -567,7 +598,7 @@ pub(crate) async fn process_transcription_output(
             Some(Some(processed_text)) => {
                 post_processed_text = Some(processed_text.clone());
                 final_text = processed_text;
-                post_process_prompt = selected_prompt_text(&settings);
+                post_process_prompt = prompt_text;
             }
             Some(None) => {}
             None => {
@@ -578,7 +609,7 @@ pub(crate) async fn process_transcription_output(
                 );
                 late_cleanup = Some(LateCleanup {
                     handle,
-                    prompt: selected_prompt_text(&settings),
+                    prompt: prompt_text,
                 });
             }
         }
@@ -824,6 +855,7 @@ impl ShortcutAction for TranscribeAction {
 
                             // Save to history if WAV was saved
                             let mut entry_id: Option<i64> = None;
+                            let spoken = transcription.clone();
                             if wav_saved {
                                 match hm.save_entry(
                                     file_name,
@@ -839,9 +871,12 @@ impl ShortcutAction for TranscribeAction {
                             // D-010: a clean-up that outlasted the cursor wait
                             // finishes in the background and files itself on
                             // the History entry just saved.
-                            let cleanup_late = processed.late_cleanup.is_some();
+                            // The pill mentions History only when there is an
+                            // entry for the clean-up to land on (review, Minor 1).
+                            let cleanup_late =
+                                processed.late_cleanup.is_some() && entry_id.is_some();
                             if let Some(late) = processed.late_cleanup.take() {
-                                finish_late_cleanup(&ah, late, entry_id);
+                                finish_late_cleanup(&ah, late, entry_id, spoken);
                             }
 
                             if processed.final_text.is_empty() {
@@ -1060,6 +1095,38 @@ mod cleanup_wait_tests {
             let got = await_cleanup(&mut h, CleanupWait::AtCursor, Duration::from_secs(5)).await;
             assert_eq!(got, Some(None));
         });
+    }
+
+    /// Review M1: only a local Ollama clean-up may finish late; every other
+    /// provider has its own 30 s limit, so it is waited for as before.
+    #[test]
+    fn only_ollama_clean_up_may_finish_late() {
+        let mut s = crate::settings::get_default_settings();
+        for (id, late) in [("ollama", true), ("custom", false), ("openai", false)] {
+            s.post_process_provider_id = id.to_string();
+            assert_eq!(can_finish_late(&s), late, "{id}");
+        }
+    }
+
+    #[test]
+    fn the_prewarm_leaves_room_for_a_dictation() {
+        // Default clean-up prompt plus PREWARM_TRANSCRIPT_CHARS must land on a
+        // context that holds a 4,000-character dictation, so it is reused.
+        let s = crate::settings::get_default_settings();
+        let template = s
+            .post_process_prompts
+            .iter()
+            .map(|p| p.prompt.chars().count())
+            .max()
+            .unwrap_or(0);
+        let warm = crate::ollama_chat::estimate_tokens(&"a".repeat(template))
+            + crate::ollama_chat::estimate_tokens(&"a".repeat(PREWARM_TRANSCRIPT_CHARS));
+        let need = crate::ollama_chat::estimate_tokens(&"a".repeat(template + 4_000));
+        let (warm_ctx, _) =
+            crate::ollama_chat::choose_num_ctx(warm, 1_500, None).expect("warm context");
+        let (used_ctx, _) =
+            crate::ollama_chat::choose_num_ctx(need, 1_500, Some(warm_ctx)).expect("call");
+        assert_eq!(used_ctx, warm_ctx, "the dictation would reload the model");
     }
 
     #[test]
