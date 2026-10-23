@@ -52,7 +52,26 @@ pub(crate) const SMALL_BODY: usize = 64 << 10; // /api/ps, /api/show
 const MAX_SANE_CTX: u64 = 262_144;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const DICTATION_TIMEOUT: Duration = Duration::from_secs(30);
+/// Kōrero 1.45.1 (D-010): how long a dictation clean-up request may run.
+///
+/// Until 1.45.1 this was 30 s, and it also had to cover Ollama loading the
+/// model. A cold load of gemma4:12b took 15-19 s on the test laptop most days
+/// and **108 s** on 23 Oct 2026 with 3 GB of RAM free, so clean-up failed twice
+/// that day at 30.1 s. Worse, Ollama aborts a load when the request waiting on
+/// it disconnects (probe B, 23 Oct: "client connection closed before
+/// llama-server finished loading, aborting load"), so every give-up also threw
+/// the half-loaded model away and the next try started from nothing.
+///
+/// The person at the text cursor no longer waits on this limit:
+/// `actions::CURSOR_WAIT` decides when to paste the words as spoken, and this
+/// request carries on in the background so the clean-up still lands in History
+/// and the model is loaded for the next dictation. It only has to outlast the
+/// slowest load seen plus the answer, and still end a request that is wedged.
+pub const DICTATION_LIMIT: Duration = Duration::from_secs(300);
+/// A pre-warm has to outlive the slowest model load: if it gives up first,
+/// Ollama aborts the load it started (probe B). Was 120 s, under the 108 s
+/// measured cold load plus GPU discovery.
+const WARM_LIMIT: Duration = Duration::from_secs(300);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const TOTAL_CEILING: Duration = Duration::from_secs(3_600);
 /// A non-streamed reply arrives only when it is complete, so its limit must
@@ -70,7 +89,9 @@ Use the trim markers to choose the part that matters, then try again.";
 /// Which caller is asking. Decides the output allowance and the time budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallKind {
-    /// Dictation clean-up: the user is waiting at a text cursor.
+    /// Dictation clean-up. The person may be waiting at a text cursor, but
+    /// only for `actions::CURSOR_WAIT`; the request itself may run to
+    /// `DICTATION_LIMIT` and finish in the background (D-010).
     Dictation,
     /// Meeting notes (streamed).
     Meeting,
@@ -92,7 +113,7 @@ impl CallKind {
     /// a long transcript needs more than a short dictation.
     fn budget(self, prompt_tokens: u32) -> Duration {
         match self {
-            CallKind::Dictation => DICTATION_TIMEOUT,
+            CallKind::Dictation => DICTATION_LIMIT,
             // Reading the prompt at PROMPT_FLOOR_TPS. Measured on the test laptop
             // 2026-10-02 with gemma4:12b: 1,414 tokens/s with the graphics card
             // to itself, 71 tokens/s while Kōrero's own speech model was also
@@ -106,7 +127,7 @@ impl CallKind {
     /// plus writing the answer.
     fn total_budget(self, prompt_tokens: u32, num_predict: u32) -> Duration {
         match self {
-            CallKind::Dictation => DICTATION_TIMEOUT,
+            CallKind::Dictation => DICTATION_LIMIT,
             _ => (self.budget(prompt_tokens)
                 + Duration::from_secs(u64::from(num_predict) / GEN_FLOOR_TPS))
             .min(NON_STREAM_CEILING),
@@ -707,7 +728,8 @@ pub async fn warm(base_url: &str, model: &str, prompt_tokens: u32, num_predict: 
         "options": {"num_ctx": num_ctx}
     });
     let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(WARM_LIMIT)
         .build()
     else {
         return;
@@ -1102,6 +1124,61 @@ mod tests {
         });
     }
 
+    /// D-010 live: from a cold model, a dictation clean-up that the cursor
+    /// stops waiting for still finishes, from one load. Before 1.45.1 the
+    /// request gave up at 30 s and Ollama aborted the load (23 Oct 2026).
+    #[test]
+    #[ignore = "live: needs a local Ollama with the model (the test laptop)"]
+    fn live_cold_dictation_survives_the_cursor_wait() {
+        tauri::async_runtime::block_on(async {
+            let provider = live_provider();
+            let model = live_model();
+            let base = native_base(&provider.base_url);
+            let _ = reqwest::Client::new()
+                .post(format!("{base}/api/generate"))
+                .json(&json!({"model": model, "keep_alive": 0}))
+                .send()
+                .await;
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            assert_eq!(
+                loaded_context(&base, &model).await,
+                None,
+                "model still loaded"
+            );
+
+            let (p, m) = (provider.clone(), model.clone());
+            let mut h = tauri::async_runtime::spawn(async move {
+                chat(
+                    &p,
+                    "",
+                    &m,
+                    Some("Reply with one short sentence."),
+                    "um so the hui is on tuesday no wednesday at the marae",
+                    CallKind::Dictation,
+                )
+                .await
+            });
+            let started = std::time::Instant::now();
+            // A cursor wait far shorter than any cold load: it must run out
+            // without cancelling the request.
+            let early = tokio::time::timeout(Duration::from_secs(2), &mut h).await;
+            assert!(early.is_err(), "a cold load answered within 2 s");
+            let answer = h.await.expect("task joined");
+            println!(
+                "LIVE cold dictation answered {:.1}s after it was sent",
+                started.elapsed().as_secs_f32()
+            );
+            match answer {
+                Ok(Outcome::Done(Some(text))) => assert!(!text.trim().is_empty()),
+                other => panic!("cold dictation clean-up failed: {other:?}"),
+            }
+            assert!(
+                loaded_context(&base, &model).await.is_some(),
+                "the model should stay loaded for the next dictation"
+            );
+        });
+    }
+
     #[test]
     #[ignore = "live: needs a local Ollama with the model (the test laptop)"]
     fn live_no_reload_across_a_session() {
@@ -1158,11 +1235,23 @@ mod tests {
 
     #[test]
     fn budgets() {
-        assert_eq!(CallKind::Dictation.budget(10_000), DICTATION_TIMEOUT);
+        assert_eq!(CallKind::Dictation.budget(10_000), DICTATION_LIMIT);
         assert!(CallKind::Ask.budget(18_000) > CallKind::Ask.budget(1_000));
         assert!(CallKind::Meeting.budget(u32::MAX) <= Duration::from_secs(900));
         assert_eq!(CallKind::Meeting.num_predict(), 8_192);
         assert_eq!(CallKind::Ask.num_predict(), 1_500);
+    }
+
+    /// D-010: a dictation request must outlive the slowest cold load measured
+    /// (108 s on 23 Oct 2026), and so must a pre-warm, or Ollama aborts the
+    /// load it was waiting on. Both still end a wedged request.
+    #[test]
+    fn dictation_and_warm_outlive_a_slow_cold_load() {
+        let slowest_load_seen = Duration::from_secs(108);
+        assert!(CallKind::Dictation.total_budget(500, 1_500) >= slowest_load_seen * 2);
+        assert!(WARM_LIMIT >= slowest_load_seen * 2);
+        assert!(DICTATION_LIMIT <= Duration::from_secs(600));
+        assert!(WARM_LIMIT <= Duration::from_secs(600));
     }
 
     #[test]
@@ -1175,10 +1264,11 @@ mod tests {
         for kind in [CallKind::Ask, CallKind::Note, CallKind::Meeting] {
             assert!(kind.total_budget(1_000, 1_500) > kind.budget(1_000));
         }
-        // Dictation stays short: someone is waiting at a text cursor.
+        // Dictation is bounded by DICTATION_LIMIT; the cursor wait is separate
+        // (actions::CURSOR_WAIT, D-010).
         assert_eq!(
             CallKind::Dictation.total_budget(500, 1_500),
-            DICTATION_TIMEOUT
+            DICTATION_LIMIT
         );
         assert!(CallKind::Meeting.total_budget(u32::MAX, u32::MAX) <= NON_STREAM_CEILING);
     }

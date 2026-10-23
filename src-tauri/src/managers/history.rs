@@ -654,6 +654,60 @@ impl HistoryManager {
     /// Korero (v1.4.0): used by the inline correction UI in the History panel.
     /// Emits HistoryUpdatePayload::Updated so the frontend refreshes in real time
     /// without a full page reload.
+    /// Kōrero 1.45.1 (D-010): file a clean-up that finished after its words were
+    /// pasted as spoken. Fills the entry only while it still has no clean-up,
+    /// so a correction or "Tidy te reo" made in the meantime is never
+    /// overwritten. `Ok(None)` when the entry already had one (or was deleted).
+    pub fn set_late_post_process(
+        &self,
+        id: i64,
+        text: String,
+        prompt: Option<String>,
+    ) -> Result<Option<HistoryEntry>> {
+        let conn = self.get_connection()?;
+        let entry = Self::set_late_post_process_with_conn(&conn, id, &text, prompt.as_deref())?;
+        if let Some(entry) = &entry {
+            if let Err(e) = (HistoryUpdatePayload::Updated {
+                entry: entry.clone(),
+            })
+            .emit(&self.app_handle)
+            {
+                error!("Failed to emit history-updated event: {}", e);
+            }
+        } else {
+            debug!(
+                "Late clean-up for entry {} not filed: it already has one, or is gone",
+                id
+            );
+        }
+        Ok(entry)
+    }
+
+    fn set_late_post_process_with_conn(
+        conn: &Connection,
+        id: i64,
+        text: &str,
+        prompt: Option<&str>,
+    ) -> Result<Option<HistoryEntry>> {
+        let updated = conn.execute(
+            "UPDATE transcription_history
+                SET post_processed_text = ?1, post_process_prompt = ?2
+              WHERE id = ?3
+                AND (post_processed_text IS NULL OR trim(post_processed_text) = '')",
+            params![text, prompt, id],
+        )?;
+        if updated == 0 {
+            return Ok(None);
+        }
+        let entry = conn.query_row(
+            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+             FROM transcription_history WHERE id = ?1",
+            params![id],
+            Self::map_history_entry,
+        )?;
+        Ok(Some(entry))
+    }
+
     pub fn update_post_processed_text(
         &self,
         id: i64,
@@ -805,6 +859,50 @@ mod tests {
             ],
         )
         .expect("insert history entry");
+    }
+
+    /// D-010: a late clean-up fills an entry that has none, keeps the words
+    /// as spoken, and never overwrites a clean-up or correction made since.
+    #[test]
+    fn late_clean_up_fills_only_an_empty_entry() {
+        let conn = setup_conn();
+        insert_entry(&conn, 100, "as spoken", None);
+        insert_entry(&conn, 200, "edited", Some("my own correction"));
+        insert_entry(&conn, 300, "blank", Some("  "));
+
+        let filled =
+            HistoryManager::set_late_post_process_with_conn(&conn, 1, "Cleaned.", Some("p"))
+                .expect("update")
+                .expect("filled");
+        assert_eq!(filled.post_processed_text.as_deref(), Some("Cleaned."));
+        assert_eq!(filled.post_process_prompt.as_deref(), Some("p"));
+        assert_eq!(filled.transcription_text, "as spoken");
+
+        let kept = HistoryManager::set_late_post_process_with_conn(&conn, 2, "Cleaned.", None)
+            .expect("update");
+        assert!(
+            kept.is_none(),
+            "a correction made in the meantime must survive"
+        );
+        let text: String = conn
+            .query_row(
+                "SELECT post_processed_text FROM transcription_history WHERE id = 2",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(text, "my own correction");
+
+        assert!(
+            HistoryManager::set_late_post_process_with_conn(&conn, 3, "Cleaned.", None)
+                .expect("update")
+                .is_some()
+        );
+        assert!(
+            HistoryManager::set_late_post_process_with_conn(&conn, 99, "x", None)
+                .expect("missing entry is not an error")
+                .is_none()
+        );
     }
 
     #[test]
