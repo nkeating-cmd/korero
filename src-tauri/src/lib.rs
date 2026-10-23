@@ -57,6 +57,9 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Listener, Manager};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
+
+/// Kōrero 1.45.1: earlier log files kept beside the current one.
+const LOG_FILES_KEPT: usize = 4;
 // Kōrero (2026-05-17 PM): persist window size + position across launches so
 // Nic doesn't have to resize away from the default every session.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -728,7 +731,12 @@ pub fn run(cli_args: CliArgs) {
             LogBuilder::new()
                 .level(log::LevelFilter::Trace) // Set to most verbose level globally
                 .max_file_size(500_000)
-                .rotation_strategy(RotationStrategy::KeepOne)
+                // Kōrero 1.45.1: KeepOne deletes the whole log every time it
+                // reaches 500 KB, so a problem is often gone from the log by the
+                // time anyone looks (23 Oct 2026: the 13:47 clean-up failure was
+                // erased by a rotation at 13:51). Keep four earlier files, about
+                // 2.5 MB in all. Transcript text is never logged (SEC-143-06).
+                .rotation_strategy(RotationStrategy::KeepSome(LOG_FILES_KEPT))
                 .clear_targets()
                 .targets([
                     // Console output respects RUST_LOG environment variable

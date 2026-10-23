@@ -1,7 +1,7 @@
 import { emit, listen } from "@tauri-apps/api/event";
 import React, { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Mic, Cpu, Loader2, X, Lock, ClipboardCheck, TriangleAlert } from "lucide-react";
+import { Mic, Cpu, Loader2, X, Lock, ClipboardCheck, TriangleAlert, Clock } from "lucide-react";
 import "./RecordingOverlay.css";
 import { commands } from "@/bindings";
 import i18n, { syncLanguageFromSettings } from "@/i18n";
@@ -21,7 +21,10 @@ type OverlayState =
   | "processing"
   | "notice-paste-copied"
   | "notice-no-mic"
-  | "notice-mic-denied";
+  | "notice-mic-denied"
+  // Kōrero 1.45.1 (D-010): the clean-up outlasted the cursor wait, so the words
+  // went in as spoken; the cleaned version is filed in History when it finishes.
+  | "notice-cleanup-late";
 
 const isRecordingState = (s: OverlayState) => s === "recording" || s === "recording-latched";
 
@@ -224,6 +227,7 @@ const RecordingOverlay: React.FC = () => {
   //   notice-paste-…     clipboard  | "Couldn't paste · copied" | —
   //   notice-no-mic      warning    | "No microphone found"     | Fix
   //   notice-mic-denied  warning    | "Microphone is blocked"   | Fix
+  //   notice-cleanup-late clock     | "Pasted as spoken · see History" | —
   const elapsed = startedAtRef.current ? (Date.now() - startedAtRef.current) / 1000 : 0;
   const notice = state.startsWith("notice-");
   const cleaningLabel = promptName
@@ -252,6 +256,9 @@ const RecordingOverlay: React.FC = () => {
         )}
         {(state === "notice-no-mic" || state === "notice-mic-denied") && (
           <TriangleAlert className="state-icon notice-icon" size={15} strokeWidth={2} aria-hidden="true" />
+        )}
+        {state === "notice-cleanup-late" && (
+          <Clock className="state-icon notice-icon" size={15} strokeWidth={2} aria-hidden="true" />
         )}
       </div>
 
@@ -298,6 +305,9 @@ const RecordingOverlay: React.FC = () => {
         {state === "notice-paste-copied" && <span className="pill-label notice-label">{t("overlay.pasteCopied")}</span>}
         {state === "notice-no-mic" && <span className="pill-label notice-label">{t("overlay.noMic")}</span>}
         {state === "notice-mic-denied" && <span className="pill-label notice-label">{t("overlay.micBlocked")}</span>}
+        {state === "notice-cleanup-late" && (
+          <span className="pill-label notice-label">{t("overlay.cleanupLate")}</span>
+        )}
       </div>
 
       <div className="overlay-right">
