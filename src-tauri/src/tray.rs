@@ -25,36 +25,60 @@ pub enum AppTheme {
     Colored, // Pink/colored theme for Linux
 }
 
-/// Gets the current app theme, with Linux defaulting to Colored theme
+/// Gets the theme the tray icon sits on, with Linux defaulting to Colored theme.
+///
+/// Kōrero (1.45.2): on Windows the tray lives on the taskbar, whose colour
+/// follows `SystemUsesLightTheme`, not the app/window theme
+/// (`AppsUseLightTheme`). The two can differ (Windows' own default is a dark
+/// taskbar with light apps), so read the taskbar setting first and only fall
+/// back to the window theme if the registry value is unavailable.
 pub fn get_current_theme(app: &AppHandle) -> AppTheme {
     if cfg!(target_os = "linux") {
         // On Linux, always use the colored theme
-        AppTheme::Colored
-    } else {
-        // On other platforms, map system theme to our app theme
-        if let Some(main_window) = app.get_webview_window("main") {
-            match main_window.theme().unwrap_or(Theme::Dark) {
-                Theme::Light => AppTheme::Light,
-                Theme::Dark => AppTheme::Dark,
-                _ => AppTheme::Dark, // Default fallback
-            }
-        } else {
-            AppTheme::Dark
-        }
+        return AppTheme::Colored;
     }
+    #[cfg(target_os = "windows")]
+    if let Some(light) = windows_taskbar_is_light() {
+        return if light { AppTheme::Light } else { AppTheme::Dark };
+    }
+    if let Some(main_window) = app.get_webview_window("main") {
+        match main_window.theme().unwrap_or(Theme::Dark) {
+            Theme::Light => AppTheme::Light,
+            Theme::Dark => AppTheme::Dark,
+            _ => AppTheme::Dark, // Default fallback
+        }
+    } else {
+        AppTheme::Dark
+    }
+}
+
+/// `Some(true)` when the Windows taskbar uses the light theme, `Some(false)`
+/// when dark, `None` when the setting cannot be read.
+#[cfg(target_os = "windows")]
+fn windows_taskbar_is_light() -> Option<bool> {
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+    let key = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        .ok()?;
+    let v: u32 = key.get_value("SystemUsesLightTheme").ok()?;
+    Some(v != 0)
 }
 
 /// Gets the appropriate icon path for the given theme and state
 pub fn get_icon_path(theme: AppTheme, state: TrayIconState) -> &'static str {
     match (theme, state) {
-        // Dark theme uses light icons
-        (AppTheme::Dark, TrayIconState::Idle) => "resources/tray_idle.png",
-        (AppTheme::Dark, TrayIconState::Recording) => "resources/tray_recording.png",
-        (AppTheme::Dark, TrayIconState::Transcribing) => "resources/tray_transcribing.png",
-        // Light theme uses dark icons
-        (AppTheme::Light, TrayIconState::Idle) => "resources/tray_idle_dark.png",
-        (AppTheme::Light, TrayIconState::Recording) => "resources/tray_recording_dark.png",
-        (AppTheme::Light, TrayIconState::Transcribing) => "resources/tray_transcribing_dark.png",
+        // A dark taskbar needs a light glyph. Kōrero (1.45.2): the `_dark`
+        // files hold the LIGHT (white) glyph — they are the icons *for* dark
+        // mode. Before 1.45.2 this mapping was inverted, so a dark taskbar
+        // got a dark-grey K that was close to invisible.
+        // `tray_icon_contrast_matches_theme` (below) guards this by pixel.
+        (AppTheme::Dark, TrayIconState::Idle) => "resources/tray_idle_dark.png",
+        (AppTheme::Dark, TrayIconState::Recording) => "resources/tray_recording_dark.png",
+        (AppTheme::Dark, TrayIconState::Transcribing) => "resources/tray_transcribing_dark.png",
+        // A light taskbar needs a dark glyph.
+        (AppTheme::Light, TrayIconState::Idle) => "resources/tray_idle.png",
+        (AppTheme::Light, TrayIconState::Recording) => "resources/tray_recording.png",
+        (AppTheme::Light, TrayIconState::Transcribing) => "resources/tray_transcribing.png",
         // Colored theme uses pink icons (for Linux)
         (AppTheme::Colored, TrayIconState::Idle) => "resources/handy.png",
         (AppTheme::Colored, TrayIconState::Recording) => "resources/recording.png",
@@ -329,5 +353,45 @@ mod tests {
     fn falls_back_to_raw_transcription() {
         let entry = build_entry("raw", None);
         assert_eq!(last_transcript_text(&entry), "raw");
+    }
+}
+
+/// Kōrero (1.45.2): guards the theme → icon mapping by looking at the pixels,
+/// not the file names (the names misled the original mapping).
+#[cfg(test)]
+mod icon_contrast_tests {
+    use super::{get_icon_path, AppTheme, TrayIconState};
+
+    /// Mean luma of opaque, grey (glyph) pixels — ignores the coloured
+    /// recording/transcribing dot.
+    fn glyph_luma(rel: &str) -> f64 {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+        let img = tauri::image::Image::from_path(&path)
+            .unwrap_or_else(|e| panic!("load {}: {}", path.display(), e));
+        let (mut sum, mut n) = (0f64, 0f64);
+        for px in img.rgba().chunks_exact(4) {
+            let (r, g, b, a) = (px[0] as i32, px[1] as i32, px[2] as i32, px[3]);
+            let grey = (r - g).abs() < 24 && (g - b).abs() < 24;
+            if a > 200 && grey {
+                sum += 0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64;
+                n += 1.0;
+            }
+        }
+        assert!(n > 20.0, "{} has no glyph pixels", rel);
+        sum / n
+    }
+
+    #[test]
+    fn tray_icon_contrast_matches_theme() {
+        for state in [
+            TrayIconState::Idle,
+            TrayIconState::Recording,
+            TrayIconState::Transcribing,
+        ] {
+            let dark = glyph_luma(get_icon_path(AppTheme::Dark, state.clone()));
+            let light = glyph_luma(get_icon_path(AppTheme::Light, state.clone()));
+            assert!(dark > 170.0, "dark taskbar {:?} glyph too dark: {:.0}", state, dark);
+            assert!(light < 110.0, "light taskbar {:?} glyph too light: {:.0}", state, light);
+        }
     }
 }
