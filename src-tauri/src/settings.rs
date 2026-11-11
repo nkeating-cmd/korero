@@ -363,6 +363,30 @@ impl Default for OrtAcceleratorSetting {
     }
 }
 
+/// Kōrero 1.45.1 (review of F15): providers whose key this process has seen in
+/// the OS keychain (read there, or written there). A save uses it to tell a key
+/// that is already stored from a plaintext key still waiting to be moved.
+static KEYS_IN_STORE: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+    std::sync::Mutex::new(None);
+
+fn mark_in_store(provider_id: &str, present: bool) {
+    let mut guard = KEYS_IN_STORE.lock().unwrap_or_else(|e| e.into_inner());
+    let set = guard.get_or_insert_with(Default::default);
+    if present {
+        set.insert(provider_id.to_string());
+    } else {
+        set.remove(provider_id);
+    }
+}
+
+fn is_in_store(provider_id: &str) -> bool {
+    KEYS_IN_STORE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|s| s.contains(provider_id))
+}
+
 // Kōrero: secrets live in the OS keychain, not on disk.
 //
 // SecretMap is still the in-memory cache the rest of the app reads from — the
@@ -427,13 +451,22 @@ impl std::ops::DerefMut for SecretMap {
 
 impl SecretMap {
     /// Pull every known provider's key out of the OS keychain into the
-    /// in-memory map. Existing in-memory values are overwritten — the keychain
-    /// is the source of truth post-migration. Missing keychain entries leave
-    /// the in-memory value as an empty string.
+    /// in-memory map. A stored key replaces the in-memory value: the keychain
+    /// is the source of truth once a key is in it.
+    ///
+    /// Kōrero 1.45.1 (review of F15): a provider with nothing stored, or whose
+    /// entry could not be read, keeps the value it had. Blanking it here lost a
+    /// plaintext key that had not been moved yet, and turned a failed read into
+    /// a deleted key at the next save.
     pub fn hydrate_from_keyring(&mut self) {
         for provider_id in self.0.keys().cloned().collect::<Vec<_>>() {
-            let key = crate::secret_store::load_api_key(&provider_id).unwrap_or_default();
-            self.0.insert(provider_id, key);
+            let stored = crate::secret_store::read_api_key(&provider_id);
+            if matches!(stored, crate::secret_store::Stored::Key(_)) {
+                mark_in_store(&provider_id, true);
+            }
+            let current = self.0.get(&provider_id).cloned().unwrap_or_default();
+            self.0
+                .insert(provider_id, crate::secret_store::hydrated(&current, stored));
         }
     }
 
@@ -443,10 +476,34 @@ impl SecretMap {
     /// Returns the list of provider IDs whose write failed, so the caller
     /// can surface a UI signal. An empty vec means everything persisted
     /// cleanly.
-    pub fn persist_to_keyring(&self) -> Vec<String> {
+    ///
+    /// Kōrero 1.45.1 (review of F15): only what changed is written, and a key is
+    /// deleted only when the user cleared one (`secret_store::key_action`).
+    /// `previous` is the map the app held before this save. A failure is
+    /// reported once per key value, not on every later save.
+    pub fn persist_to_keyring(&self, previous: Option<&SecretMap>) -> Vec<String> {
+        use crate::secret_store::{key_action, KeyAction};
         let mut failures = Vec::new();
         for (provider_id, value) in self.0.iter() {
-            if !crate::secret_store::save_api_key(provider_id, value) {
+            let before = previous.and_then(|p| p.0.get(provider_id)).map(String::as_str);
+            let ok = match key_action(before, value, is_in_store(provider_id)) {
+                KeyAction::Skip => continue,
+                KeyAction::Save => {
+                    let ok = crate::secret_store::save_api_key(provider_id, value);
+                    if ok {
+                        mark_in_store(provider_id, true);
+                    }
+                    ok
+                }
+                KeyAction::Delete => {
+                    let ok = crate::secret_store::save_api_key(provider_id, "");
+                    if ok {
+                        mark_in_store(provider_id, false);
+                    }
+                    ok
+                }
+            };
+            if !ok && before != Some(value.as_str()) {
                 failures.push(provider_id.clone());
             }
         }
@@ -472,6 +529,7 @@ impl SecretMap {
                 continue;
             }
             if crate::secret_store::save_api_key(provider_id, value) {
+                mark_in_store(provider_id, true);
                 debug!(
                     "secret_store: migrated plaintext key for '{}' into OS keychain",
                     provider_id
@@ -1789,7 +1847,17 @@ pub fn write_settings(app: &AppHandle, settings: AppSettings) {
     // SecretMap Serialize impl writes empty strings to disk regardless, so the
     // ordering is purely belt-and-braces — if anything reads the JSON between
     // the two writes it will get blanks, not plaintext.
-    let failures = settings.post_process_api_keys.persist_to_keyring();
+    // Kōrero 1.45.1: compared with what the app held before this save, so only
+    // a changed key is written and only a cleared key is deleted.
+    let previous = app.try_state::<SettingsCache>().map(|c| {
+        c.0.read()
+            .unwrap_or_else(|e| e.into_inner())
+            .post_process_api_keys
+            .clone()
+    });
+    let failures = settings
+        .post_process_api_keys
+        .persist_to_keyring(previous.as_ref());
     emit_keychain_error(app, "save", failures);
     store.set("settings", serde_json::to_value(&settings).unwrap());
 

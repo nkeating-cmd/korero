@@ -10,7 +10,8 @@
 //!
 //! * Windows  → Credential Manager (DPAPI-protected, per-user)
 //! * macOS    → Keychain (per-user, optionally per-app via signing identity)
-//! * Linux    → Secret Service / kwallet (whichever the desktop provides)
+//! * Linux    → no store is compiled in (Kōrero ships for Windows); keys there
+//!   last for the session only, and saving one reports that it was not kept
 //!
 //! On startup, [`settings::load_or_create_app_settings`] runs a one-shot
 //! migration: any plaintext key still in `settings_store.json` is copied into
@@ -50,28 +51,96 @@ fn entry(provider_id: &str) -> Option<Entry> {
     }
 }
 
-/// Read an API key from the OS keychain.
+/// What the OS keychain holds for a provider.
 ///
-/// Returns `Some(key)` on success, `None` if the entry is missing, the
-/// keychain is unavailable, or the stored value can't be retrieved. Distinct
-/// "not found" vs "error" outcomes are deliberately collapsed — callers only
-/// care whether a key is available for use *right now*.
-pub fn load_api_key(provider_id: &str) -> Option<String> {
-    let entry = entry(provider_id)?;
+/// Kōrero 1.45.1 (review of F15): "nothing stored" and "could not read" are
+/// different answers. Until a real store was compiled in, nothing could tell
+/// them apart and nothing needed to. With one, treating a failed read as "no
+/// key" would blank the key in memory, and the next settings save would then
+/// DELETE a perfectly good stored key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stored {
+    Key(String),
+    Absent,
+    Unreadable,
+}
+
+/// Read a provider's key from the OS keychain, keeping "absent" and
+/// "unreadable" apart (see [`Stored`]).
+pub fn read_api_key(provider_id: &str) -> Stored {
+    let Some(entry) = entry(provider_id) else {
+        return Stored::Unreadable;
+    };
     match entry.get_password() {
         Ok(key) if !key.is_empty() => {
             debug!("secret_store: loaded key for '{}'", provider_id);
-            Some(key)
+            Stored::Key(key)
         }
-        Ok(_) => None,
-        Err(keyring::Error::NoEntry) => None,
+        Ok(_) => Stored::Absent,
+        Err(keyring::Error::NoEntry) => Stored::Absent,
         Err(err) => {
             warn!(
                 "secret_store: failed to read keyring entry for '{}': {}",
                 provider_id, err
             );
-            None
+            Stored::Unreadable
         }
+    }
+}
+
+/// Read an API key from the OS keychain.
+///
+/// Returns `Some(key)` on success, `None` if the entry is missing, the
+/// keychain is unavailable, or the stored value can't be retrieved. Use
+/// [`read_api_key`] wherever the difference decides what happens to the key.
+pub fn load_api_key(provider_id: &str) -> Option<String> {
+    match read_api_key(provider_id) {
+        Stored::Key(key) => Some(key),
+        Stored::Absent | Stored::Unreadable => None,
+    }
+}
+
+/// What a settings save does with one provider's key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyAction {
+    Skip,
+    Save,
+    Delete,
+}
+
+/// Kōrero 1.45.1 (review of F15): decide what a settings save does with one
+/// provider's key. `previous` is the value the app held before this save
+/// (`None` during start-up, before there is one); `in_store` is whether this
+/// process has seen the key in the OS keychain (read it, or written it).
+///
+///   * An empty value deletes the stored key ONLY when the user just cleared a
+///     key that was there. An empty value that was already empty says nothing:
+///     it may be a key that could not be read, and must never delete one.
+///   * A key is written when it changed, or when it has not been seen in the
+///     keychain yet (a plaintext key waiting to be moved there).
+///   * An unchanged key already in the keychain is left alone, so the 60-odd
+///     settings saves that have nothing to do with keys never touch it.
+pub fn key_action(previous: Option<&str>, new: &str, in_store: bool) -> KeyAction {
+    if new.is_empty() {
+        return match previous {
+            Some(p) if !p.is_empty() => KeyAction::Delete,
+            _ => KeyAction::Skip,
+        };
+    }
+    if in_store && previous == Some(new) {
+        KeyAction::Skip
+    } else {
+        KeyAction::Save
+    }
+}
+
+/// The value the app holds for a provider after reading the keychain: the
+/// stored key when there is one, otherwise whatever it already held (a
+/// plaintext key not yet moved, or nothing). Never blanks on a failed read.
+pub fn hydrated(current: &str, stored: Stored) -> String {
+    match stored {
+        Stored::Key(key) => key,
+        Stored::Absent | Stored::Unreadable => current.to_string(),
     }
 }
 
@@ -157,6 +226,38 @@ fn delete_inner(entry: &Entry, provider_id: &str) -> bool {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn an_empty_value_only_deletes_a_key_the_user_just_cleared() {
+        assert_eq!(key_action(Some("sk-live"), "", true), KeyAction::Delete);
+        assert_eq!(key_action(Some("sk-live"), "", false), KeyAction::Delete);
+        // Already empty: it may be a key that could not be read. Never delete.
+        assert_eq!(key_action(Some(""), "", true), KeyAction::Skip);
+        assert_eq!(key_action(Some(""), "", false), KeyAction::Skip);
+        // Start-up, before the app holds any settings: never delete.
+        assert_eq!(key_action(None, "", false), KeyAction::Skip);
+        assert_eq!(key_action(None, "", true), KeyAction::Skip);
+    }
+
+    #[test]
+    fn a_key_is_written_when_it_changed_or_is_not_in_the_store_yet() {
+        assert_eq!(key_action(Some("old"), "new", true), KeyAction::Save);
+        assert_eq!(key_action(Some(""), "new", false), KeyAction::Save);
+        assert_eq!(key_action(None, "plain", false), KeyAction::Save);
+        // A plaintext key the app loaded from disk and has not moved yet.
+        assert_eq!(key_action(Some("plain"), "plain", false), KeyAction::Save);
+        // Unchanged and already stored: an unrelated settings save leaves it alone.
+        assert_eq!(key_action(Some("same"), "same", true), KeyAction::Skip);
+    }
+
+    #[test]
+    fn a_failed_or_empty_read_never_blanks_what_the_app_holds() {
+        assert_eq!(hydrated("", Stored::Key("k".into())), "k");
+        assert_eq!(hydrated("plain", Stored::Key("k".into())), "k");
+        assert_eq!(hydrated("plain", Stored::Absent), "plain");
+        assert_eq!(hydrated("plain", Stored::Unreadable), "plain");
+        assert_eq!(hydrated("", Stored::Unreadable), "");
+    }
 
     /// Build a provider id that won't collide with any real Kōrero entry
     /// even if the test crashes mid-run and leaves crud behind.
