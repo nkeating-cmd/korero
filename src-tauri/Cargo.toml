@@ -127,8 +127,11 @@ tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
 tauri-plugin-dialog = "2.6"
 # Kōrero: OS keychain for post-process LLM API keys.
 # Windows Credential Manager / macOS Keychain / Linux Secret Service.
-# v3.x is the current stable major. Default features include all native backends.
-keyring = "3.6"
+# Kōrero 1.45.1 (F15, L-007): keyring 3 compiles NO platform store unless a
+# feature names one. Without it every Entry is an in-memory mock, so a key
+# "saved" fine and was gone on the next start. The features are gated by
+# target inside keyring, so naming both here is safe on every platform.
+keyring = { version = "3.6", features = ["windows-native", "apple-native"] }
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"

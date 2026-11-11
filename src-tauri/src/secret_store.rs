@@ -95,8 +95,21 @@ pub fn save_api_key(provider_id: &str, value: &str) -> bool {
 
     match entry.set_password(value) {
         Ok(()) => {
-            debug!("secret_store: saved key for '{}'", provider_id);
-            true
+            // Kōrero 1.45.1 (F15, L-007): a write only counts once a FRESH handle
+            // can read it back. A store that accepts the write and forgets it
+            // (keyring's mock store, when no platform backend is compiled in)
+            // used to report success here, and the migration then blanked the
+            // only copy of the key.
+            if load_api_key(provider_id).as_deref() == Some(value) {
+                debug!("secret_store: saved key for '{}'", provider_id);
+                true
+            } else {
+                warn!(
+                    "secret_store: key for '{}' was written but could not be read back; treating as not saved",
+                    provider_id
+                );
+                false
+            }
         }
         Err(err) => {
             warn!(
@@ -173,8 +186,13 @@ mod tests {
     ///     access controls.
     ///
     /// Run on demand with `cargo test -- --ignored keychain_roundtrip`.
+    ///
+    /// Kōrero 1.45.1 (F15, L-007): on Windows this runs by default. Credential
+    /// Manager needs no desktop prompt, and leaving the test ignored is how a
+    /// build with no platform store shipped from v1.18.1 to v1.45.0: every
+    /// save and load here uses its own handle, so it fails on a mock store.
     #[test]
-    #[ignore]
+    #[cfg_attr(not(windows), ignore)]
     fn keychain_roundtrip() {
         let provider = unique_provider_id();
         let _guard = Cleanup(provider.clone());
