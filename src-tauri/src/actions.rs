@@ -17,7 +17,7 @@ use log::{debug, error, warn};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -339,7 +339,7 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
         }
         Err(e) => {
             error!(
-                "LLM post-processing failed for provider '{}': {}. Falling back to original transcription.",
+                "LLM post-processing failed for provider '{}': {} Falling back to original transcription.",
                 provider.id,
                 e
             );
@@ -392,39 +392,225 @@ async fn maybe_convert_chinese_variant(
     }
 }
 
+/// Kōrero 1.45.1 (D-010): how long a dictation waits at the text cursor for its
+/// clean-up before the words are pasted as spoken. Unchanged from the old 30 s
+/// request limit, so a warm model behaves exactly as before; what changed is
+/// that running out of this wait no longer cancels the clean-up (see
+/// `ollama_chat::DICTATION_LIMIT`). Kept short on purpose: a paste that
+/// arrives minutes later lands in whatever window has focus by then.
+pub(crate) const CURSOR_WAIT: Duration = Duration::from_secs(30);
+
+/// Whether the caller can wait for a clean-up for as long as it takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CleanupWait {
+    /// A dictation: someone is at a text cursor. Wait up to `CURSOR_WAIT`,
+    /// then hand back the words as spoken and finish the clean-up later.
+    AtCursor,
+    /// History retry and Notes: nothing is pasted, so wait for the answer.
+    UntilDone,
+}
+
+/// Wait for a clean-up task as `wait` allows. `Some(result)` when it finished
+/// (`result` is `None` if it failed), `None` when the cursor wait ran out first.
+/// Giving up here leaves the task running: the handle is only borrowed.
+async fn await_cleanup(
+    handle: &mut tauri::async_runtime::JoinHandle<Option<String>>,
+    wait: CleanupWait,
+    cursor_wait: Duration,
+) -> Option<Option<String>> {
+    match wait {
+        CleanupWait::UntilDone => Some(handle.await.ok().flatten()),
+        CleanupWait::AtCursor => tokio::time::timeout(cursor_wait, handle)
+            .await
+            .ok()
+            .map(|joined| joined.ok().flatten()),
+    }
+}
+
+/// A clean-up still running when the cursor wait ran out (D-010).
+pub(crate) struct LateCleanup {
+    handle: tauri::async_runtime::JoinHandle<Option<String>>,
+    prompt: Option<String>,
+}
+
+/// D-010: only a local Ollama clean-up can outlast the cursor wait. Every
+/// other path (cloud providers, `custom`, an `ollama` entry pointing at a
+/// non-Ollama server) has its own 30 s client limit (`llm_client`), so a
+/// "late" result would never arrive (independent review, M1). Those wait
+/// as before: their own limit bounds them.
+fn can_finish_late(settings: &AppSettings) -> bool {
+    settings
+        .active_post_process_provider()
+        .is_some_and(|p| p.id == "ollama")
+}
+
 pub(crate) struct ProcessedTranscription {
     pub final_text: String,
     pub post_processed_text: Option<String>,
     pub post_process_prompt: Option<String>,
+    /// Set when `final_text` is the words as spoken because the clean-up had
+    /// not finished within `CURSOR_WAIT`. Hand it to `finish_late_cleanup`.
+    pub late_cleanup: Option<LateCleanup>,
+}
+
+/// D-010: let a clean-up that outlasted the cursor wait finish, and file the
+/// result on the dictation's History entry (`entry_id`), which then shows the
+/// cleaned text in place of "Post-processing unavailable". Never pastes: by
+/// now the person may be typing somewhere else. `spoken` is the transcript the
+/// clean-up read; the result is filed only while the entry still holds it.
+pub(crate) fn finish_late_cleanup(
+    app: &AppHandle,
+    late: LateCleanup,
+    entry_id: Option<i64>,
+    spoken: String,
+) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let started = Instant::now();
+        let result = late.handle.await.ok().flatten();
+        match (result, entry_id) {
+            (Some(text), Some(id)) => {
+                let hm = app.state::<Arc<HistoryManager>>();
+                match hm.set_late_post_process(id, text, late.prompt, &spoken) {
+                    Ok(Some(_)) => log::info!(
+                        "Late clean-up filed in History entry {} after a further {:?}",
+                        id,
+                        started.elapsed()
+                    ),
+                    Ok(None) => log::info!(
+                        "Late clean-up for History entry {} not filed: it was cleaned, edited, \
+                         re-transcribed or deleted in the meantime",
+                        id
+                    ),
+                    Err(e) => error!("Late clean-up finished but could not be saved: {}", e),
+                }
+            }
+            (Some(_), None) => {
+                log::info!("Late clean-up finished; this dictation has no History entry to hold it")
+            }
+            (None, _) => {
+                warn!("Late clean-up did not finish either; History keeps the words as spoken")
+            }
+        }
+    });
+}
+
+/// The text of the prompt clean-up uses (stored with the History entry): the
+/// per-app routed prompt when one applies, as `post_process_transcription`
+/// chooses it. Until 1.45.1 History stored the globally selected prompt even
+/// when a routed one was used (review, Minor 4).
+fn resolved_prompt_text(settings: &AppSettings) -> Option<String> {
+    let prompt_id = resolve_prompt_id(settings)?;
+    settings
+        .post_process_prompts
+        .iter()
+        .find(|prompt| prompt.id == prompt_id)
+        .map(|prompt| prompt.prompt.clone())
+}
+
+/// Characters of transcript the pre-warm leaves room for (D-010, review M2).
+/// Sized so a dictation of up to about 4,000 characters (some three minutes
+/// of speech) reuses the warmed model; with the default clean-up prompt that
+/// is a 6,144-token context. A longer dictation asks for a bigger context,
+/// and Ollama reloads the model for it.
+const PREWARM_TRANSCRIPT_CHARS: usize = 4_000;
+
+/// Kōrero 1.45.1 (D-010): start loading the local clean-up model when a
+/// clean-up dictation starts, so the load (15-19 s on the test laptop, 108 s
+/// when it was short of memory) runs while the person is still speaking. A
+/// clean-up request that arrives during the load joins it (probe C, 23 Oct:
+/// one load, answered 17.6 s after it was sent, against about 20 s cold) when
+/// the context sizes match, which `PREWARM_TRANSCRIPT_CHARS` arranges for
+/// dictations up to about 4,000 characters.
+///
+/// Ollama only: other providers have no load to hide, and a cloud provider is
+/// never contacted before there is something to send. Sends no transcript
+/// text. Only when the model is not loaded at all. Best-effort, never blocks.
+fn prewarm_cleanup_model(app: &AppHandle) {
+    let settings = get_settings(app);
+    if !settings.post_process_enabled {
+        return;
+    }
+    let Some(provider) = settings.active_post_process_provider().cloned() else {
+        return;
+    };
+    if provider.id != "ollama" {
+        return;
+    }
+    let model = settings
+        .post_process_models
+        .get(&provider.id)
+        .cloned()
+        .unwrap_or_default();
+    if model.trim().is_empty() {
+        return;
+    }
+    let prompt = resolved_prompt_text(&settings).unwrap_or_default();
+    let prompt_tokens = crate::ollama_chat::estimate_tokens(&prompt).saturating_add(
+        crate::ollama_chat::estimate_tokens(&"a".repeat(PREWARM_TRANSCRIPT_CHARS)),
+    );
+    tauri::async_runtime::spawn(async move {
+        // Cold only: a model that is already loaded, at any context, is left
+        // alone. The request itself reuses or resizes it, so a warm-up never
+        // causes a reload that the dictation would not have needed.
+        crate::ollama_chat::warm_if_cold(
+            &provider.base_url,
+            &model,
+            prompt_tokens,
+            crate::ollama_chat::CallKind::Dictation.num_predict(),
+        )
+        .await;
+    });
 }
 
 pub(crate) async fn process_transcription_output(
     app: &AppHandle,
     transcription: &str,
     post_process: bool,
+    wait: CleanupWait,
 ) -> ProcessedTranscription {
     let settings = get_settings(app);
     let mut final_text = transcription.to_string();
     let mut post_processed_text: Option<String> = None;
     let mut post_process_prompt: Option<String> = None;
+    let mut late_cleanup: Option<LateCleanup> = None;
 
     if let Some(converted_text) = maybe_convert_chinese_variant(&settings, transcription).await {
         final_text = converted_text;
     }
 
     if post_process {
-        if let Some(processed_text) = post_process_transcription(&settings, &final_text).await {
-            post_processed_text = Some(processed_text.clone());
-            final_text = processed_text;
-
-            if let Some(prompt_id) = &settings.post_process_selected_prompt_id {
-                if let Some(prompt) = settings
-                    .post_process_prompts
-                    .iter()
-                    .find(|prompt| &prompt.id == prompt_id)
-                {
-                    post_process_prompt = Some(prompt.prompt.clone());
-                }
+        // D-010: the clean-up runs as its own task, so that giving up waiting
+        // at the cursor does not cancel it. Cancelling it made Ollama abort a
+        // half-finished model load (probe B, 23 Oct).
+        let wait = if wait == CleanupWait::AtCursor && !can_finish_late(&settings) {
+            CleanupWait::UntilDone
+        } else {
+            wait
+        };
+        let prompt_text = resolved_prompt_text(&settings);
+        let task_settings = settings.clone();
+        let task_text = final_text.clone();
+        let mut handle = tauri::async_runtime::spawn(async move {
+            post_process_transcription(&task_settings, &task_text).await
+        });
+        match await_cleanup(&mut handle, wait, CURSOR_WAIT).await {
+            Some(Some(processed_text)) => {
+                post_processed_text = Some(processed_text.clone());
+                final_text = processed_text;
+                post_process_prompt = prompt_text;
+            }
+            Some(None) => {}
+            None => {
+                warn!(
+                    "Clean-up not finished after {} s: pasting the words as spoken; \
+                     the clean-up carries on and goes to History",
+                    CURSOR_WAIT.as_secs()
+                );
+                late_cleanup = Some(LateCleanup {
+                    handle,
+                    prompt: prompt_text,
+                });
             }
         }
     } else if final_text != transcription {
@@ -435,6 +621,7 @@ pub(crate) async fn process_transcription_output(
         final_text,
         post_processed_text,
         post_process_prompt,
+        late_cleanup,
     }
 }
 
@@ -520,6 +707,10 @@ impl ShortcutAction for TranscribeAction {
         if recording_error.is_none() {
             // Dynamically register the cancel shortcut in a separate task to avoid deadlock
             shortcut::register_cancel_shortcut(app);
+            // Kōrero 1.45.1 (D-010): load the clean-up model while they speak.
+            if self.post_process {
+                prewarm_cleanup_model(app);
+            }
         } else {
             // Starting failed (for example due to blocked microphone permissions).
             // Revert UI state so we don't stay stuck in the recording overlay.
@@ -654,21 +845,38 @@ impl ShortcutAction for TranscribeAction {
                                 let prompt_name = resolve_prompt_name(&get_settings(&ah));
                                 show_processing_overlay(&ah, prompt_name);
                             }
-                            let processed =
-                                process_transcription_output(&ah, &transcription, post_process)
-                                    .await;
+                            let mut processed = process_transcription_output(
+                                &ah,
+                                &transcription,
+                                post_process,
+                                CleanupWait::AtCursor,
+                            )
+                            .await;
 
                             // Save to history if WAV was saved
+                            let mut entry_id: Option<i64> = None;
+                            let spoken = transcription.clone();
                             if wav_saved {
-                                if let Err(err) = hm.save_entry(
+                                match hm.save_entry(
                                     file_name,
                                     transcription,
                                     post_process,
                                     processed.post_processed_text.clone(),
                                     processed.post_process_prompt.clone(),
                                 ) {
-                                    error!("Failed to save history entry: {}", err);
+                                    Ok(entry) => entry_id = Some(entry.id),
+                                    Err(err) => error!("Failed to save history entry: {}", err),
                                 }
+                            }
+                            // D-010: a clean-up that outlasted the cursor wait
+                            // finishes in the background and files itself on
+                            // the History entry just saved.
+                            // The pill mentions History only when there is an
+                            // entry for the clean-up to land on (review, Minor 1).
+                            let cleanup_late =
+                                processed.late_cleanup.is_some() && entry_id.is_some();
+                            if let Some(late) = processed.late_cleanup.take() {
+                                finish_late_cleanup(&ah, late, entry_id, spoken);
                             }
 
                             if processed.final_text.is_empty() {
@@ -687,7 +895,18 @@ impl ShortcutAction for TranscribeAction {
                                                 "Text pasted successfully in {:?}",
                                                 paste_time.elapsed()
                                             );
-                                            utils::hide_recording_overlay(&ah_clone);
+                                            if cleanup_late {
+                                                // D-010: say why the words went
+                                                // in as spoken, where the pill
+                                                // is being looked at.
+                                                utils::show_overlay_notice(
+                                                    &ah_clone,
+                                                    "notice-cleanup-late",
+                                                    6000,
+                                                );
+                                            } else {
+                                                utils::hide_recording_overlay(&ah_clone);
+                                            }
                                         }
                                         Err(e) => {
                                             error!("Failed to paste transcription: {}", e);
@@ -819,3 +1038,100 @@ pub static ACTION_MAP: Lazy<HashMap<String, Arc<dyn ShortcutAction>>> = Lazy::ne
     );
     map
 });
+
+#[cfg(test)]
+mod cleanup_wait_tests {
+    use super::*;
+
+    fn slow_cleanup(after_ms: u64) -> tauri::async_runtime::JoinHandle<Option<String>> {
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(after_ms)).await;
+            Some("Cleaned.".to_string())
+        })
+    }
+
+    /// A clean-up that answers inside the cursor wait is used as before.
+    #[test]
+    fn a_quick_clean_up_is_used_at_the_cursor() {
+        tauri::async_runtime::block_on(async {
+            let mut h = slow_cleanup(10);
+            let got = await_cleanup(&mut h, CleanupWait::AtCursor, Duration::from_secs(5)).await;
+            assert_eq!(got, Some(Some("Cleaned.".to_string())));
+        });
+    }
+
+    /// D-010, the property the fix rests on: running out of the cursor wait
+    /// hands back control but does not cancel the clean-up, which still
+    /// finishes and can be filed in History (cancelling it made Ollama abort
+    /// its half-finished model load, probe B, 23 Oct 2026).
+    #[test]
+    fn giving_up_at_the_cursor_does_not_cancel_the_clean_up() {
+        tauri::async_runtime::block_on(async {
+            let mut h = slow_cleanup(300);
+            let started = Instant::now();
+            let got = await_cleanup(&mut h, CleanupWait::AtCursor, Duration::from_millis(50)).await;
+            assert_eq!(got, None, "the cursor wait must run out first");
+            assert!(started.elapsed() < Duration::from_millis(250));
+            assert_eq!(h.await.ok().flatten(), Some("Cleaned.".to_string()));
+        });
+    }
+
+    /// History retry and Notes have nobody at a cursor: they wait it out.
+    #[test]
+    fn until_done_waits_past_the_cursor_limit() {
+        tauri::async_runtime::block_on(async {
+            let mut h = slow_cleanup(120);
+            let got =
+                await_cleanup(&mut h, CleanupWait::UntilDone, Duration::from_millis(10)).await;
+            assert_eq!(got, Some(Some("Cleaned.".to_string())));
+        });
+    }
+
+    /// A failed clean-up is reported as finished-without-text, not as late.
+    #[test]
+    fn a_failed_clean_up_is_not_late() {
+        tauri::async_runtime::block_on(async {
+            let mut h = tauri::async_runtime::spawn(async { None::<String> });
+            let got = await_cleanup(&mut h, CleanupWait::AtCursor, Duration::from_secs(5)).await;
+            assert_eq!(got, Some(None));
+        });
+    }
+
+    /// Review M1: only a local Ollama clean-up may finish late; every other
+    /// provider has its own 30 s limit, so it is waited for as before.
+    #[test]
+    fn only_ollama_clean_up_may_finish_late() {
+        let mut s = crate::settings::get_default_settings();
+        for (id, late) in [("ollama", true), ("custom", false), ("openai", false)] {
+            s.post_process_provider_id = id.to_string();
+            assert_eq!(can_finish_late(&s), late, "{id}");
+        }
+    }
+
+    #[test]
+    fn the_prewarm_leaves_room_for_a_dictation() {
+        // Default clean-up prompt plus PREWARM_TRANSCRIPT_CHARS must land on a
+        // context that holds a 4,000-character dictation, so it is reused.
+        let s = crate::settings::get_default_settings();
+        let template = s
+            .post_process_prompts
+            .iter()
+            .map(|p| p.prompt.chars().count())
+            .max()
+            .unwrap_or(0);
+        let warm = crate::ollama_chat::estimate_tokens(&"a".repeat(template))
+            + crate::ollama_chat::estimate_tokens(&"a".repeat(PREWARM_TRANSCRIPT_CHARS));
+        let need = crate::ollama_chat::estimate_tokens(&"a".repeat(template + 4_000));
+        let (warm_ctx, _) =
+            crate::ollama_chat::choose_num_ctx(warm, 1_500, None).expect("warm context");
+        let (used_ctx, _) =
+            crate::ollama_chat::choose_num_ctx(need, 1_500, Some(warm_ctx)).expect("call");
+        assert_eq!(used_ctx, warm_ctx, "the dictation would reload the model");
+    }
+
+    #[test]
+    fn the_cursor_wait_is_unchanged() {
+        assert_eq!(CURSOR_WAIT, Duration::from_secs(30));
+        assert!(crate::ollama_chat::DICTATION_LIMIT > CURSOR_WAIT * 5);
+    }
+}
