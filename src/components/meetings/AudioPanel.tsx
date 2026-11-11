@@ -106,6 +106,43 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
         )}
       </section>
 
+      {m.mode !== "room" && !m.imported && (
+        <section aria-labelledby="kx-rebuild" className="kx-card p-4 flex flex-col gap-3">
+          <h2 id="kx-rebuild" className="kx-heading">
+            Transcript from the recordings
+          </h2>
+          <p className="kx-meta">
+            When a call ends, Kōrero transcribes it again from the two recordings: the call's side is
+            split by caller (Caller 1, Caller 2 and so on, which you can name on the Transcript tab),
+            and quiet speech that the live transcript skipped is picked up. It runs on this computer.
+            Run it again after changing the speech model.
+            {m.callersFound != null &&
+              ` Last run found ${m.callersFound} ${m.callersFound === 1 ? "voice" : "voices"} on the call.`}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="kx-btn kx-btn-secondary"
+              onClick={() => void c.onCallTranscript()}
+              disabled={!!c.busy || c.callBlocker !== null || meetingLive}
+            >
+              {c.busy === "speakers" && c.busyMeetingId === m.id ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+              Rebuild from the recordings
+            </button>
+            {c.callBlocker && <span className="kx-meta">{c.callBlocker}</span>}
+          </div>
+          <label className="flex items-center gap-2 kx-meta cursor-pointer" htmlFor="kx-auto-notes">
+            <input
+              id="kx-auto-notes"
+              type="checkbox"
+              checked={c.autoNotes}
+              onChange={(e) => c.toggleAutoNotes(e.target.checked)}
+            />
+            Write the notes automatically when a call ends (needs an AI model set up in Post-processing)
+          </label>
+        </section>
+      )}
+
       <section aria-labelledby="kx-speakers" className="kx-card p-4 flex flex-col gap-3">
         <h2 id="kx-speakers" className="kx-heading">
           {m.mode === "room" ? "Transcript by speaker" : "Separate speakers"}
@@ -150,7 +187,7 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
                   ? "Downloading the speaker models"
                   : c.task.stage === "transcribe"
                     ? "Transcribing each speaker"
-                    : "Separating speakers"}
+                    : "Finding who spoke when"}
               </span>
               <span className="kx-mono">
                 {c.task.progress?.total

@@ -4,6 +4,7 @@ import { GraduationCap, Pencil, Scissors, TriangleAlert, X, Flag } from "lucide-
 import { AddCorrectionInline } from "../ui/Corrections";
 import type { MeetingsController } from "../settings/meetings/useMeetingsController";
 import { Highlighted, containsFolded } from "./Highlighted";
+import { SpeakerNames } from "./SpeakerNames";
 import { fmtClock, fmtTrimMs, hiddenCount, isTrimmed, segInWindow, segMs, speakerLabel } from "./model";
 
 /**
@@ -72,6 +73,22 @@ export const TranscriptPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
         <span className="kx-meta">Speakers</span>
         {speaker("you")}
         {m.mode !== "room" && speaker("others")}
+        {(m.callersFound ?? 0) > 1 && (
+          <SpeakerNames
+            kind="caller"
+            count={m.callersFound ?? 0}
+            names={m.callerNames}
+            onRename={(callerNames) => c.patchMeeting(m.id, { callerNames })}
+          />
+        )}
+        {(m.speakersFound ?? 0) > 1 && (
+          <SpeakerNames
+            kind="speaker"
+            count={m.speakersFound ?? 0}
+            names={m.speakerNames}
+            onRename={(speakerNames) => c.patchMeeting(m.id, { speakerNames })}
+          />
+        )}
         <div className="flex-1" />
         {c.teachWrong === null && (
           <button

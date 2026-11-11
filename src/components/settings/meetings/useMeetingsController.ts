@@ -30,6 +30,7 @@ import { useNav, type MeetingTab } from "../../../stores/navStore";
 import { TEMPLATES } from "../../../stores/audioBriefStore";
 import { draftSpokenScript, isEngineMissing } from "../../../lib/briefScript";
 import { useRecorder } from "../../../stores/recorderStore";
+import { autoNotesEnabled, setAutoNotes } from "../../meetings/autoNotes";
 import {
   DEFAULT_PROMPT,
   baseName,
@@ -43,6 +44,7 @@ import {
   notesInput,
   parseTrimInput,
   separationBlocker,
+  callRebuildBlocker,
   titleOf,
   trimKeyOf,
   visibleSegs,
@@ -525,6 +527,7 @@ export const useMeetingsController = () => {
       active.othersLabel,
       visibleSegs(active),
       active.speakerNames,
+      active.callerNames,
     );
     if (!transcript.trim()) {
       toast.message("There is no transcript to ask about yet.");
@@ -609,6 +612,31 @@ export const useMeetingsController = () => {
   const onRoomTranscript = async () => {
     if (!active || busy || !isRoom(active)) return;
     runRoom(active, false);
+  };
+
+  // 1.46: rebuild a call's transcript from its two recordings, the far end by caller.
+  const onCallTranscript = async () => {
+    if (!active || busy || callRebuildBlocker(active) !== null) return;
+    const m = active;
+    confirmDestructive(
+      "Rebuild the transcript from the recordings?",
+      "Each side is transcribed again from its recording, and the call's side is split by caller. Names you gave callers or speakers are cleared. Lines the rebuild can't cover are kept.",
+      "Rebuild",
+      async () => {
+        await useMeetingJobs.getState().callTranscript({
+          meetingId: m.id,
+          title: titleOf(m),
+          micPath: m.micPath,
+          systemPath: m.systemPath,
+          existing: m.transcript ?? [],
+        });
+      },
+    );
+  };
+  const [autoNotes, setAutoNotesState] = useState(autoNotesEnabled);
+  const toggleAutoNotes = (on: boolean) => {
+    setAutoNotes(on);
+    setAutoNotesState(on);
   };
 
   const onPostProcess = async () => {
@@ -735,7 +763,7 @@ export const useMeetingsController = () => {
   // ---- copy / export / brief / notes ------------------------------------
   const copyActive = async () => {
     if (!active) return;
-    const body = combine(active.you, active.others, active.youLabel, active.othersLabel, visibleSegs(active), active.speakerNames);
+    const body = combine(active.you, active.others, active.youLabel, active.othersLabel, visibleSegs(active), active.speakerNames, active.callerNames);
     const text = active.processed.trim()
       ? `${body}\n\n--- Processed ---\n${active.processed.trim()}`
       : body;
@@ -885,7 +913,7 @@ export const useMeetingsController = () => {
     const parts = [
       `# ${titleOf(active)}`,
       "",
-      combine(active.you, active.others, active.youLabel, active.othersLabel, visibleSegs(active), active.speakerNames) ||
+      combine(active.you, active.others, active.youLabel, active.othersLabel, visibleSegs(active), active.speakerNames, active.callerNames) ||
         "(no transcript)",
     ];
     if (isTrimmed(active)) {
@@ -1102,6 +1130,7 @@ export const useMeetingsController = () => {
   // 1.45: why speakers can't be separated on this meeting (null = they can).
   const separateBlocker = active ? separationBlocker(active) : "No meeting selected.";
   const activeCanSeparate = separateBlocker === null;
+  const callBlocker = active ? callRebuildBlocker(active) : "No meeting selected.";
 
   const selectMeeting = (id: string) => {
     activeIdRef.current = id;
@@ -1199,6 +1228,10 @@ export const useMeetingsController = () => {
     onReTranscribe,
     onSeparateSpeakers,
     onRoomTranscript,
+    onCallTranscript,
+    callBlocker,
+    autoNotes,
+    toggleAutoNotes,
     activeCanSeparate,
     separateBlocker,
     onPostProcess,

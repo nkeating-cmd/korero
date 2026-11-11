@@ -738,7 +738,8 @@ pub(crate) fn room_pieces(turns: &[SpeakerTurn]) -> Vec<SpeakerTurn> {
     out
 }
 
-/// Transcribe each piece of 16 kHz audio `x`. `transcribe` is the speech engine;
+/// Transcribe each piece of 16 kHz audio `x`. `source` is the side the lines belong to
+/// ("you" for the microphone, "others" for a call's audio). `transcribe` is the speech engine;
 /// `labelled` says whether speakers were told apart (one voice: lines stay unlabelled).
 /// Returns the lines in time order, how many pieces failed, and the time ranges that
 /// were transcribed successfully (so the caller can keep live lines outside them).
@@ -746,6 +747,7 @@ pub(crate) fn room_lines(
     x: &[f32],
     pieces: &[SpeakerTurn],
     labelled: bool,
+    source: &str,
     mut transcribe: impl FnMut(Vec<f32>) -> Result<String, String>,
     mut progress: impl FnMut(usize, usize),
 ) -> (Vec<crate::meeting::TranscriptSeg>, usize, Vec<(u64, u64)>) {
@@ -761,7 +763,7 @@ pub(crate) fn room_lines(
                 // floor", so real one-word replies ("okay", "thank you") were being lost.
                 if let Some(text) = crate::meeting::clean_segment_text(&text, None) {
                     lines.push(crate::meeting::TranscriptSeg {
-                        source: "you".into(),
+                        source: source.into(),
                         text,
                         start_ms: p.start_ms,
                         speaker: labelled.then_some(p.speaker),
@@ -858,6 +860,7 @@ pub async fn meeting_room_transcript(
             &x,
             &pieces,
             diar.speakers > 1,
+            "you",
             |audio| {
                 yield_to_meeting();
                 crate::meeting::transcribe_retrying(&tm, audio)
@@ -883,6 +886,206 @@ pub async fn meeting_room_transcript(
     })
     .await
     .map_err(|err| format!("The room transcript stopped unexpectedly: {err}"))?
+}
+
+// ---------------------------------------------------------------------------
+// Kōrero 1.46: the final transcript of a call, built from both recordings.
+//
+// Until 1.46 a call kept its LIVE transcript: speech cut by a fixed loudness gate
+// (RMS 0.010, L-003) into pieces of up to 20 s, with everyone on the far end
+// labelled "Others". Room meetings already had something better (above). This gives
+// calls the same treatment, one side at a time:
+//
+//   * the call's audio ("others") is split into speaker turns and each turn is
+//     transcribed, so every line has one caller ("Caller 1", "Caller 2", ...) and
+//     no line straddles two people;
+//   * the microphone ("you") is rebuilt the same way but stays unlabelled: on a
+//     call the microphone is you;
+//   * speech is found by the speaker model, not by loudness, so a quiet
+//     microphone is no longer dropped before anything listens to it.
+//
+// A side is only replaced when its rebuild produced lines; otherwise the live lines
+// for that side stay exactly as they were.
+
+/// One side of a call after its rebuild.
+pub(crate) struct CallSide {
+    pub source: &'static str,
+    pub lines: Vec<crate::meeting::TranscriptSeg>,
+    /// Time ranges transcribed successfully (live lines outside them are kept).
+    pub covered: Vec<(u64, u64)>,
+    pub pieces: usize,
+    pub failed: usize,
+}
+
+impl CallSide {
+    /// Whether this rebuild may replace the side's live lines: it found speech, at
+    /// least one piece transcribed, and it produced text.
+    pub(crate) fn usable(&self) -> bool {
+        self.pieces > 0 && self.failed < self.pieces && !self.lines.is_empty()
+    }
+}
+
+/// The saved transcript of a call: each usable side replaces that side's existing
+/// lines (keeping any existing line its rebuild did not cover, as `merge_room` does);
+/// every other existing line is kept untouched, speaker label included. In time order.
+pub(crate) fn merge_call(
+    existing: Vec<crate::meeting::TranscriptSeg>,
+    sides: Vec<CallSide>,
+) -> Vec<crate::meeting::TranscriptSeg> {
+    let mut out: Vec<crate::meeting::TranscriptSeg> = Vec::new();
+    let mut rest = existing;
+    for side in sides {
+        if !side.usable() {
+            continue;
+        }
+        let (mine, others): (Vec<_>, Vec<_>) = rest.into_iter().partition(|s| s.source == side.source);
+        rest = others;
+        out.extend(merge_room(side.lines, mine, &side.covered));
+    }
+    out.extend(rest.into_iter().filter(|s| !s.text.trim().is_empty()));
+    // Stable: lines that start together keep the order they were added in.
+    out.sort_by_key(|s| s.start_ms);
+    out
+}
+
+/// Result of rebuilding a call's transcript from its recordings.
+#[derive(Clone, Serialize, Deserialize, Type)]
+pub struct CallTranscript {
+    pub segments: Vec<crate::meeting::TranscriptSeg>,
+    /// Voices found in the call's audio; 0 when that side was not rebuilt.
+    pub callers: u32,
+    /// The sides rebuilt from their recording: "you", "others", both or neither.
+    pub rebuilt: Vec<String>,
+    /// Pieces that could not be transcribed, over both sides.
+    pub failed: u32,
+    /// Why a side was left as it was, in plain words (for the activity log).
+    pub notes: Vec<String>,
+    pub audio_s: f64,
+    pub took_s: f64,
+}
+
+/// Kōrero 1.46: rebuild a call's transcript from its two recordings (see above).
+/// `existing` is the transcript as saved; lines the rebuild cannot improve are kept.
+/// Errors only when neither side could be rebuilt, so the caller keeps what it has.
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_call_transcript(
+    app: tauri::AppHandle,
+    mic_path: Option<String>,
+    system_path: Option<String>,
+    existing: Vec<crate::meeting::TranscriptSeg>,
+) -> Result<CallTranscript, String> {
+    use tauri::Manager;
+    let is_wav = |p: &Option<String>| p.as_deref().is_some_and(|p| p.to_ascii_lowercase().ends_with(".wav"));
+    if !is_wav(&mic_path) && !is_wav(&system_path) {
+        return Err("This meeting has no recording to rebuild the transcript from.".into());
+    }
+    if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("Speakers are already being separated. Try again when that finishes.".into());
+    }
+    let _running = RunGuard;
+    let started = Instant::now();
+    let dir = crate::portable::models_dir(&app)
+        .map_err(|err| format!("Could not find the models folder: {err}"))?
+        .join("diarise");
+    let a = app.clone();
+    let seg_path = ensure_model(&dir, &SEGMENTATION, |d, t| emit_progress(&a, "download", d, t)).await?;
+    let emb_path = ensure_model(&dir, &EMBEDDING, |d, t| emit_progress(&a, "download", d, t)).await?;
+    let tm = app.state::<std::sync::Arc<crate::managers::transcription::TranscriptionManager>>().inner().clone();
+    tm.initiate_model_load();
+    let a = app.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<CallTranscript, String> {
+        emit_progress(&a, "separate", 0, 1);
+        let mut engine = Engine::load(&seg_path, &emb_path, engine_threads())?;
+        let mut sides: Vec<CallSide> = Vec::new();
+        let mut notes: Vec<String> = Vec::new();
+        let (mut callers, mut audio_s) = (0u32, 0f64);
+        // The call's audio first: it carries the speaker labels, and it is the cleaner signal.
+        for (source, path, what) in [
+            ("others", system_path.as_deref(), "The call's audio"),
+            ("you", mic_path.as_deref(), "The microphone"),
+        ] {
+            let Some(path) = path.filter(|p| p.to_ascii_lowercase().ends_with(".wav")) else { continue };
+            let x = match decode_wav_16k(path) {
+                Ok(x) if x.len() >= SR * 2 => x,
+                Ok(_) => {
+                    notes.push(format!("{what} recording is too short to rebuild; its live lines were kept."));
+                    continue;
+                }
+                Err(err) => {
+                    log::warn!("call transcript: {source}: {err}");
+                    notes.push(format!("{what} recording could not be read; its live lines were kept."));
+                    continue;
+                }
+            };
+            audio_s = audio_s.max(x.len() as f64 / SR as f64);
+            let diar = match engine.run(&x, |d, t| {
+                yield_to_meeting();
+                emit_progress(&a, "separate", d as u64, t as u64)
+            }) {
+                Ok(d) => d,
+                Err(err) => {
+                    log::warn!("call transcript: {source}: speaker model failed: {err}");
+                    notes.push(format!("{what} could not be split into turns; its live lines were kept."));
+                    continue;
+                }
+            };
+            let pieces = room_pieces(&diar.turns);
+            // Only the far end gets speaker labels: on a call the microphone is you.
+            let labelled = source == "others" && diar.speakers > 1;
+            let (lines, failed, covered) = room_lines(
+                &x,
+                &pieces,
+                labelled,
+                source,
+                |audio| {
+                    yield_to_meeting();
+                    crate::meeting::transcribe_retrying(&tm, audio)
+                },
+                |d, t| emit_progress(&a, "transcribe", d as u64, t as u64),
+            );
+            let side = CallSide { source, lines, covered, pieces: pieces.len(), failed };
+            if !side.usable() {
+                notes.push(if side.pieces == 0 {
+                    format!("No speech was found in {}; its live lines were kept.", what.to_lowercase())
+                } else {
+                    format!("{what} could not be transcribed again; its live lines were kept.")
+                });
+            } else if source == "others" {
+                callers = diar.speakers;
+            }
+            log::info!(
+                "call transcript: {source}: {} speakers, {} pieces, {} lines, {} failed",
+                diar.speakers, side.pieces, side.lines.len(), side.failed
+            );
+            sides.push(side);
+        }
+        let rebuilt: Vec<String> = sides.iter().filter(|s| s.usable()).map(|s| s.source.to_string()).collect();
+        if rebuilt.is_empty() {
+            return Err(if notes.is_empty() {
+                "Neither recording could be rebuilt. The live transcript was kept.".into()
+            } else {
+                format!("{} The live transcript was kept.", notes.join(" "))
+            });
+        }
+        let failed: usize = sides.iter().filter(|s| s.usable()).map(|s| s.failed).sum();
+        let segments = merge_call(existing, sides);
+        log::info!(
+            "call transcript: rebuilt {:?}, {} callers, {} lines, {:.0} s audio in {:.1} s",
+            rebuilt, callers, segments.len(), audio_s, started.elapsed().as_secs_f64()
+        );
+        Ok(CallTranscript {
+            segments,
+            callers,
+            rebuilt,
+            failed: failed as u32,
+            notes,
+            audio_s,
+            took_s: started.elapsed().as_secs_f64(),
+        })
+    })
+    .await
+    .map_err(|err| format!("The call transcript stopped unexpectedly: {err}"))?
 }
 
 // ---------------------------------------------------------------------------
@@ -1138,21 +1341,21 @@ mod tests {
             SpeakerTurn { start_ms: 0, end_ms: 1_500, speaker: 0 },
             SpeakerTurn { start_ms: 2_000, end_ms: 3_500, speaker: 1 },
         ];
-        let (two, failed, covered) = room_lines(&x, &pieces, true, |_| Ok("kia ora koutou".into()), |_, _| {});
+        let (two, failed, covered) = room_lines(&x, &pieces, true, "you", |_| Ok("kia ora koutou".into()), |_, _| {});
         assert_eq!(covered, vec![(0, 1_500), (2_000, 3_500)]);
         assert_eq!(failed, 0);
         assert_eq!(two.iter().map(|l| l.speaker).collect::<Vec<_>>(), vec![Some(0), Some(1)]);
         assert_eq!(two[1].start_ms, 2_000);
-        let (one, _, _) = room_lines(&x, &pieces, false, |_| Ok("kia ora".into()), |_, _| {});
+        let (one, _, _) = room_lines(&x, &pieces, false, "you", |_| Ok("kia ora".into()), |_, _| {});
         assert!(one.iter().all(|l| l.speaker.is_none()));
-        let (none, failed, covered) = room_lines(&x, &pieces, true, |_| Err("engine".into()), |_, _| {});
+        let (none, failed, covered) = room_lines(&x, &pieces, true, "you", |_| Err("engine".into()), |_, _| {});
         assert!(none.is_empty());
         assert_eq!(failed, 2);
         assert!(covered.is_empty());
         // Review M7: a genuine short reply in quiet far-field audio is kept.
         let quiet = vec![0.002f32; SR * 2];
         let short = vec![SpeakerTurn { start_ms: 0, end_ms: 1_000, speaker: 0 }];
-        let (ok, _, _) = room_lines(&quiet, &short, false, |_| Ok("Okay.".into()), |_, _| {});
+        let (ok, _, _) = room_lines(&quiet, &short, false, "you", |_| Ok("Okay.".into()), |_, _| {});
         assert_eq!(ok.len(), 1, "\"Okay.\" in quiet audio is a real reply, not a hallucination");
     }
 
@@ -1202,7 +1405,7 @@ mod tests {
             }
             let d = engine.run(&x, |_, _| {}).unwrap();
             let pieces = room_pieces(&d.turns);
-            let (lines, failed, _) = room_lines(&x, &pieces, d.speakers > 1, &mut words, |_, _| {});
+            let (lines, failed, _) = room_lines(&x, &pieces, d.speakers > 1, "you", &mut words, |_, _| {});
             let room: usize = lines.iter().map(|l| l.text.split_whitespace().count()).sum();
             println!("{m}: energy path {energy} words; room path {room} words in {} lines ({} pieces, {failed} failed, {} speakers)",
                 lines.len(), pieces.len(), d.speakers);
@@ -1313,5 +1516,77 @@ mod tests {
         let one = vec![SpeakerTurn { start_ms: 0, end_ms: 20_000, speaker: 0 }];
         assert!((der(&r, &one, 0.0).0 - 0.5).abs() < 1e-3, "one speaker for two: half is confusion");
         assert!((der(&r, &[], 0.0).1 - 1.0).abs() < 1e-9, "nothing found: all missed");
+    }
+    // ---- Kōrero 1.46: the final transcript of a call ----------------------
+
+    fn line(source: &str, text: &str, ms: u64, speaker: Option<u32>) -> crate::meeting::TranscriptSeg {
+        crate::meeting::TranscriptSeg { source: source.into(), text: text.into(), start_ms: ms, speaker }
+    }
+
+    fn side(source: &'static str, lines: Vec<crate::meeting::TranscriptSeg>, covered: Vec<(u64, u64)>, pieces: usize, failed: usize) -> CallSide {
+        CallSide { source, lines, covered, pieces, failed }
+    }
+
+    #[test]
+    fn call_lines_for_the_far_end_carry_their_caller_and_their_side() {
+        let x = vec![0.05f32; SR * 4];
+        let pieces = vec![
+            SpeakerTurn { start_ms: 0, end_ms: 1_500, speaker: 0 },
+            SpeakerTurn { start_ms: 2_000, end_ms: 3_500, speaker: 1 },
+        ];
+        let (lines, _, _) = room_lines(&x, &pieces, true, "others", |_| Ok("kia ora".into()), |_, _| {});
+        assert!(lines.iter().all(|l| l.source == "others"), "a call-audio line must stay on the call's side");
+        assert_eq!(lines.iter().map(|l| l.speaker).collect::<Vec<_>>(), vec![Some(0), Some(1)]);
+    }
+
+    #[test]
+    fn a_rebuilt_side_replaces_its_live_lines_and_leaves_the_other_side_alone() {
+        let live = vec![
+            line("you", "live you", 500, None),
+            line("others", "live others one", 1_000, None),
+            line("others", "live others outside", 20_000, None),
+        ];
+        let rebuilt = side(
+            "others",
+            vec![line("others", "caller one", 900, Some(0)), line("others", "caller two", 3_000, Some(1))],
+            vec![(900, 5_000)],
+            2,
+            0,
+        );
+        let out = merge_call(live, vec![rebuilt]);
+        let texts: Vec<&str> = out.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, vec!["live you", "caller one", "caller two", "live others outside"]);
+        assert_eq!(out[1].speaker, Some(0));
+        assert_eq!(out[3].speaker, None, "a kept live line has no measured speaker");
+    }
+
+    #[test]
+    fn a_side_that_found_nothing_or_failed_throughout_keeps_its_live_lines() {
+        let live = || vec![line("you", "live you", 0, None), line("others", "live others", 1_000, None)];
+        // every piece failed
+        let out = merge_call(live(), vec![side("you", vec![], vec![], 3, 3)]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].text, "live you");
+        // no speech found at all
+        let out = merge_call(live(), vec![side("others", vec![], vec![], 0, 0)]);
+        assert_eq!(out[1].text, "live others");
+        // pieces transcribed but every one came back empty: nothing to put in its place
+        let out = merge_call(live(), vec![side("others", vec![], vec![(0, 9_000)], 2, 0)]);
+        assert_eq!(out[1].text, "live others", "an empty rebuild must never wipe a side");
+    }
+
+    #[test]
+    fn both_sides_rebuilt_come_out_in_time_order_with_only_callers_labelled() {
+        let live = vec![line("you", "old you", 0, None), line("others", "old others", 100, None)];
+        let out = merge_call(
+            live,
+            vec![
+                side("others", vec![line("others", "b", 2_000, Some(1)), line("others", "d", 6_000, Some(0))], vec![(0, 9_000)], 2, 0),
+                side("you", vec![line("you", "a", 500, None), line("you", "c", 4_000, None)], vec![(0, 9_000)], 2, 0),
+            ],
+        );
+        assert_eq!(out.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(), vec!["a", "b", "c", "d"]);
+        assert!(out.iter().filter(|s| s.source == "you").all(|s| s.speaker.is_none()));
+        assert!(out.iter().filter(|s| s.source == "others").all(|s| s.speaker.is_some()));
     }
 }

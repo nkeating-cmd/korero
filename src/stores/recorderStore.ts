@@ -29,11 +29,17 @@ import {
   type RecorderSnapshot,
 } from "./recorderProtocol";
 import {
+  DEFAULT_PROMPT,
   defaultMeetingTitle,
   newId,
+  notesInput,
+  trimKeyOf,
+  visibleSegs,
   type Meeting,
   type MeetingMode,
 } from "../components/meetings/model";
+import { afterStopPlan, autoNotesEnabled, notesModelReady } from "../components/meetings/autoNotes";
+import { useSettingsStore } from "./settingsStore";
 
 // 1.45 (B3): the meeting type is chosen before Record and remembered on this computer.
 const MODE_KEY = "korero.meetingMode";
@@ -42,9 +48,58 @@ const MODE_KEY = "korero.meetingMode";
 type RoomSaved = {
   id: string;
   micPath: string | null;
+  systemPath: string | null;
   title: string;
   segments: NonNullable<Meeting["transcript"]>;
+  meeting: Meeting;
 };
+const isWav = (p: string | null | undefined): p is string => !!p && /\.wav$/i.test(p);
+/**
+ * Kōrero 1.46: what happens to a call after Stop has saved it. Exported for tests
+ * through its parts (`afterStopPlan`); this wrapper only wires the jobs.
+ */
+const finishCall = async (s: RoomSaved): Promise<void> => {
+  const jobs = useMeetingJobs.getState();
+  const plan = afterStopPlan({
+    micWav: isWav(s.micPath),
+    systemWav: isWav(s.systemPath),
+    hasLiveText: !!(s.meeting.you.trim() || s.meeting.others.trim()),
+    autoNotes: autoNotesEnabled(),
+    modelReady: notesModelReady(useSettingsStore.getState().settings),
+  });
+  const notesFrom = (m: Meeting) => ({
+    text: notesInput(m, visibleSegs(m)),
+    trimKey: trimKeyOf(m),
+  });
+  let rebuilt = false;
+  if (plan.rebuild) {
+    rebuilt = await jobs.callTranscript({
+      meetingId: s.id,
+      title: s.title,
+      micPath: s.micPath,
+      systemPath: s.systemPath,
+      existing: s.segments,
+      quiet: true,
+      thenNotes: plan.notes
+        ? {
+            buildText: (t) =>
+              notesFrom({ ...s.meeting, you: t.you, others: t.others, transcript: t.transcript as Meeting["transcript"], callerNames: undefined }).text,
+            prompt: DEFAULT_PROMPT,
+            trimKey: trimKeyOf(s.meeting),
+          }
+        : undefined,
+    });
+  }
+  // The rebuild did not land (or there was nothing to rebuild from): the notes are
+  // still written, from the live transcript.
+  if (!rebuilt && plan.notes && plan.notesFromLive) {
+    const n = notesFrom(s.meeting);
+    if (n.text.trim()) {
+      await jobs.start({ meetingId: s.id, title: s.title, kind: "post", text: n.text, prompt: DEFAULT_PROMPT, trimKey: n.trimKey });
+    }
+  }
+};
+
 const savedMode = (): MeetingMode => {
   try {
     return localStorage.getItem(MODE_KEY) === "room" ? "room" : "call";
@@ -302,6 +357,8 @@ export const useRecorder = create<RecorderState>((set, get) => {
       set({ recording: false, paused: false, runStartedAt: null, systemCaptured: null, recordingMode: null });
       const outcome = await useMeetingJobs.getState().stopMeeting({
         room,
+        // 1.46: a call's transcript is rebuilt from its recordings straight after.
+        rebuildFollows: !room,
         makeMeeting: ({ you, others, segments, mic_path, system_path, warnings }) => {
           const m: Meeting = {
             id: newId(),
@@ -329,7 +386,7 @@ export const useRecorder = create<RecorderState>((set, get) => {
               ...liveWarnings.filter((w) => !warnings.includes(w)),
             ],
           };
-          saved = { id: m.id, micPath: mic_path, title, segments: segments ?? [] };
+          saved = { id: m.id, micPath: mic_path, systemPath: system_path, title, segments: segments ?? [], meeting: m };
           return m as unknown as MeetingDoc;
         },
       });
@@ -349,6 +406,12 @@ export const useRecorder = create<RecorderState>((set, get) => {
         void useMeetingJobs
           .getState()
           .roomTranscript({ meetingId: s.id, title: s.title, micPath: s.micPath, existing: s.segments });
+      } else if (!room && outcome === "saved" && s) {
+        // 1.46: a call carries on by itself. The transcript is rebuilt from the two
+        // recordings (the far end by caller), then the notes are written, unless
+        // that is switched off or no AI model is set up. Each step keeps what the
+        // step before it saved, so stopping at any point loses nothing.
+        void finishCall(s);
       }
     },
 

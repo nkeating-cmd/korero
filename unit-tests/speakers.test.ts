@@ -58,8 +58,21 @@ describe("combine with speakers", () => {
     expect(combine("", "", "You", "Others", t, ["Aroha"])).toBe("Aroha: a\nSpeaker 2: b c\nOthers: d");
   });
 
-  test("a speaker on a call-audio line is ignored", () => {
-    expect(speakerLabel({ youLabel: "You", othersLabel: "Others" }, { source: "others", speaker: 2 })).toBe("Others");
+  // 1.46: until 1.45 a speaker on a call-audio line was ignored ("Others").
+  test("a call-audio line with a caller shows that caller, by number or by name", () => {
+    const m = { youLabel: "You", othersLabel: "Others" };
+    expect(speakerLabel(m, { source: "others", speaker: 2 })).toBe("Caller 3");
+    expect(speakerLabel({ ...m, callerNames: ["", "", "Mere"] }, { source: "others", speaker: 2 })).toBe("Mere");
+    expect(speakerLabel({ ...m, callerNames: ["  "] }, { source: "others", speaker: 0 })).toBe("Caller 1");
+  });
+  test("a call-audio line with no caller keeps the channel label", () => {
+    expect(speakerLabel({ youLabel: "You", othersLabel: "Others" }, { source: "others", speaker: null })).toBe("Others");
+    expect(speakerLabel({ youLabel: "You", othersLabel: "Others" }, { source: "others" })).toBe("Others");
+  });
+  test("speaker names never label callers, and caller names never label speakers", () => {
+    const m = { youLabel: "You", othersLabel: "Others", speakerNames: ["Aroha"], callerNames: ["Mere"] };
+    expect(speakerLabel(m, { source: "you", speaker: 0 })).toBe("Aroha");
+    expect(speakerLabel(m, { source: "others", speaker: 0 })).toBe("Mere");
   });
 });
 

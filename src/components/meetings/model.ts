@@ -15,7 +15,9 @@ export interface TranscriptSeg {
   start_ms?: number;
   /** Kōrero 1.45 (D-007): who said a microphone line, set by "Separate speakers"
    *  (0-based; shown as "Speaker n+1" or the name given). Absent or null before it
-   *  runs, for call-audio lines, and on every meeting saved before 1.45. */
+   *  runs and on every meeting saved before 1.45.
+   *  1.46: a call-audio ("others") line carries its caller the same way, shown as
+   *  "Caller n+1" or the name given. The two sides number their voices separately. */
   speaker?: number | null;
 }
 
@@ -61,6 +63,11 @@ export interface Meeting {
   speakersFound?: number;
   /** 1.45: names for Speaker 1..N, by index; blank or missing = "Speaker n". */
   speakerNames?: string[];
+  /** 1.46: how many voices were found in the call's audio. Absent until the call's
+   *  transcript has been rebuilt from its recordings. */
+  callersFound?: number;
+  /** 1.46: names for Caller 1..N, by index; blank or missing = "Caller n". */
+  callerNames?: string[];
   /** 1.45: the two meetings this one was combined from (set by Combine). */
   mergedFrom?: string[];
   /** 1.45 (B3): how it was recorded. Absent on older meetings, which were calls. */
@@ -159,22 +166,43 @@ export const sourceChipLabel = (m: Meeting): string => {
   if (m.imported) return "Imported file";
   if (m.mode === "room")
     return m.speakersFound && m.speakersFound > 1 ? `${m.speakersFound} speakers` : "In the room";
+  if (m.systemCaptured && m.callersFound && m.callersFound > 1)
+    return `${m.youLabel} + ${m.callersFound} callers`;
   return m.systemCaptured ? `${m.youLabel} + ${m.othersLabel}` : `${m.youLabel} only`;
 };
 
 /**
+ * Kōrero 1.46: why a call's transcript cannot be rebuilt from its recordings, or null
+ * if it can. A room meeting has its own rebuild; an import has no separate sides; a
+ * combined meeting mixes two recordings.
+ */
+export const callRebuildBlocker = (m: Meeting): string | null => {
+  if (m.mode === "room") return "A room meeting is rebuilt by speaker instead.";
+  if (m.imported) return "An imported file has one recording, not the two sides of a call.";
+  if (m.mergedFrom && m.mergedFrom.length > 0)
+    return "A combined meeting mixes two recordings, so its lines can't be matched to one.";
+  const wav = (p: string | null) => !!p && /\.wav$/i.test(p);
+  if (!wav(m.micPath) && !wav(m.systemPath)) return "The recordings for this meeting are no longer on this computer.";
+  return null;
+};
+
+/**
  * Kōrero 1.45: the label for one transcript line. A microphone line that "Separate
- * speakers" assigned shows its speaker ("Speaker 2", or the name given); every other
- * line keeps the two channel labels. The transcript view and `combine` (which feeds
- * the notes) both use this, so what you read is what the notes model reads.
+ * speakers" assigned shows its speaker ("Speaker 2", or the name given). 1.46: a
+ * call-audio line whose caller is known shows that caller ("Caller 2", or the name
+ * given). Every other line keeps the two channel labels. The transcript view and
+ * `combine` (which feeds the notes) both use this, so what you read is what the notes
+ * model reads.
  */
 export const speakerLabel = (
-  m: { youLabel: string; othersLabel: string; speakerNames?: string[] },
+  m: { youLabel: string; othersLabel: string; speakerNames?: string[]; callerNames?: string[] },
   s: { source: string; speaker?: number | null },
-): string =>
-  s.source === "you" && s.speaker != null
+): string => {
+  if (s.speaker == null) return labelFor(s.source, m.youLabel, m.othersLabel);
+  return s.source === "you"
     ? m.speakerNames?.[s.speaker]?.trim() || `Speaker ${s.speaker + 1}`
-    : labelFor(s.source, m.youLabel, m.othersLabel);
+    : m.callerNames?.[s.speaker]?.trim() || `Caller ${s.speaker + 1}`;
+};
 
 /**
  * The transcript as text, in speaking order (`Label: line` per turn). Consecutive
@@ -188,6 +216,7 @@ export const combine = (
   othersLabel = "Others",
   transcript?: TranscriptSeg[],
   speakerNames?: string[],
+  callerNames?: string[],
 ): string => {
   if (transcript && transcript.length > 0) {
     // 1.45: lines are grouped by their label, so separated speakers become separate
@@ -196,13 +225,13 @@ export const combine = (
     for (const s of transcript) {
       const text = s.text.trim();
       if (!text) continue;
-      const key = `${s.source}|${s.source === "you" && s.speaker != null ? s.speaker : ""}`;
+      const key = `${s.source}|${s.speaker != null ? s.speaker : ""}`;
       const last = merged[merged.length - 1];
       if (last && last.key === key) last.text += ` ${text}`;
       else merged.push({ key, seg: s, text });
     }
     return merged
-      .map((m) => `${speakerLabel({ youLabel, othersLabel, speakerNames }, m.seg)}: ${m.text}`)
+      .map((m) => `${speakerLabel({ youLabel, othersLabel, speakerNames, callerNames }, m.seg)}: ${m.text}`)
       .join("\n");
   }
   return [
@@ -313,7 +342,7 @@ export const FLAGS_INTRO =
  * not contain a blank line, because the backend ends it at the first one.
  */
 export const notesInput = (m: Meeting, segs: TranscriptSeg[]): string => {
-  const body = combine(m.you, m.others, m.youLabel, m.othersLabel, segs, m.speakerNames);
+  const body = combine(m.you, m.others, m.youLabel, m.othersLabel, segs, m.speakerNames, m.callerNames);
   const flags = (m.flags ?? []).filter((f) => Number.isFinite(f.atSec));
   if (!body.trim() || flags.length === 0) return body;
   const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
