@@ -646,7 +646,7 @@ export const useMeetingsController = () => {
     if (!patch) return;
     confirmDestructive(
       "Put the live transcript back?",
-      "The rebuilt transcript is replaced with the one Kōrero wrote during the call. Caller labels and names are cleared. You can rebuild again afterwards.",
+      "The rebuilt transcript is replaced with the one Kōrero wrote during the call. Corrections you made to the rebuilt lines are lost, and caller and speaker labels and names are cleared. Notes already written are not changed. You can rebuild again afterwards.",
       "Put it back",
       async () => {
         patchMeeting(m.id, patch);
@@ -660,6 +660,8 @@ export const useMeetingsController = () => {
   const [notesModelLocal, setNotesModelLocal] = useState(false);
   useEffect(() => {
     let live = true;
+    // Re-read the stored choice: a yes counts only for the provider it was given for.
+    setAutoChoice(autoNotesChoice(notesProviderId));
     commands
       .meetingProviderIsLocal()
       .then((r) => {
@@ -669,7 +671,6 @@ export const useMeetingsController = () => {
     return () => {
       live = false;
     };
-    setAutoChoice(autoNotesChoice(notesProviderId));
   }, [active?.id, notesProviderId]);
   const autoNotes = autoNotesOn(autoChoice, notesModelLocal);
   const toggleAutoNotes = (on: boolean) => {

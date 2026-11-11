@@ -188,6 +188,8 @@ describe("the live transcript can be put back", () => {
       others: "hello",
       callersFound: undefined,
       callerNames: undefined,
+      speakersFound: undefined,
+      speakerNames: undefined,
     });
   });
 });

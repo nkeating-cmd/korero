@@ -203,7 +203,10 @@ export const callRebuildBlocker = (m: Meeting): string | null => {
  */
 export const restoreLivePatch = (
   m: Pick<Meeting, "liveTranscript">,
-): Pick<Meeting, "transcript" | "you" | "others" | "callersFound" | "callerNames"> | null => {
+): Pick<
+  Meeting,
+  "transcript" | "you" | "others" | "callersFound" | "callerNames" | "speakersFound" | "speakerNames"
+> | null => {
   const live = m.liveTranscript;
   if (!live || live.length === 0) return null;
   const join = (source: string) =>
@@ -211,7 +214,15 @@ export const restoreLivePatch = (
       .filter((s) => s.source === source)
       .map((s) => s.text)
       .join(" ");
-  return { transcript: live, you: join("you"), others: join("others"), callersFound: undefined, callerNames: undefined };
+  return {
+    transcript: live,
+    you: join("you"),
+    others: join("others"),
+    callersFound: undefined,
+    callerNames: undefined,
+    speakersFound: undefined,
+    speakerNames: undefined,
+  };
 };
 
 /**
