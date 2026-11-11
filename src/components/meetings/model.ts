@@ -183,7 +183,46 @@ export const callRebuildBlocker = (m: Meeting): string | null => {
     return "A combined meeting mixes two recordings, so its lines can't be matched to one.";
   const wav = (p: string | null) => !!p && /\.wav$/i.test(p);
   if (!wav(m.micPath) && !wav(m.systemPath)) return "The recordings for this meeting are no longer on this computer.";
+  // The rebuild matches saved lines to the recordings by time (as `call_timing_problem`
+  // in diarise.rs does), so lines without timings would all be kept beside the new ones.
+  const segs = (m.transcript ?? []).filter((s) => s.text.trim());
+  if (segs.length === 0 && (m.you.trim() || m.others.trim()))
+    return "Its lines have no timings (recorded before Kōrero 1.26). Re-transcribe it first.";
+  if (segs.length >= 2 && segs.every((s) => (s.start_ms ?? 0) === (segs[0].start_ms ?? 0)))
+    return "Its lines have no timings (recorded before Kōrero 1.26). Re-transcribe it first.";
   return null;
+};
+
+/**
+ * Kōrero 1.46: the transcript and caller fields of two meetings combined. Each meeting
+ * numbers its callers from 0, so the second meeting's callers are moved up past the
+ * first's and the name lists are joined: "Caller 1" of one meeting never becomes the
+ * same person as "Caller 1" of the other. Microphone speakers are left as they were
+ * (a combined meeting already refuses "Separate speakers").
+ */
+export const combineCallers = (
+  first: Pick<Meeting, "transcript" | "callersFound" | "callerNames">,
+  second: Pick<Meeting, "transcript" | "callersFound" | "callerNames">,
+): Pick<Meeting, "transcript" | "callersFound" | "callerNames"> => {
+  const used = (m: Pick<Meeting, "transcript" | "callersFound">) =>
+    Math.max(
+      m.callersFound ?? 0,
+      ...(m.transcript ?? []).map((s) => (s.source === "others" && s.speaker != null ? s.speaker + 1 : 0)),
+    );
+  const a = used(first);
+  const b = used(second);
+  const transcript = [
+    ...(first.transcript ?? []),
+    ...(second.transcript ?? []).map((s) =>
+      s.source === "others" && s.speaker != null ? { ...s, speaker: s.speaker + a } : s,
+    ),
+  ];
+  if (a + b === 0) return { transcript };
+  const names = [
+    ...Array.from({ length: a }, (_, i) => first.callerNames?.[i]?.trim() ?? ""),
+    ...Array.from({ length: b }, (_, i) => second.callerNames?.[i]?.trim() ?? ""),
+  ];
+  return { transcript, callersFound: a + b, callerNames: names.some(Boolean) ? names : undefined };
 };
 
 /**

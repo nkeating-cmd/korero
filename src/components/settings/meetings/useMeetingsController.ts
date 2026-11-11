@@ -30,7 +30,7 @@ import { useNav, type MeetingTab } from "../../../stores/navStore";
 import { TEMPLATES } from "../../../stores/audioBriefStore";
 import { draftSpokenScript, isEngineMissing } from "../../../lib/briefScript";
 import { useRecorder } from "../../../stores/recorderStore";
-import { autoNotesEnabled, setAutoNotes } from "../../meetings/autoNotes";
+import { autoNotesChoice, autoNotesOn, setAutoNotes } from "../../meetings/autoNotes";
 import {
   DEFAULT_PROMPT,
   baseName,
@@ -45,6 +45,7 @@ import {
   parseTrimInput,
   separationBlocker,
   callRebuildBlocker,
+  combineCallers,
   titleOf,
   trimKeyOf,
   visibleSegs,
@@ -488,7 +489,9 @@ export const useMeetingsController = () => {
       you: joinPart(first.you, second.you),
       others: joinPart(first.others, second.others),
       // The FULL transcript of both parts: merge is a write path.
-      transcript: [...(first.transcript ?? []), ...(second.transcript ?? [])],
+      // 1.46: each part numbers its own callers from 1, so the second part's are
+      // moved up past the first's; otherwise two different people share a label.
+      ...combineCallers(first, second),
       // Deliberately UNTRIMMED: the two parts' offsets are not comparable.
       youLabel: first.youLabel,
       othersLabel: first.othersLabel,
@@ -633,10 +636,25 @@ export const useMeetingsController = () => {
       },
     );
   };
-  const [autoNotes, setAutoNotesState] = useState(autoNotesEnabled);
+  // Notes after a call: on by default only when the notes model runs on this computer.
+  const [autoChoice, setAutoChoice] = useState(autoNotesChoice);
+  const [notesModelLocal, setNotesModelLocal] = useState(false);
+  useEffect(() => {
+    let live = true;
+    commands
+      .meetingProviderIsLocal()
+      .then((r) => {
+        if (live) setNotesModelLocal(r.status === "ok" && r.data);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [active?.id]);
+  const autoNotes = autoNotesOn(autoChoice, notesModelLocal);
   const toggleAutoNotes = (on: boolean) => {
     setAutoNotes(on);
-    setAutoNotesState(on);
+    setAutoChoice(on ? "on" : "off");
   };
 
   const onPostProcess = async () => {
@@ -870,7 +888,7 @@ export const useMeetingsController = () => {
     // 1.45: "Separate speakers" will write the whole transcript back when it ends,
     // so an edit made meanwhile would be overwritten. Refuse it, and say why.
     if (task?.kind === "speakers" && task.meetingId === active.id) {
-      toast.message("Separating speakers — edit this line when it finishes.");
+      toast.message("The transcript is being rebuilt — edit this line when it finishes.");
       setEditingSegIdx(null);
       return;
     }
@@ -1231,6 +1249,7 @@ export const useMeetingsController = () => {
     onCallTranscript,
     callBlocker,
     autoNotes,
+    notesModelLocal,
     toggleAutoNotes,
     activeCanSeparate,
     separateBlocker,

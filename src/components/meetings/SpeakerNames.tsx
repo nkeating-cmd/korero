@@ -1,11 +1,12 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { Pencil } from "lucide-react";
 
 /**
  * Kōrero 1.46: name the numbered voices of a meeting. "Speaker 1..N" are the voices
  * found in the microphone recording; "Caller 1..N" are the voices found in a call's
- * audio. A name given here replaces the number everywhere the transcript is read:
- * on screen, in copy and export, in search, in Ask and in the notes.
+ * audio. A name given here replaces the number wherever the transcript is read from
+ * then on: on screen, in copy and export, in search, in Ask, and in notes written
+ * (or rewritten) after it.
  */
 export const SpeakerNames: React.FC<{
   kind: "speaker" | "caller";
@@ -15,16 +16,20 @@ export const SpeakerNames: React.FC<{
 }> = ({ kind, count, names, onRename }) => {
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
+  const chips = useRef<(HTMLButtonElement | null)[]>([]);
   const word = kind === "caller" ? "Caller" : "Speaker";
-  const save = (i: number) => {
-    onRename(withName(names, count, i, draft));
+  // Closing the box puts keyboard focus back on the chip it came from.
+  const close = (i: number, save: boolean) => {
+    if (save) onRename(withName(names, count, i, draft));
     setEditing(null);
+    setTimeout(() => chips.current[i]?.focus(), 0);
   };
   return (
     <>
       {Array.from({ length: count }, (_, i) => {
         const fallback = `${word} ${i + 1}`;
-        const label = names?.[i]?.trim() || fallback;
+        const name = names?.[i]?.trim() ?? "";
+        const label = name || fallback;
         if (editing === i) {
           return (
             <input
@@ -34,10 +39,10 @@ export const SpeakerNames: React.FC<{
               placeholder={fallback}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              onBlur={() => save(i)}
+              onBlur={() => editing === i && close(i, true)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                if (e.key === "Escape") setEditing(null);
+                if (e.key === "Enter") close(i, true);
+                if (e.key === "Escape") close(i, false);
               }}
               className="kx-input min-h-[30px] w-40 text-[13px]"
             />
@@ -46,16 +51,20 @@ export const SpeakerNames: React.FC<{
         return (
           <button
             key={i}
+            ref={(el) => {
+              chips.current[i] = el;
+            }}
             type="button"
             className="kx-chip kx-chip-button gap-1.5 cursor-pointer hover:bg-[var(--kx-raised-2)]"
-            title={`Name this ${kind} (currently "${label}")`}
+            aria-label={name ? `Rename ${fallback}, currently ${name}` : `Name ${fallback}`}
+            title={name ? `Rename ${fallback} (currently "${name}")` : `Name ${fallback}`}
             onClick={() => {
-              setDraft(names?.[i]?.trim() ?? "");
+              setDraft(name);
               setEditing(i);
             }}
           >
             <span className="text-white font-semibold">{label}</span>
-            <Pencil size={11} />
+            <Pencil size={11} aria-hidden="true" />
           </button>
         );
       })}

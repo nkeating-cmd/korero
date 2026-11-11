@@ -126,6 +126,11 @@ export interface TranscriptSegLike {
   speaker?: number | null;
 }
 
+/** 1.46: how a call rebuild ended. "landed": the new transcript is saved. "busy":
+ *  another job held the slot, nothing ran. "missing": the meeting was deleted
+ *  meanwhile. "failed": it ran and did not produce or save a transcript. */
+export type CallRebuildOutcome = "landed" | "busy" | "missing" | "failed";
+
 /** The transcript fields a (re-)transcription produces. */
 export interface TranscriptPatch {
   you: string;
@@ -225,11 +230,11 @@ interface MeetingJobsState {
     existing: TranscriptSegLike[];
     quiet?: boolean;
     thenNotes?: {
-      buildText: (t: TranscriptPatch & { callerNames?: string[] }) => string;
+      buildText: (t: TranscriptPatch) => string;
       prompt: string;
       trimKey: string;
     };
-  }) => Promise<boolean>;
+  }) => Promise<CallRebuildOutcome>;
 
   /** Stop the running meeting and turn it into a meeting entry. */
   stopMeeting: (args: {
@@ -833,8 +838,9 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
         label: `rebuilding the transcript of “${title}”`,
       });
       if (claim === null) {
-        // The automatic run never interrupts with "busy": the live transcript stands.
-        return quiet ? false : refuse();
+        // The automatic run never interrupts with "busy": the caller decides.
+        if (!quiet) refuse();
+        return "busy";
       }
       const target = { section: "meetings" as const, meetingId, tab: "transcript" as const };
       try {
@@ -866,8 +872,8 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
           ...(rebuilt.includes("you") ? { speakersFound: undefined, speakerNames: undefined } : {}),
         });
         if (outcome === "missing" || outcome === "failed") {
-          reportLanding(outcome, CALL_MSGS, meetingId, "transcript");
-          return false;
+          if (!quiet || outcome === "failed") reportLanding(outcome, CALL_MSGS, meetingId, "transcript");
+          return outcome;
         }
         const detail = [
           others && callers > 1 ? `${callers} callers found.` : "",
@@ -887,9 +893,9 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
           if (failed > 0 || notes.length > 0) toast.warning(detail);
           reportLanding(outcome, CALL_MSGS, meetingId, "transcript");
         }
-        if (!thenNotes) return true;
+        if (!thenNotes) return "landed";
         const text = thenNotes.buildText(patch);
-        if (!text.trim()) return true;
+        if (!text.trim()) return "landed";
         releaseTask(claim);
         void notesJob({
           meetingId,
@@ -899,7 +905,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
           prompt: thenNotes.prompt,
           trimKey: thenNotes.trimKey,
         });
-        return true;
+        return "landed";
       } catch (e) {
         if (quiet) {
           logActivity({
@@ -917,7 +923,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
             target: { section: "meetings", meetingId, tab: "audio" },
           });
         }
-        return false;
+        return "failed";
       } finally {
         releaseTask(claim);
       }

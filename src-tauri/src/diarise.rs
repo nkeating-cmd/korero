@@ -757,11 +757,13 @@ pub(crate) fn room_lines(
         let audio = x[at(p.start_ms)..at(p.end_ms)].to_vec();
         match transcribe(audio) {
             Ok(text) => {
-                covered.push((p.start_ms, p.end_ms));
                 // Review M7: no near-floor hallucination drop here. The speaker model has
                 // already decided this is speech, and far-field audio is always "near the
                 // floor", so real one-word replies ("okay", "thank you") were being lost.
                 if let Some(text) = crate::meeting::clean_segment_text(&text, None) {
+                    // 1.46 (review 6): a piece only "covers" its time once it has produced
+                    // a line. One that transcribed to nothing must not displace a live line.
+                    covered.push((p.start_ms, p.end_ms));
                     lines.push(crate::meeting::TranscriptSeg {
                         source: source.into(),
                         text,
@@ -780,16 +782,96 @@ pub(crate) fn room_lines(
     (lines, failed, covered)
 }
 
+/// A live line's time stamp is the start of the capture buffer, which in silence
+/// restarts every 700 ms: it can sit up to that long BEFORE the first word, while a
+/// speaker turn starts at the word. Each rebuilt span is widened backwards by this much
+/// before a live line is compared with it.
+const LIVE_LEAD_MS: u64 = 1_000;
+
+/// A live line carries no end time. Its spoken length is estimated from its words
+/// (about 2.5 a second), between 1 s and the 20 s a live segment can last.
+fn live_len_ms(words: usize) -> u64 {
+    (words as u64 * 400).clamp(1_000, 20_000)
+}
+
+/// The transcribed spans, each widened backwards by `LIVE_LEAD_MS`, sorted and merged.
+pub(crate) fn padded_spans(covered: &[(u64, u64)]) -> Vec<(u64, u64)> {
+    let mut v: Vec<(u64, u64)> = covered.iter().map(|&(a, b)| (a.saturating_sub(LIVE_LEAD_MS), b)).collect();
+    v.sort();
+    let mut out: Vec<(u64, u64)> = Vec::new();
+    for (a, b) in v {
+        match out.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
+}
+
+/// Whether the rebuild replaces a live line: at least half of the line's estimated
+/// spoken length lies inside transcribed spans. Under half, the line is kept, so a
+/// stretch the rebuild did not reach is never lost (at worst a few words appear twice).
+pub(crate) fn superseded(start_ms: u64, words: usize, spans: &[(u64, u64)]) -> bool {
+    let (s, e) = (start_ms, start_ms + live_len_ms(words));
+    let inside: u64 = spans.iter().map(|&(a, b)| b.min(e).saturating_sub(a.max(s))).sum();
+    inside * 2 >= e - s
+}
+
+/// 1.46 (review 7): number the callers 0, 1, 2... in the order they first speak, and
+/// return how many have at least one line. The speaker model's own numbers can skip
+/// (a voice whose pieces all came back empty), which showed as a caller nobody could
+/// find in the transcript.
+pub(crate) fn renumber_callers(segs: &mut [crate::meeting::TranscriptSeg]) -> u32 {
+    let mut order: Vec<u32> = Vec::new();
+    for s in segs.iter_mut().filter(|s| s.source == "others") {
+        if let Some(k) = s.speaker {
+            let at = order.iter().position(|&o| o == k).unwrap_or_else(|| {
+                order.push(k);
+                order.len() - 1
+            });
+            s.speaker = Some(at as u32);
+        }
+    }
+    order.len() as u32
+}
+
+/// Why a call's saved lines cannot be matched by time to its recordings, if they
+/// cannot: two or more lines that all carry the same start (recorded before 1.26), or
+/// lines out of time order (a combined meeting). `None` means the rebuild may run.
+pub(crate) fn call_timing_problem(segs: &[crate::meeting::TranscriptSeg]) -> Option<&'static str> {
+    let starts: Vec<u64> = segs.iter().filter(|s| !s.text.trim().is_empty()).map(|s| s.start_ms).collect();
+    if starts.len() >= 2 && starts.iter().all(|&ms| ms == starts[0]) {
+        return Some(
+            "This meeting's lines have no timings (it was recorded before Kōrero 1.26), so they \
+             can't be matched to the recordings. Re-transcribe it first.",
+        );
+    }
+    if segs.windows(2).any(|w| w[1].start_ms < w[0].start_ms) {
+        return Some(
+            "This transcript is not in time order (a combined meeting, for example), so its \
+             lines can't be matched to one recording.",
+        );
+    }
+    None
+}
+
 /// Review M6: the rebuilt lines, plus every existing line that no successfully
 /// transcribed piece covered (speech the speaker model missed, or a piece that failed).
 /// Kept lines lose their speaker label, since nothing measured who said them.
+///
+/// 1.46 (review 1): "covered" is judged over the line's whole spoken length, not its
+/// start alone (`superseded`). Judging by the start kept a live line beside the rebuilt
+/// line that replaced it whenever the speaker had paused first, and dropped a long live
+/// line whole when only its first second had been rebuilt.
 pub(crate) fn merge_room(
     mut lines: Vec<crate::meeting::TranscriptSeg>,
     existing: Vec<crate::meeting::TranscriptSeg>,
     covered: &[(u64, u64)],
 ) -> Vec<crate::meeting::TranscriptSeg> {
+    let spans = padded_spans(covered);
     for mut s in existing {
-        if s.text.trim().is_empty() || covered.iter().any(|&(a, b)| s.start_ms >= a && s.start_ms < b) {
+        let words = s.text.split_whitespace().count();
+        if words == 0 || superseded(s.start_ms, words, &spans) {
             continue;
         }
         s.speaker = None;
@@ -980,6 +1062,9 @@ pub async fn meeting_call_transcript(
     if !is_wav(&mic_path) && !is_wav(&system_path) {
         return Err("This meeting has no recording to rebuild the transcript from.".into());
     }
+    if let Some(why) = call_timing_problem(&existing) {
+        return Err(why.to_string());
+    }
     if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return Err("Speakers are already being separated. Try again when that finishes.".into());
     }
@@ -1051,8 +1136,6 @@ pub async fn meeting_call_transcript(
                 } else {
                     format!("{what} could not be transcribed again; its live lines were kept.")
                 });
-            } else if source == "others" {
-                callers = diar.speakers;
             }
             log::info!(
                 "call transcript: {source}: {} speakers, {} pieces, {} lines, {} failed",
@@ -1069,7 +1152,11 @@ pub async fn meeting_call_transcript(
             });
         }
         let failed: usize = sides.iter().filter(|s| s.usable()).map(|s| s.failed).sum();
-        let segments = merge_call(existing, sides);
+        let mut segments = merge_call(existing, sides);
+        // Callers are counted from the lines that survived, in the order they first speak.
+        if rebuilt.iter().any(|s| s == "others") {
+            callers = renumber_callers(&mut segments);
+        }
         log::info!(
             "call transcript: rebuilt {:?}, {} callers, {} lines, {:.0} s audio in {:.1} s",
             rebuilt, callers, segments.len(), audio_s, started.elapsed().as_secs_f64()
@@ -1558,6 +1645,65 @@ mod tests {
         assert_eq!(texts, vec!["live you", "caller one", "caller two", "live others outside"]);
         assert_eq!(out[1].speaker, Some(0));
         assert_eq!(out[3].speaker, None, "a kept live line has no measured speaker");
+    }
+
+    #[test]
+    fn a_live_line_stamped_before_its_first_word_is_replaced_not_kept_beside_the_rebuild() {
+        // The speaker paused, so the live line is stamped 400 ms before the turn starts.
+        let live = vec![line("you", "so the budget is fine", 9_600, None)];
+        let out = merge_call(live, vec![side("you", vec![line("you", "So the budget is fine.", 10_000, None)], vec![(10_000, 14_000)], 1, 0)]);
+        assert_eq!(out.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(), vec!["So the budget is fine."]);
+    }
+
+    #[test]
+    fn a_long_live_line_is_kept_when_only_its_first_second_was_rebuilt() {
+        let long = "word ".repeat(50); // about 20 s of speech
+        let live = vec![line("you", long.trim(), 10_000, None)];
+        let out = merge_call(live, vec![side("you", vec![line("you", "word", 10_500, None)], vec![(10_500, 11_500)], 1, 0)]);
+        assert_eq!(out.len(), 2, "losing 19 s of speech is worse than one word twice");
+    }
+
+    #[test]
+    fn superseded_needs_half_the_line_inside_the_transcribed_spans() {
+        let spans = padded_spans(&[(10_000, 12_000), (11_500, 15_000), (30_000, 31_000)]);
+        assert_eq!(spans, vec![(9_000, 15_000), (29_000, 31_000)]);
+        assert!(superseded(9_200, 5, &spans)); // 2 s line, all inside
+        assert!(superseded(14_000, 5, &spans)); // 14-16 s: exactly half inside
+        assert!(!superseded(14_500, 5, &spans)); // a quarter inside
+        assert!(!superseded(20_000, 5, &spans));
+        assert!(!superseded(0, 1, &[]));
+    }
+
+    #[test]
+    fn callers_are_numbered_in_the_order_they_first_speak_and_counted_from_their_lines() {
+        let mut segs = vec![
+            line("you", "a", 0, None),
+            line("others", "b", 1_000, Some(3)),
+            line("others", "c", 2_000, Some(0)),
+            line("others", "kept live", 2_500, None),
+            line("others", "d", 3_000, Some(3)),
+        ];
+        assert_eq!(renumber_callers(&mut segs), 2, "voices with no line are not counted");
+        assert_eq!(segs.iter().map(|s| s.speaker).collect::<Vec<_>>(), vec![None, Some(0), Some(1), None, Some(0)]);
+    }
+
+    #[test]
+    fn a_piece_that_transcribes_to_nothing_covers_nothing() {
+        let x = vec![0.05f32; SR * 4];
+        let pieces = vec![SpeakerTurn { start_ms: 0, end_ms: 1_500, speaker: 0 }];
+        let (lines, failed, covered) = room_lines(&x, &pieces, false, "you", |_| Ok("   ".into()), |_, _| {});
+        assert!(lines.is_empty());
+        assert_eq!(failed, 0);
+        assert!(covered.is_empty(), "an empty piece must not displace a live line");
+    }
+
+    #[test]
+    fn untimed_or_unordered_lines_are_refused() {
+        assert!(call_timing_problem(&[line("you", "a", 0, None), line("others", "b", 1_000, None)]).is_none());
+        assert!(call_timing_problem(&[line("you", "a", 0, None)]).is_none());
+        assert!(call_timing_problem(&[]).is_none());
+        assert!(call_timing_problem(&[line("you", "a", 0, None), line("others", "b", 0, None)]).is_some());
+        assert!(call_timing_problem(&[line("you", "a", 5_000, None), line("you", "b", 1_000, None)]).is_some());
     }
 
     #[test]

@@ -1,15 +1,26 @@
-// Kōrero 1.46: "write the notes when a meeting ends" (on unless switched off).
+// Kōrero 1.46: "write the notes when a call ends".
 //
-// A small per-computer choice, kept beside the "On a call / In the room" one in
-// localStorage. Reads never throw: a browser context without storage means "on".
+// A per-computer choice, kept beside the "On a call / In the room" one in
+// localStorage. Three states, because the transcript goes to whatever AI model is
+// set up for notes, and that may be a cloud service:
+//
+//   - "on" / "off": the person chose.
+//   - "unset": nobody has chosen. Notes are then written only when the model runs
+//     on this computer. A transcript is never sent to a cloud service on the
+//     strength of a default.
+//
+// Reads never throw: a context without storage behaves as "unset".
 
 const KEY = "korero.meetings.autoNotes";
 
-export const autoNotesEnabled = (): boolean => {
+export type AutoNotesChoice = "on" | "off" | "unset";
+
+export const autoNotesChoice = (): AutoNotesChoice => {
   try {
-    return localStorage.getItem(KEY) !== "0";
+    const v = localStorage.getItem(KEY);
+    return v === "1" ? "on" : v === "0" ? "off" : "unset";
   } catch {
-    return true;
+    return "unset";
   }
 };
 
@@ -20,6 +31,10 @@ export const setAutoNotes = (on: boolean): void => {
     /* the choice just doesn't persist */
   }
 };
+
+/** Whether notes are written without being asked, given the choice and where the model runs. */
+export const autoNotesOn = (choice: AutoNotesChoice, providerLocal: boolean): boolean =>
+  choice === "on" || (choice === "unset" && providerLocal);
 
 /** Whether an AI model is set up for notes: a provider is chosen and it has a model. */
 export const notesModelReady = (
@@ -32,8 +47,8 @@ export const notesModelReady = (
 /**
  * What a call does by itself after Stop. Pure, so the rules are testable:
  *   - rebuild the transcript when at least one side's recording is a WAV;
- *   - write notes when that is switched on and an AI model is set up;
- *   - if the rebuild cannot run or does not land, notes come from the live text.
+ *   - write notes when `autoNotes` (see `autoNotesOn`) and an AI model is set up;
+ *   - if the rebuild cannot run or fails, notes come from the live text.
  */
 export const afterStopPlan = (a: {
   micWav: boolean;

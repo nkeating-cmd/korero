@@ -7,7 +7,8 @@ import {
   type Meeting,
   type TranscriptSeg,
 } from "../src/components/meetings/model";
-import { afterStopPlan, notesModelReady } from "../src/components/meetings/autoNotes";
+import { afterStopPlan, autoNotesOn, notesModelReady } from "../src/components/meetings/autoNotes";
+import { combineCallers } from "../src/components/meetings/model";
 import { withName } from "../src/components/meetings/SpeakerNames";
 
 // Kōrero 1.46: a call's transcript rebuilt from its recordings, callers named,
@@ -115,6 +116,49 @@ describe("what a call does after Stop", () => {
   });
   test("a silent live transcript never becomes the fallback for notes", () => {
     expect(afterStopPlan({ ...base, hasLiveText: false })).toEqual({ rebuild: true, notes: true, notesFromLive: false });
+  });
+});
+
+describe("notes are never sent to a cloud model on the strength of a default", () => {
+  test("nobody has chosen: on for a model on this computer, off for a cloud one", () => {
+    expect(autoNotesOn("unset", true)).toBe(true);
+    expect(autoNotesOn("unset", false)).toBe(false);
+  });
+  test("a choice is a choice, wherever the model runs", () => {
+    expect(autoNotesOn("on", false)).toBe(true);
+    expect(autoNotesOn("on", true)).toBe(true);
+    expect(autoNotesOn("off", true)).toBe(false);
+    expect(autoNotesOn("off", false)).toBe(false);
+  });
+});
+
+describe("a call recorded before line timings is refused", () => {
+  test("text with no lines, or lines that all start together", () => {
+    expect(callRebuildBlocker(call({ transcript: [], you: "old text", others: "" }))).not.toBeNull();
+    expect(callRebuildBlocker(call({ transcript: [seg("you", "a", 0), seg("others", "b", 0)] }))).not.toBeNull();
+    expect(callRebuildBlocker(call({ transcript: [seg("you", "a", 0)] }))).toBeNull();
+    expect(callRebuildBlocker(call({ transcript: [], you: "", others: "" }))).toBeNull();
+  });
+});
+
+describe("combining two calls keeps their callers apart", () => {
+  test("the second call's callers move up past the first's, names with them", () => {
+    const a = { transcript: [seg("others", "a1", 0, 0), seg("others", "a2", 1, 1)], callersFound: 2, callerNames: ["Mere", ""] };
+    const b = { transcript: [seg("you", "me", 0), seg("others", "b1", 1, 0)], callersFound: 1, callerNames: ["Tama"] };
+    const out = combineCallers(a, b);
+    expect(out.transcript?.map((s) => s.speaker ?? null)).toEqual([0, 1, null, 2]);
+    expect(out.callersFound).toBe(3);
+    expect(out.callerNames).toEqual(["Mere", "", "Tama"]);
+  });
+  test("meetings with no callers combine exactly as before", () => {
+    const a = { transcript: [seg("you", "a", 0), seg("others", "b", 1)] };
+    const b = { transcript: [seg("others", "c", 0)] };
+    expect(combineCallers(a, b)).toEqual({ transcript: [...a.transcript, ...b.transcript] });
+  });
+  test("caller numbers are read from the lines when the count was never saved", () => {
+    const a = { transcript: [seg("others", "a", 0, 1)] };
+    const b = { transcript: [seg("others", "b", 0, 0)] };
+    expect(combineCallers(a, b).transcript?.map((s) => s.speaker)).toEqual([1, 2]);
   });
 });
 

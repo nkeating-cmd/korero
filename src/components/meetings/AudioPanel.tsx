@@ -138,8 +138,13 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
               checked={c.autoNotes}
               onChange={(e) => c.toggleAutoNotes(e.target.checked)}
             />
-            Write the notes automatically when a call ends (needs an AI model set up in Post-processing)
+            Write the notes automatically when a call ends
           </label>
+          <p className="kx-meta">
+            {c.notesModelLocal
+              ? "The notes model runs on this computer, so the transcript stays here."
+              : "Needs an AI model set up in Post-processing. If that model is a cloud service, the transcript is sent to it, so this stays off until you turn it on."}
+          </p>
         </section>
       )}
 
