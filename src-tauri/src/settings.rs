@@ -490,9 +490,10 @@ impl SecretMap {
                 KeyAction::Skip => continue,
                 KeyAction::Save => {
                     let ok = crate::secret_store::save_api_key(provider_id, value);
-                    if ok {
-                        mark_in_store(provider_id, true);
-                    }
+                    // A failed write leaves the provider unmarked, so the next
+                    // save tries again instead of treating the key as stored
+                    // (the store may still hold the key this one replaced).
+                    mark_in_store(provider_id, ok);
                     ok
                 }
                 KeyAction::Delete => {
