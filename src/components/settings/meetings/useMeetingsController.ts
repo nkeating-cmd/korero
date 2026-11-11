@@ -47,6 +47,7 @@ import {
   separationBlocker,
   callRebuildBlocker,
   combineCallers,
+  restoreLivePatch,
   titleOf,
   trimKeyOf,
   visibleSegs,
@@ -637,6 +638,22 @@ export const useMeetingsController = () => {
       },
     );
   };
+  // 1.46: put back the transcript as it was heard live (kept by the rebuild after Stop).
+  const onRestoreLive = () => {
+    if (!active || busy) return;
+    const m = active;
+    const patch = restoreLivePatch(m);
+    if (!patch) return;
+    confirmDestructive(
+      "Put the live transcript back?",
+      "The rebuilt transcript is replaced with the one Kōrero wrote during the call. Caller labels and names are cleared. You can rebuild again afterwards.",
+      "Put it back",
+      async () => {
+        patchMeeting(m.id, patch);
+      },
+    );
+  };
+
   // Notes after a call: on by default only when the notes model runs on this computer.
   const notesProviderId = useSettingsStore((s) => s.settings?.post_process_provider_id ?? "");
   const [autoChoice, setAutoChoice] = useState(() => autoNotesChoice(notesProviderId));
@@ -1257,6 +1274,7 @@ export const useMeetingsController = () => {
     onSeparateSpeakers,
     onRoomTranscript,
     onCallTranscript,
+    onRestoreLive,
     callBlocker,
     autoNotes,
     notesModelLocal,

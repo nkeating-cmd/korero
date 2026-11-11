@@ -8,7 +8,7 @@ import {
   type TranscriptSeg,
 } from "../src/components/meetings/model";
 import { afterStopPlan, autoNotesOn, notesModelReady, parseChoice } from "../src/components/meetings/autoNotes";
-import { combineCallers } from "../src/components/meetings/model";
+import { combineCallers, restoreLivePatch } from "../src/components/meetings/model";
 import { withName } from "../src/components/meetings/SpeakerNames";
 
 // Kōrero 1.46: a call's transcript rebuilt from its recordings, callers named,
@@ -172,6 +172,23 @@ describe("combining two calls keeps their callers apart", () => {
     const a = { transcript: [seg("others", "a", 0, 1)] };
     const b = { transcript: [seg("others", "b", 0, 0)] };
     expect(combineCallers(a, b).transcript?.map((s) => s.speaker)).toEqual([1, 2]);
+  });
+});
+
+describe("the live transcript can be put back", () => {
+  test("nothing kept: nothing to restore", () => {
+    expect(restoreLivePatch({})).toBeNull();
+    expect(restoreLivePatch({ liveTranscript: [] })).toBeNull();
+  });
+  test("the kept lines return, both text fields with them, caller labels cleared", () => {
+    const live = [seg("you", "kia ora", 0), seg("others", "hello", 1_000), seg("you", "next", 2_000)];
+    expect(restoreLivePatch({ liveTranscript: live })).toEqual({
+      transcript: live,
+      you: "kia ora next",
+      others: "hello",
+      callersFound: undefined,
+      callerNames: undefined,
+    });
   });
 });
 

@@ -68,6 +68,9 @@ export interface Meeting {
   callersFound?: number;
   /** 1.46: names for Caller 1..N, by index; blank or missing = "Caller n". */
   callerNames?: string[];
+  /** 1.46: the transcript as it was heard live, kept when the automatic rebuild
+   *  after Stop replaces it, so it can be put back if the rebuild is worse. */
+  liveTranscript?: TranscriptSeg[];
   /** 1.45: the two meetings this one was combined from (set by Combine). */
   mergedFrom?: string[];
   /** 1.45 (B3): how it was recorded. Absent on older meetings, which were calls. */
@@ -191,6 +194,24 @@ export const callRebuildBlocker = (m: Meeting): string | null => {
   if (segs.length >= 2 && segs.every((s) => (s.start_ms ?? 0) === (segs[0].start_ms ?? 0)))
     return "Its lines have no timings (recorded before Kōrero 1.26). Re-transcribe it first.";
   return null;
+};
+
+/**
+ * Kōrero 1.46: the fields that put a call's live transcript back in place of the
+ * rebuilt one, or null when no live transcript was kept. Caller labels and names
+ * belong to the rebuilt lines, so they go; the kept copy stays for another change of mind.
+ */
+export const restoreLivePatch = (
+  m: Pick<Meeting, "liveTranscript">,
+): Pick<Meeting, "transcript" | "you" | "others" | "callersFound" | "callerNames"> | null => {
+  const live = m.liveTranscript;
+  if (!live || live.length === 0) return null;
+  const join = (source: string) =>
+    live
+      .filter((s) => s.source === source)
+      .map((s) => s.text)
+      .join(" ");
+  return { transcript: live, you: join("you"), others: join("others"), callersFound: undefined, callerNames: undefined };
 };
 
 /**

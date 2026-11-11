@@ -129,6 +129,17 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
               {c.busy === "speakers" && c.busyMeetingId === m.id ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
               Rebuild from the recordings
             </button>
+            {(m.liveTranscript?.length ?? 0) > 0 && (
+              <button
+                type="button"
+                className="kx-btn kx-btn-quiet"
+                onClick={() => c.onRestoreLive()}
+                disabled={!!c.busy || meetingLive}
+                title="Replace the rebuilt transcript with the one written during the call"
+              >
+                Put the live transcript back
+              </button>
+            )}
             {c.callBlocker && <span className="kx-meta">{c.callBlocker}</span>}
           </div>
           <label className="flex items-center gap-2 kx-meta cursor-pointer" htmlFor="kx-auto-notes">

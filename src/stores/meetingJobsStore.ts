@@ -229,6 +229,8 @@ interface MeetingJobsState {
     systemPath: string | null;
     existing: TranscriptSegLike[];
     quiet?: boolean;
+    /** Keep `existing` on the meeting as its live transcript (the run after Stop). */
+    keepLive?: boolean;
     thenNotes?: {
       buildText: (t: TranscriptPatch) => string;
       prompt: string;
@@ -831,7 +833,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
       }
     },
 
-    callTranscript: async ({ meetingId, title, micPath, systemPath, existing, quiet, thenNotes }) => {
+    callTranscript: async ({ meetingId, title, micPath, systemPath, existing, quiet, keepLive, thenNotes }) => {
       const claim = claimTask({
         kind: "speakers",
         meetingId,
@@ -870,6 +872,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
           ...(others ? { callersFound: callers, callerNames: undefined } : {}),
           // Microphone lines were rebuilt without speaker labels.
           ...(rebuilt.includes("you") ? { speakersFound: undefined, speakerNames: undefined } : {}),
+          ...(keepLive ? { liveTranscript: existing } : {}),
         });
         if (outcome === "missing" || outcome === "failed") {
           if (!quiet || outcome === "failed") reportLanding(outcome, CALL_MSGS, meetingId, "transcript");

@@ -149,6 +149,7 @@ const finishCall = async (s: RoomSaved): Promise<void> => {
         systemPath: s.systemPath,
         existing: s.segments,
         quiet: true,
+        keepLive: true,
         thenNotes: plan.notes
           ? {
               buildText: (t) =>
