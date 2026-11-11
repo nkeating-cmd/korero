@@ -1589,4 +1589,84 @@ mod tests {
         assert!(out.iter().filter(|s| s.source == "you").all(|s| s.speaker.is_none()));
         assert!(out.iter().filter(|s| s.source == "others").all(|s| s.speaker.is_some()));
     }
+    /// Kōrero 1.46 (D-011), manual: what the call rebuild finds on REAL call recordings,
+    /// against what the loudness gate finds. Prints numbers only: no file names, no text.
+    ///
+    ///   KORERO_CALLS_DIR       folder of `meeting-*-you.wav` / `meeting-*-others.wav`
+    ///   KORERO_DIARISE_MODELS  folder holding the two pinned models
+    ///   KORERO_CALLS_MAX       newest pairs to read (default 4)
+    ///
+    /// For each side: seconds of speech in speaker turns, the share of that speech that
+    /// falls outside every energy-gate segment (what the live cut would not have sent to
+    /// the speech model, a lower bound: live also applies the VAD), voices found, pieces,
+    /// and the time taken.
+    #[test]
+    #[ignore]
+    fn live_call_recordings_gate_against_turns() {
+        let dir = std::path::PathBuf::from(std::env::var("KORERO_CALLS_DIR").expect("set KORERO_CALLS_DIR"));
+        let models = std::path::PathBuf::from(std::env::var("KORERO_DIARISE_MODELS").expect("set KORERO_DIARISE_MODELS"));
+        let max: usize = std::env::var("KORERO_CALLS_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+        let (seg, emb) = (models.join(SEGMENTATION.name), models.join(EMBEDDING.name));
+        assert!(model_ok(&seg, &SEGMENTATION) && model_ok(&emb, &EMBEDDING), "models missing or not the pinned files");
+        let mut others: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with("-others.wav")))
+            .collect();
+        others.sort();
+        others.reverse();
+        let mut engine = Engine::load(&seg, &emb, engine_threads()).unwrap();
+        for (i, sys) in others.iter().take(max).enumerate() {
+            let mic = std::path::PathBuf::from(sys.to_str().unwrap().replace("-others.wav", "-you.wav"));
+            for (source, path) in [("others", sys.clone()), ("you", mic)] {
+                if !path.exists() {
+                    println!("call {}: {source}: no recording", i + 1);
+                    continue;
+                }
+                let t0 = Instant::now();
+                let x = match decode_wav_16k(path.to_str().unwrap()) {
+                    Ok(x) if x.len() >= SR * 2 => x,
+                    _ => {
+                        println!("call {}: {source}: unreadable or under 2 s", i + 1);
+                        continue;
+                    }
+                };
+                let d = engine.run(&x, |_, _| {}).unwrap();
+                let pieces = room_pieces(&d.turns);
+                let gate: Vec<(u64, u64)> = crate::meeting::decode_and_segment(path.to_str().unwrap(), source)
+                    .unwrap()
+                    .iter()
+                    .map(|s| (s.start_ms, s.start_ms + (s.samples.len() * 1000 / SR) as u64))
+                    .collect();
+                // 10 ms frames: in a piece, and in a piece but in no gate segment.
+                let frames = x.len() * 100 / SR + 1;
+                let mut in_gate = vec![false; frames];
+                for &(a, b) in &gate {
+                    for f in (a / 10) as usize..((b / 10) as usize).min(frames) {
+                        in_gate[f] = true;
+                    }
+                }
+                let (mut speech, mut outside) = (0u64, 0u64);
+                for p in &pieces {
+                    for f in (p.start_ms / 10) as usize..((p.end_ms / 10) as usize).min(frames) {
+                        speech += 1;
+                        if !in_gate[f] {
+                            outside += 1;
+                        }
+                    }
+                }
+                println!(
+                    "call {}: {source}: {:.0} s audio; speech in turns {:.0} s; outside the loudness gate {:.1}%; {} voices; {} pieces; gate segments {}; {:.1} s",
+                    i + 1,
+                    x.len() as f64 / SR as f64,
+                    speech as f64 / 100.0,
+                    if speech > 0 { outside as f64 * 100.0 / speech as f64 } else { 0.0 },
+                    d.speakers,
+                    pieces.len(),
+                    gate.len(),
+                    t0.elapsed().as_secs_f64()
+                );
+            }
+        }
+    }
 }

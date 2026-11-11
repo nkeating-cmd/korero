@@ -2481,7 +2481,7 @@ fn side_label(source: &str) -> &'static str {
 /// the cut speech segments (each carrying its capture-relative `start_ms`).
 /// Streaming: the resampler and segmenter hold at most one in-flight segment,
 /// so memory stays bounded regardless of recording length.
-fn decode_and_segment(path: &str, source: &'static str) -> Result<Vec<LiveSegment>, String> {
+pub(crate) fn decode_and_segment(path: &str, source: &'static str) -> Result<Vec<LiveSegment>, String> {
     let reader = hound::WavReader::open(path).map_err(|e| format!("Could not open {path}: {e}"))?;
     let spec = reader.spec();
     let channels = spec.channels.max(1) as usize;
