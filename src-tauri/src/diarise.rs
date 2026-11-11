@@ -784,9 +784,9 @@ pub(crate) fn room_lines(
 
 /// A live line's time stamp is the start of the capture buffer, which in silence
 /// restarts every 700 ms: it can sit up to that long BEFORE the first word, while a
-/// speaker turn starts at the word. Each rebuilt span is widened backwards by this much
-/// before a live line is compared with it.
-const LIVE_LEAD_MS: u64 = 1_000;
+/// speaker turn starts at the word. So a live line is compared with the rebuilt spans
+/// twice: where it is stamped, and moved later by this much.
+const LIVE_LEAD_MS: u64 = 700;
 
 /// A live line carries no end time. Its spoken length is estimated from its words
 /// (about 2.5 a second), between 1 s and the 20 s a live segment can last.
@@ -794,9 +794,9 @@ fn live_len_ms(words: usize) -> u64 {
     (words as u64 * 400).clamp(1_000, 20_000)
 }
 
-/// The transcribed spans, each widened backwards by `LIVE_LEAD_MS`, sorted and merged.
-pub(crate) fn padded_spans(covered: &[(u64, u64)]) -> Vec<(u64, u64)> {
-    let mut v: Vec<(u64, u64)> = covered.iter().map(|&(a, b)| (a.saturating_sub(LIVE_LEAD_MS), b)).collect();
+/// The transcribed spans, sorted and merged where they touch or overlap.
+pub(crate) fn merged_spans(covered: &[(u64, u64)]) -> Vec<(u64, u64)> {
+    let mut v: Vec<(u64, u64)> = covered.to_vec();
     v.sort();
     let mut out: Vec<(u64, u64)> = Vec::new();
     for (a, b) in v {
@@ -809,12 +809,19 @@ pub(crate) fn padded_spans(covered: &[(u64, u64)]) -> Vec<(u64, u64)> {
 }
 
 /// Whether the rebuild replaces a live line: at least half of the line's estimated
-/// spoken length lies inside transcribed spans. Under half, the line is kept, so a
-/// stretch the rebuild did not reach is never lost (at worst a few words appear twice).
+/// spoken length lies inside transcribed spans, with the line placed where it is
+/// stamped or `LIVE_LEAD_MS` later (see there). Under half both ways, the line is kept,
+/// so a stretch the rebuild did not reach is never lost (at worst a few words appear
+/// twice). The spans themselves are never widened: that let the NEXT turn swallow a
+/// short reply ("okay") whose own turn was too short to transcribe.
 pub(crate) fn superseded(start_ms: u64, words: usize, spans: &[(u64, u64)]) -> bool {
-    let (s, e) = (start_ms, start_ms + live_len_ms(words));
-    let inside: u64 = spans.iter().map(|&(a, b)| b.min(e).saturating_sub(a.max(s))).sum();
-    inside * 2 >= e - s
+    let len = live_len_ms(words);
+    let half_inside = |s: u64| {
+        let e = s + len;
+        let inside: u64 = spans.iter().map(|&(a, b)| b.min(e).saturating_sub(a.max(s))).sum();
+        inside * 2 >= len
+    };
+    half_inside(start_ms) || half_inside(start_ms + LIVE_LEAD_MS)
 }
 
 /// 1.46 (review 7): number the callers 0, 1, 2... in the order they first speak, and
@@ -842,8 +849,8 @@ pub(crate) fn call_timing_problem(segs: &[crate::meeting::TranscriptSeg]) -> Opt
     let starts: Vec<u64> = segs.iter().filter(|s| !s.text.trim().is_empty()).map(|s| s.start_ms).collect();
     if starts.len() >= 2 && starts.iter().all(|&ms| ms == starts[0]) {
         return Some(
-            "This meeting's lines have no timings (it was recorded before Kōrero 1.26), so they \
-             can't be matched to the recordings. Re-transcribe it first.",
+            "This meeting's lines carry no timings, so they can't be matched to the \
+             recordings. Re-transcribe it first.",
         );
     }
     if segs.windows(2).any(|w| w[1].start_ms < w[0].start_ms) {
@@ -868,7 +875,7 @@ pub(crate) fn merge_room(
     existing: Vec<crate::meeting::TranscriptSeg>,
     covered: &[(u64, u64)],
 ) -> Vec<crate::meeting::TranscriptSeg> {
-    let spans = padded_spans(covered);
+    let spans = merged_spans(covered);
     for mut s in existing {
         let words = s.text.split_whitespace().count();
         if words == 0 || superseded(s.start_ms, words, &spans) {
@@ -1155,7 +1162,8 @@ pub async fn meeting_call_transcript(
         let mut segments = merge_call(existing, sides);
         // Callers are counted from the lines that survived, in the order they first speak.
         if rebuilt.iter().any(|s| s == "others") {
-            callers = renumber_callers(&mut segments);
+            // One voice is left unlabelled (nothing to tell apart), but it is still one caller.
+            callers = renumber_callers(&mut segments).max(1);
         }
         log::info!(
             "call transcript: rebuilt {:?}, {} callers, {} lines, {:.0} s audio in {:.1} s",
@@ -1665,13 +1673,22 @@ mod tests {
 
     #[test]
     fn superseded_needs_half_the_line_inside_the_transcribed_spans() {
-        let spans = padded_spans(&[(10_000, 12_000), (11_500, 15_000), (30_000, 31_000)]);
-        assert_eq!(spans, vec![(9_000, 15_000), (29_000, 31_000)]);
-        assert!(superseded(9_200, 5, &spans)); // 2 s line, all inside
+        let spans = merged_spans(&[(10_000, 12_000), (11_500, 15_000), (30_000, 31_000)]);
+        assert_eq!(spans, vec![(10_000, 15_000), (30_000, 31_000)]);
+        assert!(superseded(9_600, 5, &spans)); // 2 s line stamped just before the turn
+        assert!(superseded(9_400, 1, &spans)); // 1 s line: only fits once moved 700 ms later
         assert!(superseded(14_000, 5, &spans)); // 14-16 s: exactly half inside
-        assert!(!superseded(14_500, 5, &spans)); // a quarter inside
+        assert!(!superseded(14_500, 5, &spans)); // a quarter inside, none when moved later
         assert!(!superseded(20_000, 5, &spans));
         assert!(!superseded(0, 1, &[]));
+    }
+
+    #[test]
+    fn a_short_reply_is_not_swallowed_by_the_turn_that_follows_it() {
+        // "okay" at 8.2 s: its own turn was too short to transcribe, the next starts at 9.5 s.
+        let live = vec![line("you", "okay", 8_200, None)];
+        let out = merge_call(live, vec![side("you", vec![line("you", "Right, next item.", 9_500, None)], vec![(9_500, 12_000)], 1, 0)]);
+        assert_eq!(out.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(), vec!["okay", "Right, next item."]);
     }
 
     #[test]

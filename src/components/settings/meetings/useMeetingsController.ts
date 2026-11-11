@@ -29,7 +29,8 @@ import { logActivity } from "../../../stores/activityStore";
 import { useNav, type MeetingTab } from "../../../stores/navStore";
 import { TEMPLATES } from "../../../stores/audioBriefStore";
 import { draftSpokenScript, isEngineMissing } from "../../../lib/briefScript";
-import { useRecorder } from "../../../stores/recorderStore";
+import { isAwaitingFinish, useRecorder } from "../../../stores/recorderStore";
+import { useSettingsStore } from "../../../stores/settingsStore";
 import { autoNotesChoice, autoNotesOn, setAutoNotes } from "../../meetings/autoNotes";
 import {
   DEFAULT_PROMPT,
@@ -637,7 +638,8 @@ export const useMeetingsController = () => {
     );
   };
   // Notes after a call: on by default only when the notes model runs on this computer.
-  const [autoChoice, setAutoChoice] = useState(autoNotesChoice);
+  const notesProviderId = useSettingsStore((s) => s.settings?.post_process_provider_id ?? "");
+  const [autoChoice, setAutoChoice] = useState(() => autoNotesChoice(notesProviderId));
   const [notesModelLocal, setNotesModelLocal] = useState(false);
   useEffect(() => {
     let live = true;
@@ -650,10 +652,11 @@ export const useMeetingsController = () => {
     return () => {
       live = false;
     };
-  }, [active?.id]);
+    setAutoChoice(autoNotesChoice(notesProviderId));
+  }, [active?.id, notesProviderId]);
   const autoNotes = autoNotesOn(autoChoice, notesModelLocal);
   const toggleAutoNotes = (on: boolean) => {
-    setAutoNotes(on);
+    setAutoNotes(on, notesProviderId);
     setAutoChoice(on ? "on" : "off");
   };
 
@@ -889,6 +892,13 @@ export const useMeetingsController = () => {
     // so an edit made meanwhile would be overwritten. Refuse it, and say why.
     if (task?.kind === "speakers" && task.meetingId === active.id) {
       toast.message("The transcript is being rebuilt — edit this line when it finishes.");
+      setEditingSegIdx(null);
+      return;
+    }
+    // 1.46: a call that has just ended is rebuilt from what Stop saved, possibly
+    // after waiting for other work, and would overwrite an edit made meanwhile.
+    if (isAwaitingFinish(active.id)) {
+      toast.message("This call is about to be rebuilt from its recordings — edit this line when that finishes.");
       setEditingSegIdx(null);
       return;
     }

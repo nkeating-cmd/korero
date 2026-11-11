@@ -7,7 +7,7 @@ import {
   type Meeting,
   type TranscriptSeg,
 } from "../src/components/meetings/model";
-import { afterStopPlan, autoNotesOn, notesModelReady } from "../src/components/meetings/autoNotes";
+import { afterStopPlan, autoNotesOn, notesModelReady, parseChoice } from "../src/components/meetings/autoNotes";
 import { combineCallers } from "../src/components/meetings/model";
 import { withName } from "../src/components/meetings/SpeakerNames";
 
@@ -129,6 +129,19 @@ describe("notes are never sent to a cloud model on the strength of a default", (
     expect(autoNotesOn("on", true)).toBe(true);
     expect(autoNotesOn("off", true)).toBe(false);
     expect(autoNotesOn("off", false)).toBe(false);
+  });
+});
+
+describe("a yes is remembered for the provider it was given for", () => {
+  test("same provider: on; another provider: nobody has chosen", () => {
+    expect(parseChoice("1:ollama", "ollama")).toBe("on");
+    expect(parseChoice("1:ollama", "openai")).toBe("unset");
+    expect(autoNotesOn(parseChoice("1:ollama", "openai"), false)).toBe(false);
+  });
+  test("no is no for every provider; nothing stored, or an older value, is unset", () => {
+    expect(parseChoice("0", "openai")).toBe("off");
+    expect(parseChoice(null, "ollama")).toBe("unset");
+    expect(parseChoice("1", "ollama")).toBe("unset");
   });
 });
 

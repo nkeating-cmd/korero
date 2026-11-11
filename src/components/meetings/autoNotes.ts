@@ -15,18 +15,26 @@ const KEY = "korero.meetings.autoNotes";
 
 export type AutoNotesChoice = "on" | "off" | "unset";
 
-export const autoNotesChoice = (): AutoNotesChoice => {
+/** The stored choice. "on" is remembered together with the notes provider it was
+ *  given for, and counts only while that provider is still the one in use: saying
+ *  yes to a model on this computer is not saying yes to a cloud service chosen later. */
+export const parseChoice = (stored: string | null, providerId: string): AutoNotesChoice => {
+  if (stored === "0") return "off";
+  if (stored !== null && stored.startsWith("1:")) return stored.slice(2) === providerId ? "on" : "unset";
+  return "unset";
+};
+
+export const autoNotesChoice = (providerId: string): AutoNotesChoice => {
   try {
-    const v = localStorage.getItem(KEY);
-    return v === "1" ? "on" : v === "0" ? "off" : "unset";
+    return parseChoice(localStorage.getItem(KEY), providerId);
   } catch {
     return "unset";
   }
 };
 
-export const setAutoNotes = (on: boolean): void => {
+export const setAutoNotes = (on: boolean, providerId: string): void => {
   try {
-    localStorage.setItem(KEY, on ? "1" : "0");
+    localStorage.setItem(KEY, on ? `1:${providerId}` : "0");
   } catch {
     /* the choice just doesn't persist */
   }
