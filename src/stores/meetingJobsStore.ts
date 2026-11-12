@@ -33,6 +33,7 @@ import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import { commands } from "@/bindings";
 import { logActivity } from "./activityStore";
+import { cleanTopic, isPlaceholderTitle, TITLE_INPUT_CHARS, TITLE_PROMPT } from "../components/meetings/titles";
 import {
   createMeetingsBridge,
   type DeliveryOutcome,
@@ -70,7 +71,8 @@ export const meetingsBridge = createMeetingsBridge({
 // ---------------------------------------------------------------------------
 // Types
 
-export type MeetingJobKind = "post" | "both" | "refine";
+/** "title" (1.47): the notes model is naming a meeting that has no name yet. */
+export type MeetingJobKind = "post" | "both" | "refine" | "title";
 
 export interface MeetingJob {
   meetingId: string;
@@ -152,6 +154,10 @@ interface MeetingJobsState {
     prompt: string;
     trimKey: string;
   }) => Promise<boolean>;
+
+  /** 1.47: name a meeting from its notes (or transcript). The meeting takes the name
+   *  only while it still has a placeholder. Resolves false if refused (busy). */
+  suggestTitle: (args: { meetingId: string; title?: string; text: string }) => Promise<boolean>;
 
   /** Revise existing notes with the reader's feedback (Undo in the toast).
    *  Resolves true when the refined notes landed. */
@@ -499,6 +505,8 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
     /** Called with where the result landed; default reports it as notes. */
     onLanded?: (outcome: DeliveryOutcome) => void;
     failLabel: string;
+    /** A step nobody asked for by hand: a failure goes to Activity, not a toast. */
+    quietFail?: boolean;
   }): Promise<boolean> => {
     if (isBusy()) return false;
     attachDeltaListener(set);
@@ -516,7 +524,11 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
     try {
       // 1.44: only new notes from a transcript are read in parts; a refine
       // (notes plus feedback) is not a transcript.
-      const r = await commands.meetingPostProcess(args.text, args.prompt, args.kind !== "refine");
+      const r = await commands.meetingPostProcess(
+        args.text,
+        args.prompt,
+        args.kind === "post" || args.kind === "both",
+      );
       if (r.status !== "ok") throw new Error(r.error);
       const outcome = await meetingsBridge.deliverPatch(
         args.meetingId,
@@ -525,7 +537,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
       (args.onLanded ??
         ((o) => reportLanding(o, NOTES_MSGS, args.meetingId, "notes")))(outcome);
     } catch (e) {
-      toast.error(`${args.failLabel} failed: ${errText(e)}`);
+      if (!args.quietFail) toast.error(`${args.failLabel} failed: ${errText(e)}`);
       logActivity({
         status: "failed",
         title: `${args.failLabel} failed`,
@@ -538,27 +550,71 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
     return true;
   };
 
-  const notesJob = (a: {
+  const notesJob = async (a: {
     meetingId: string;
     title?: string;
     kind: "post" | "both";
     text: string;
     prompt: string;
     trimKey: string;
-  }) =>
-    runJob({
+  }) => {
+    let notes = "";
+    let landed = false;
+    const ran = await runJob({
       meetingId: a.meetingId,
       title: a.title,
       kind: a.kind,
       text: a.text,
       prompt: a.prompt,
       failLabel: "Post-processing",
-      patchFor: (processed) => ({
-        processed,
-        processPrompt: a.prompt,
-        processedTrimKey: a.trimKey,
-      }),
+      patchFor: (processed) => {
+        notes = processed;
+        return {
+          processed,
+          processPrompt: a.prompt,
+          processedTrimKey: a.trimKey,
+        };
+      },
+      onLanded: (outcome) => {
+        landed = outcome !== "missing" && outcome !== "failed";
+        reportLanding(outcome, NOTES_MSGS, a.meetingId, "notes");
+      },
     });
+    // 1.47: a meeting nobody has named is named from its new notes. The notes went to
+    // this same model a moment ago, so nothing new leaves the computer. The slot is
+    // claimed again before anything else can start (no await in between).
+    if (ran && landed && notes.trim() && isPlaceholderTitle(a.title)) {
+      await titleJob({ meetingId: a.meetingId, title: a.title, text: notes, quiet: true });
+    }
+    return ran;
+  };
+
+  /** Ask the notes model for a topic and offer it to the meeting as its title. The
+   *  meeting takes it only if it still has no name of its own (`applyMeetingPatch`). */
+  const titleJob = (a: { meetingId: string; title?: string; text: string; quiet: boolean }) => {
+    let usable = false;
+    return runJob({
+      meetingId: a.meetingId,
+      title: a.title,
+      kind: "title",
+      text: a.text.trim().slice(0, TITLE_INPUT_CHARS),
+      prompt: TITLE_PROMPT,
+      failLabel: "Naming the meeting",
+      quietFail: a.quiet,
+      patchFor: (answer) => {
+        usable = cleanTopic(answer) !== null;
+        return { titleSuggestion: answer };
+      },
+      onLanded: (outcome) => {
+        if (a.quiet) return;
+        if (outcome === "missing" || outcome === "failed") {
+          toast.error("The title could not be saved.");
+        } else if (!usable) {
+          toast.message("No clear topic was found. Type a title, or try again after rewriting the notes.");
+        }
+      },
+    });
+  };
 
   return {
     job: null,
@@ -568,6 +624,11 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
     start: async (a) => {
       if (isBusy()) return refuse();
       return notesJob(a);
+    },
+
+    suggestTitle: async (a) => {
+      if (isBusy()) return refuse();
+      return titleJob({ ...a, quiet: false });
     },
 
     refine: async ({ meetingId, title, previous, feedback }) => {
@@ -971,7 +1032,8 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
           releaseTask(claim);
           void notesJob({
             meetingId: m.id,
-            title: label,
+            // The meeting's own title ("Imported · <file>"), so its notes can name it.
+            title: typeof m.title === "string" ? m.title : label,
             kind: "post",
             text: r.data,
             prompt: notesPrompt,

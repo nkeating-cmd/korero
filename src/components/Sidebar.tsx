@@ -1,4 +1,5 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { useTranslation } from "react-i18next";
 import {
   Home,
@@ -95,6 +96,13 @@ export const Sidebar: React.FC = () => {
   const width = useWindowWidth();
   const narrow = width < AUTO_COLLAPSE_BELOW;
   const collapsed = userCollapsed || narrow;
+  // 1.47: the running version is always in view, beside "Help & about".
+  const [version, setVersion] = useState("");
+  useEffect(() => {
+    getVersion()
+      .then((v) => setVersion(v ?? ""))
+      .catch(() => setVersion(""));
+  }, []);
 
   const item = (id: Section) => {
     const cfg = SECTIONS_CONFIG[id];
@@ -112,12 +120,17 @@ export const Sidebar: React.FC = () => {
         type="button"
         aria-current={isActive ? "page" : undefined}
         aria-label={collapsed ? label : undefined}
-        title={collapsed ? label : undefined}
+        title={collapsed ? (id === "help" && version ? `${label} · version ${version}` : label) : undefined}
         onClick={() => go(id)}
         className="kx-nav-item relative"
       >
         <Icon size={17} />
         {!collapsed && <span className="truncate">{label}</span>}
+        {id === "help" && version && !collapsed && (
+          <span className="ml-auto kx-mono text-[11px] text-[var(--kx-ink-soft)]" title={`You are on version ${version}`}>
+            <span className="kx-sr-only">, version </span>v{version}
+          </span>
+        )}
         {id === "meetings" && recording && (
           <span
             className={`kx-dot kx-dot-alert ${collapsed ? "absolute top-2 right-2" : "ml-auto"}`}

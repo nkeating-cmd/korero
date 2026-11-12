@@ -1,6 +1,6 @@
 # Testing Kōrero
 
-Written for 1.46.0 (12 November 2026). It says what is tested, by what, where the
+Written for 1.46.0 and updated for 1.47.0 (12 November 2026). It says what is tested, by what, where the
 gaps are, and what a release must pass. Update it when a layer changes.
 
 ## The layers
@@ -8,8 +8,8 @@ gaps are, and what a release must pass. Update it when a layer changes.
 | Layer | What it proves | Where | Runs | Size now |
 |---|---|---|---|---|
 | Rust unit tests | Pure logic: merging a rebuilt call into the live transcript, caller numbering, timing checks, key storage decisions, notes splitting, corrections | `src-tauri/src/**` (`#[cfg(test)]`) | CI on every PR (Windows), `cargo test --lib` on the build laptop | about 320 tests |
-| Frontend unit tests | Pure logic in TypeScript: speaker labels, paragraph grouping, auto-notes choice, what happens after Stop, search, model fit | `unit-tests/*.test.ts` | `bun run test:unit`; the Playwright workflow runs it on the same PRs, and the release gates run it on the build laptop | 133 tests in 9 files |
-| Browser acceptance check | What the meeting screens show and which backend command a button calls, in a real browser against a stand-in backend | `tests/meeting-reading.spec.ts`, `tests/support/tauriMock.ts` | `bun run test:playwright`; the Playwright workflow runs it on PRs that touch `src/`, `tests/` or `unit-tests/` (switched back on 12 November 2026) | 7 tests |
+| Frontend unit tests | Pure logic in TypeScript: speaker labels, paragraph grouping, auto-notes choice, what happens after Stop, search, model fit | `unit-tests/*.test.ts` | `bun run test:unit`; the Playwright workflow runs it on the same PRs, and the release gates run it on the build laptop | 154 tests in 10 files |
+| Browser acceptance check | What the meeting screens show and which backend command a button calls, in a real browser against a stand-in backend | `tests/meeting-reading.spec.ts`, `tests/support/tauriMock.ts` | `bun run test:playwright`; the Playwright workflow runs it on PRs that touch `src/`, `tests/` or `unit-tests/` (switched back on 12 November 2026) | 10 tests |
 | Real-recording checks | Speech lost by the live loudness gate; caller separation on real call audio | `diarise.rs` ignored tests (`KORERO_CALLS_DIR`, `KORERO_DIARISE_MODELS`) | By hand on the build laptop. Reports numbers only; recordings never leave it | 5 calls measured |
 | Release gates | Type check, lint, licences and advisories (`cargo deny`), secrets (`gitleaks`), signed build, installer hash, update manifest | `gates.ps1`, release kit | Every release | n/a |
 | Installed-app check | The signed build installs over the previous one, keeps its data files byte for byte, starts, and logs no errors | `install.ps1` and the app log | Every release | n/a |
@@ -29,6 +29,9 @@ Every meeting, name and setting in that file is invented.
 | Notes sit beside the transcript at 1500 px wide, and are hidden (one tab away) at 1000 px | Positive and negative |
 | Re-transcribe on a call does nothing until confirmed; "Keep" cancels; confirming calls `meeting_call_transcript` with both recordings and the rebuilt lines appear | Guard rail |
 | An imported file is transcribed again the plain way and never as a call | Negative |
+| The version in use shows beside "Help & about" on every page | Positive |
+| "Suggest a title" names an unnamed meeting `<topic> · <its own date>`, with the model's quotes and full stop removed, and leaves the notes alone | Positive |
+| Writing notes names an unnamed meeting; a meeting with a name of its own keeps it and is not offered a new one | Positive and negative |
 | No uncaught error on any page visited | Health |
 
 Seen failing (12 November 2026):
@@ -41,6 +44,9 @@ Seen failing (12 November 2026):
   that dragging across a line opened the edit box, and the check reproduced it.
   The check sets the selection directly and sends the closing click, because headless
   Chromium does not drag-select there; a real drag in the app is still a hand check.
+
+- 1.47: with both title guards removed, the "never renames a named one" claim went red
+  (exit 1); with only the patch guard removed, two unit tests went red.
 
 Not covered by this check: trimming from a paragraph, search highlighting, and console
 errors (it watches uncaught errors only).

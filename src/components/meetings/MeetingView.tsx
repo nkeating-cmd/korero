@@ -15,6 +15,7 @@ import {
   ArrowLeft,
   Loader2,
   Circle,
+  Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -22,6 +23,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { MeetingsController } from "../settings/meetings/useMeetingsController";
 import type { MeetingTab } from "../../stores/navStore";
 import { durationOf, fmtDuration, isTrimmed, hiddenCount, sideWords, sourceChipLabel, titleOf, wordCount } from "./model";
+import { typedTitle } from "./titles";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { NotesPanel } from "./NotesPanel";
 import { AudioPanel } from "./AudioPanel";
@@ -104,13 +106,25 @@ export const MeetingView: React.FC<{ c: MeetingsController; onBack?: () => void 
             id="kx-mtitle"
             ref={titleRef}
             value={m.title}
-            onChange={(e) => c.patchMeeting(m.id, { title: e.target.value })}
+            onChange={(e) => c.patchMeeting(m.id, typedTitle(e.target.value))}
             placeholder={titleOf({ ...m, title: "" })}
             className="flex-1 min-w-0 bg-transparent kx-title text-[22px] border-b border-transparent hover:border-[var(--kx-hairline)] focus:border-[var(--kx-accent-ink)] transition-colors"
           />
           <button type="button" aria-label="Rename meeting" title="Rename" className="kx-btn kx-btn-ghost kx-btn-icon kx-btn-sm shrink-0" onClick={() => titleRef.current?.focus()}>
             <Pencil size={14} />
           </button>
+          {(c.canSuggestTitle || c.namingHere) && (
+            <button
+              type="button"
+              className="kx-btn kx-btn-ghost kx-btn-sm shrink-0"
+              title="Name this meeting by its topic, using your notes model"
+              disabled={!!c.busy}
+              onClick={() => void c.onSuggestTitle()}
+            >
+              {c.namingHere ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+              {c.namingHere ? "Naming…" : "Suggest a title"}
+            </button>
+          )}
         </div>
 
         <div className="kx-chips-even flex flex-wrap gap-2 mt-2.5">

@@ -39,7 +39,10 @@ export const MeetingsLibrary: React.FC<{ c: MeetingsController; wide?: boolean }
 
   const status = (m: Meeting): { text: string; tone: "accent" | "warn" | "plain" } => {
     if (c.job && c.job.meetingId === m.id) {
-      return { text: c.job.kind === "refine" ? "Refining notes" : "Writing notes", tone: "accent" };
+      return {
+        text: c.job.kind === "title" ? "Naming" : c.job.kind === "refine" ? "Refining notes" : "Writing notes",
+        tone: "accent",
+      };
     }
     if (c.task && c.task.meetingId === m.id) return { text: "Transcribing", tone: "accent" };
     if ((m.captureWarnings ?? []).length > 0 && !m.wrapUpDismissed) {

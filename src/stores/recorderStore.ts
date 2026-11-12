@@ -89,10 +89,10 @@ let finishChain: Promise<void> = Promise.resolve();
  *  meanwhile would be overwritten: the transcript view refuses the edit and says why. */
 export const isAwaitingFinish = (meetingId: string): boolean => awaitingFinish.has(meetingId);
 
-const queueFinish = (s: RoomSaved): void => {
+const queueFinish = (s: RoomSaved, finish: (s: RoomSaved) => Promise<void> = finishCall): void => {
   awaitingFinish.add(s.id);
   finishChain = finishChain
-    .then(() => finishCall(s))
+    .then(() => finish(s))
     .catch(() => {})
     .finally(() => {
       awaitingFinish.delete(s.id);
@@ -177,6 +177,55 @@ const finishCall = async (s: RoomSaved): Promise<void> => {
     }
     await jobs.start({ meetingId: s.id, title: s.title, kind: "post", text: n.text, prompt: DEFAULT_PROMPT, trimKey: n.trimKey });
   }
+};
+
+/**
+ * Kōrero 1.47: a room meeting also carries on by itself. Its transcript is rebuilt by
+ * speaker (as since 1.45) and, under the same rule as a call (`autoNotesOn`: by
+ * default only when the notes model runs on this computer), the notes follow. The
+ * notes job then names the meeting if nobody has.
+ */
+const finishRoom = async (s: RoomSaved): Promise<void> => {
+  const micPath = s.micPath;
+  if (!micPath) return;
+  // Takes its turn like a call (1.47 review): started while other work held the
+  // engine, the rebuild used to be refused with a toast and never tried again.
+  if (!(await whenIdle(FINISH_WAIT_MS))) {
+    logActivity({
+      status: "attention",
+      title: "A room meeting was not finished automatically",
+      detail: "Kōrero was busy with other work for too long. Open the meeting's Audio tab and choose Re-transcribe.",
+      target: { section: "meetings", meetingId: s.id, tab: "audio" },
+    });
+    return;
+  }
+  const settings = useSettingsStore.getState().settings;
+  let providerLocal = false;
+  try {
+    const r = await commands.meetingProviderIsLocal();
+    providerLocal = r.status === "ok" && r.data;
+  } catch {
+    /* unknown counts as not local: nothing is sent by default */
+  }
+  const notes =
+    autoNotesOn(autoNotesChoice(settings?.post_process_provider_id ?? ""), providerLocal) &&
+    notesModelReady(settings);
+  await useMeetingJobs.getState().roomTranscript({
+    meetingId: s.id,
+    title: s.title,
+    micPath,
+    existing: s.segments,
+    thenNotes: notes
+      ? {
+          buildText: (t) => {
+            const next = { ...s.meeting, you: t.you, others: t.others, transcript: t.transcript as Meeting["transcript"] };
+            return notesInput(next, visibleSegs(next));
+          },
+          prompt: DEFAULT_PROMPT,
+          trimKey: trimKeyOf(s.meeting),
+        }
+      : undefined,
+  });
 };
 
 const savedMode = (): MeetingMode => {
@@ -482,9 +531,7 @@ export const useRecorder = create<RecorderState>((set, get) => {
       // live lines stay if this fails or finds nothing.
       const s = saved as RoomSaved | null;
       if (room && outcome === "saved" && s?.micPath && /\.wav$/i.test(s.micPath)) {
-        void useMeetingJobs
-          .getState()
-          .roomTranscript({ meetingId: s.id, title: s.title, micPath: s.micPath, existing: s.segments });
+        queueFinish(s, finishRoom);
       } else if (!room && outcome === "saved" && s) {
         // 1.46: a call carries on by itself. The transcript is rebuilt from the two
         // recordings (the far end by caller), then the notes are written, unless

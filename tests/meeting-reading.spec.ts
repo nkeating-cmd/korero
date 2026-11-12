@@ -3,6 +3,7 @@ import {
   argsOf,
   callMeeting,
   importedMeeting,
+  unnamedMeeting,
   installTauriMock,
   invoked,
 } from "./support/tauriMock";
@@ -40,7 +41,11 @@ test.describe("meeting reading screens", () => {
     pageErrors = [];
     page.on("pageerror", (e) => pageErrors.push(e.message));
     await page.setViewportSize(WIDE);
-    await installTauriMock(page, [callMeeting(), importedMeeting()]);
+    await installTauriMock(page, [
+      callMeeting(),
+      importedMeeting(),
+      unnamedMeeting(),
+    ]);
   });
 
   test.afterEach(() => {
@@ -241,5 +246,62 @@ test.describe("meeting reading screens", () => {
       .poll(() => invoked(page))
       .toContain("meeting_transcribe_merge");
     expect(await invoked(page)).not.toContain("meeting_call_transcript");
+  });
+
+  test("the version in use is always in view", async ({ page }) => {
+    await page.goto("/");
+    const help = page.getByRole("button", { name: /Help & about/ });
+    await expect(help).toContainText("v9.8.7");
+    await page.getByText("Meetings", { exact: true }).first().click();
+    await expect(help).toContainText("v9.8.7");
+  });
+
+  test("a meeting nobody named can be named by its topic, with its date", async ({
+    page,
+  }) => {
+    await openMeeting(page, "Meeting 5 Nov 2026, 6:03 pm");
+    const title = page.getByRole("textbox", { name: "Meeting title" });
+    await expect(title).toHaveValue("Meeting 5 Nov 2026, 6:03 pm");
+
+    await page.getByRole("button", { name: "Suggest a title" }).click();
+    // The model's quotes and full stop are gone; the meeting's own date is added.
+    await expect(title).toHaveValue("Budget forecast and hiring · 5 Nov 2026");
+    // Named now, so the offer goes away.
+    await expect(
+      page.getByRole("button", { name: "Suggest a title" }),
+    ).toHaveCount(0);
+    // The notes were not touched by the naming.
+    await page.getByRole("tab", { name: "Notes" }).click();
+    await expect(
+      page.getByRole("tabpanel").getByText("Mere: send the figures by Friday"),
+    ).toBeVisible();
+  });
+
+  test("writing notes names an unnamed meeting, and never renames a named one", async ({
+    page,
+  }) => {
+    await openMeeting(page, "Meeting 5 Nov 2026, 6:03 pm");
+    await page.getByRole("tab", { name: "Notes" }).click();
+    await page.getByRole("button", { name: "Regenerate" }).click();
+    await expect(
+      page.getByRole("textbox", { name: "Meeting title" }),
+    ).toHaveValue("Budget forecast and hiring · 5 Nov 2026");
+    await expect(
+      page.getByRole("tabpanel").getByText("Mere: send the revised figures"),
+    ).toBeVisible();
+
+    // A meeting with a name of its own: new notes, same name, and no offer to rename.
+    await openMeeting(page, "Budget call (fixture)");
+    await expect(
+      page.getByRole("button", { name: "Suggest a title" }),
+    ).toHaveCount(0);
+    await page.getByRole("tab", { name: "Notes" }).click();
+    await page.getByRole("button", { name: "Regenerate" }).click();
+    await expect(
+      page.getByRole("tabpanel").getByText("Mere: send the revised figures"),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("textbox", { name: "Meeting title" }),
+    ).toHaveValue("Budget call (fixture)");
   });
 });

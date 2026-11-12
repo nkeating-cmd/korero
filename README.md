@@ -17,13 +17,16 @@ Two things do reach the network, and it is worth naming them rather than roundin
 speech models are downloaded on first use, and the app asks GitHub once at startup whether a newer
 release exists. Neither carries audio, transcripts, or anything about you. No telemetry, ever.
 
-Current version: **v1.46.0** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.46.0)).
+Current version: **v1.47.0** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.47.0)).
 
 ---
 
 ## What Kōrero adds over Handy
 
 ### Meetings — record both sides of a call (v1.13–1.14), or everyone in the room (v1.45)
+- **Meetings name themselves** (v1.47). A meeting you did not name is named by its topic once its notes are written, with its date: *Budget forecast and hiring · 12 Nov 2026*. The name comes from the notes, using the same model that wrote them. A name you typed is never replaced. Older meetings have a *Suggest a title* button.
+- **Room meetings finish themselves too** (v1.47). After an "In the room" meeting, the notes follow the transcript, under the same rule as calls: by themselves when the notes model runs on this computer, and only after you tick the box when it is a cloud model.
+- **The version is always in view** (v1.47), beside *Help & about* in the sidebar.
 - **A call finishes itself** (v1.46). When you stop a call, Kōrero carries on without being asked: it transcribes the call again from the two recordings, then writes the notes. The live transcript is saved first and stays if the second one fails; when the second one replaces it, the live one is kept too, and *Put the live transcript back* on the Audio tab restores it. If Kōrero is busy with another meeting, the call waits its turn (while Kōrero stays open); if it gave up waiting, Activity says so. Lines of a call can't be edited until its rebuild has finished. The notes step runs by itself only when your notes model is on this computer (Ollama). **With a cloud model it is off until you turn it on** (the meeting's Audio tab), because the transcript would be sent to that service.
 - **Callers told apart** (v1.46). In that second transcript the call's side is split by voice and labelled Caller 1, Caller 2 and so on, instead of everyone being "Others". Name a caller on the Transcript tab and the name is used from then on: on screen, in copy and export, in search, in Ask, and in notes you write or rewrite afterwards (notes already written keep the numbers). Speakers in a room meeting can be named the same way. It uses the same on-computer speaker models as *Separate speakers*. How often it gets a caller wrong on call audio has not been measured yet (on room recordings about a fifth of the speech is missed or given to the wrong speaker), so check the labels before you rely on them.
 - **Quiet speech is no longer skipped** (v1.46). The live transcript only listens to sound above a fixed loudness, so a quiet microphone could lose whole stretches. The second transcript finds speech with the speaker model instead. A live line is replaced only when the second transcript covers at least half of it; otherwise it is kept, so now and then a few words can appear twice where the two overlap.
