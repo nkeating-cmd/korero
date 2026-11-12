@@ -203,10 +203,18 @@ export const MeetingView: React.FC<{ c: MeetingsController; onBack?: () => void 
         role="tabpanel"
         id={`kx-panel-${c.tab}`}
         aria-labelledby={`kx-tab-${c.tab}`}
-        className="flex-1 min-h-0 overflow-y-auto px-8 py-5 select-text"
+        className="flex-1 min-h-0 overflow-y-auto px-8 py-5 select-text kx-cq"
       >
         {fresh && <WrapUp c={c} />}
-        {c.tab === "transcript" && <TranscriptPanel c={c} />}
+        {/* 1.46: with room to spare, the notes sit beside the transcript. */}
+        {c.tab === "transcript" && (
+          <div className="kx-split">
+            <TranscriptPanel c={c} />
+            <aside className="kx-split-side" aria-label="Notes for this meeting">
+              <NotesPanel c={c} />
+            </aside>
+          </div>
+        )}
         {c.tab === "notes" && <NotesPanel c={c} />}
         {c.tab === "audio" && <AudioPanel c={c} />}
         {c.tab === "ask" && <AskPanel c={c} />}

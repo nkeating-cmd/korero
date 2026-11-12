@@ -860,6 +860,28 @@ body {
     background: rgba(90, 176, 255, 0.08);
   }
 
+  /* ---- Transcript and notes side by side when the meeting pane is wide (1.46) */
+  .kx-split-side {
+    display: none;
+  }
+  @container (min-width: 1180px) {
+    .kx-split {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+      gap: 28px;
+      align-items: start;
+    }
+    .kx-split-side {
+      display: block;
+      position: sticky;
+      top: 0;
+      max-height: calc(100vh - 250px);
+      overflow-y: auto;
+      padding-left: 24px;
+      border-left: 1px solid var(--kx-hairline);
+    }
+  }
+
   /* ---- Transcript as paragraphs (1.46): one block per speaker turn ------- */
   .kx-turn {
     padding: 4px 10px 6px;
