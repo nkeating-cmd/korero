@@ -169,6 +169,12 @@ pub async fn update_recording_retention_period(
 /// `is_local_provider` flag (the Ollama base URL is user-editable). Only a
 /// loopback host qualifies.
 pub(crate) fn is_loopback_url(base_url: &str) -> bool {
+    // Kōrero 1.46: URL parsers read a backslash as a slash, so in
+    // `http://evil.example\@localhost/v1` the host is evil.example. No local
+    // address needs one; refuse rather than guess.
+    if base_url.contains('\\') {
+        return false;
+    }
     let without_scheme = base_url
         .trim()
         .strip_prefix("http://")
@@ -294,6 +300,8 @@ mod tidy_reo_tests {
             "https://ollama.example.com/v1",
             "http://mybox.local:11434/v1",
             "http://localhost.evil.com/v1",
+            "http://evil.example\\@localhost:11434/v1",
+            "http://localhost\\.evil.example/v1",
             "",
         ] {
             assert!(!is_loopback_url(u), "{u} must not count as loopback");

@@ -26,9 +26,8 @@ const TURN_START = /^Start the trim at this turn/;
 async function openMeeting(page: Page, title: string) {
   await page.goto("/");
   await page.getByText("Meetings", { exact: true }).first().click();
-  await page
-    .getByRole("button", { name: new RegExp(title.replace(/[()]/g, "\\$&")) })
-    .click();
+  // A plain string matches any button whose name contains the title.
+  await page.getByRole("button", { name: title }).click();
   await expect(
     page.getByRole("tablist", { name: "Meeting views" }),
   ).toBeVisible();
@@ -74,6 +73,59 @@ test.describe("meeting reading screens", () => {
     await expect(
       panel.getByRole("button", { name: /^Correct this line/ }),
     ).toHaveCount(6);
+  });
+
+  test("correcting one line in a paragraph changes that line only", async ({
+    page,
+  }) => {
+    await openMeeting(page, "Budget call (fixture)");
+    const panel = page.getByRole("tabpanel");
+    await panel
+      .getByRole("button", { name: /^Correct this line, said at 0:06/ })
+      .click();
+    const box = panel.getByRole("textbox", { name: "Edit this line" });
+    await expect(box).toHaveValue("with the budget?");
+    await box.fill("with the forecast?");
+    await box.press("Enter");
+
+    await expect(
+      panel.getByText("Shall we start with the forecast?"),
+    ).toBeVisible();
+    await expect(panel.getByText("Yes. Let's do that.")).toBeVisible();
+    // The neighbouring line of the same paragraph is untouched.
+    await expect(
+      panel.getByRole("button", {
+        name: "Correct this line, said at 0:04: Shall we start",
+      }),
+    ).toBeVisible();
+  });
+
+  test("selecting words in a paragraph does not open the editor", async ({
+    page,
+  }) => {
+    await openMeeting(page, "Budget call (fixture)");
+    const panel = page.getByRole("tabpanel");
+    const line = panel.getByRole("button", {
+      name: /^Correct this line, said at 0:06/,
+    });
+    // A drag across the words ends in a click on the line while the words are
+    // still selected. Headless Chromium will not drag-select here, so the
+    // selection is made directly and the closing click is sent on its own.
+    await line.evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    });
+    await line.dispatchEvent("click");
+
+    expect(
+      await page.evaluate(() => window.getSelection()?.toString().trim()),
+    ).toContain("budget");
+    await expect(
+      panel.getByRole("textbox", { name: "Edit this line" }),
+    ).toHaveCount(0);
   });
 
   test("Lines shows one row per line, and the choice is remembered", async ({

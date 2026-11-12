@@ -308,10 +308,19 @@ export const TranscriptPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
                         ref={isFirstHit ? (firstHitRef as React.RefObject<HTMLSpanElement>) : undefined}
                         role="button"
                         tabIndex={0}
-                        className={`kx-turn-line ${segInWindow(m, seg) ? "" : "kx-turn-line-out"}`}
-                        title={`${fmtClock(segMs(seg) / 1000)} · click to correct this line`}
+                        className={`kx-turn-line ${allOut || segInWindow(m, seg) ? "" : "kx-turn-line-out"}`}
+                        title={
+                          segInWindow(m, seg)
+                            ? `${fmtClock(segMs(seg) / 1000)} · click to correct this line`
+                            : "Outside the current trim — hidden from copy, export, search and notes, but still on the record."
+                        }
                         aria-label={`Correct this line, said at ${fmtClock(segMs(seg) / 1000)}: ${seg.text.trim()}`}
-                        onClick={() => c.setEditingSegIdx(index)}
+                        onClick={() => {
+                          // Dragging to select words (to copy, or to teach a correction)
+                          // ends in a click; that must not open the editor.
+                          if (window.getSelection()?.toString().trim()) return;
+                          c.setEditingSegIdx(index);
+                        }}
                         onKeyDown={(e) => {
                           if (e.key === "Enter" || e.key === " ") {
                             e.preventDefault();

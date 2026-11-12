@@ -864,7 +864,7 @@ body {
   .kx-split-side {
     display: none;
   }
-  @container (min-width: 860px) {
+  @container (min-width: 800px) {
     .kx-split {
       display: grid;
       grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
