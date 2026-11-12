@@ -596,6 +596,7 @@ export const useMeetingsController = () => {
   const onReTranscribe = async () => {
     if (!active || busy) return;
     if (isRoom(active)) return runRoom(active, false);
+    if (isCall(active)) return runCall(active, false);
     await useMeetingJobs.getState().transcribe({
       meetingId: active.id,
       title: titleOf(active),
@@ -619,24 +620,39 @@ export const useMeetingsController = () => {
     runRoom(active, false);
   };
 
-  // 1.46: rebuild a call's transcript from its two recordings, the far end by caller.
-  const onCallTranscript = async () => {
-    if (!active || busy || callRebuildBlocker(active) !== null) return;
-    const m = active;
+  // 1.46: a call with its recordings is transcribed again from them, the far end by
+  // caller. This is the one way to redo a call's transcript; the older loudness-gate
+  // path stays for meetings it cannot handle (imports, combined, pre-1.26).
+  const isCall = (m: Meeting | null | undefined): boolean => !!m && callRebuildBlocker(m) === null;
+  const runCall = (m: Meeting, withNotes: boolean) =>
     confirmDestructive(
-      "Rebuild the transcript from the recordings?",
-      "Each side is transcribed again from its recording, and the call's side is split by caller. Names you gave callers or speakers are cleared. Lines the rebuild can't cover are kept.",
-      "Rebuild",
+      "Transcribe this call again from its recordings?",
+      "Each side is transcribed again, and the call's side is split by caller. Corrections you made to lines, and names you gave callers or speakers, are replaced. Lines the new transcript can't cover are kept.",
+      "Transcribe again",
       async () => {
+        if (withNotes) setTab("notes");
         await useMeetingJobs.getState().callTranscript({
           meetingId: m.id,
           title: titleOf(m),
           micPath: m.micPath,
           systemPath: m.systemPath,
           existing: m.transcript ?? [],
+          thenNotes: withNotes
+            ? {
+                buildText: (t: TranscriptPatch) => {
+                  const next = { ...m, you: t.you, others: t.others, transcript: t.transcript as TranscriptSeg[], callerNames: undefined };
+                  return notesInput(next, visibleSegs(next));
+                },
+                prompt: customPrompt.trim(),
+                trimKey: trimKeyOf(m),
+              }
+            : undefined,
         });
       },
     );
+  const onCallTranscript = async () => {
+    if (!active || busy || !isCall(active)) return;
+    runCall(active, false);
   };
   // 1.46: put back the transcript as it was heard live (kept by the rebuild after Stop).
   const onRestoreLive = () => {
@@ -705,6 +721,7 @@ export const useMeetingsController = () => {
   const onBoth = async () => {
     if (!active || busy || briefStage === "script") return;
     if (isRoom(active)) return runRoom(active, true);
+    if (isCall(active)) return runCall(active, true);
     const m = active;
     setTab("notes");
     await useMeetingJobs.getState().transcribe({

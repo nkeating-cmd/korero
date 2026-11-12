@@ -1965,7 +1965,11 @@ pub async fn meeting_post_process(
     let total_chars = text.chars().count();
 
     let mut system = if prompt.trim().is_empty() {
-        "Summarise this meeting transcript: key points, decisions, and action items with owners."
+        // 1.46: actions and decisions first (the same order as the app's default prompt).
+        "Write notes for this meeting transcript in this order. 1. **Actions**: a list, one line \
+         each: who, what, and by when if a date was said; write \"None agreed\" if there were \
+         none. 2. **Decisions**: a list. 3. **Summary**: three sentences at most. 4. **Key \
+         points**: short bullets. Do not invent owners or dates."
             .to_string()
     } else {
         prompt

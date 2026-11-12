@@ -83,8 +83,10 @@ export interface RecordingFile {
   modified: number;
 }
 
+// 1.46: what you need after a meeting comes first. The actions and decisions used to
+// sit at the bottom of a long summary; now they open the notes.
 export const DEFAULT_PROMPT =
-  "Summarise this meeting: key points, decisions, and action items (with owners).";
+  "Write notes for this meeting in this order. 1. **Actions**: a list, one line each: who, what, and by when if a date was said. Write \"None agreed\" if there were none. 2. **Decisions**: a list, one line each. 3. **Summary**: three sentences at most. 4. **Key points**: short bullets, most important first. Use the speakers' names where the transcript gives them. Do not invent owners or dates.";
 
 export const newId = (): string =>
   (crypto as unknown as { randomUUID?: () => string })?.randomUUID?.() ??
@@ -311,6 +313,58 @@ export const combine = (
   ]
     .filter(Boolean)
     .join("\n\n");
+};
+
+// ---- reading view (1.46) ---------------------------------------------------
+
+/** One speaker turn for reading: consecutive lines by one speaker, as a paragraph. */
+export interface Turn {
+  label: string;
+  source: string;
+  startMs: number;
+  /** The lines of this turn, each with its index in the meeting's transcript. */
+  lines: { seg: TranscriptSeg; index: number }[];
+}
+
+/** A turn is broken (same speaker, new paragraph with its own time) after this
+ *  long a gap, or once it is this long, so a monologue still has landmarks. */
+const TURN_GAP_MS = 45_000;
+const TURN_MAX_CHARS = 700;
+
+/**
+ * Kōrero 1.46: the transcript grouped for reading. Consecutive lines with the same
+ * label become one turn; empty lines are skipped (unless `keep` says otherwise, for
+ * a line being edited). Grouping is a VIEW: indexes point back into the transcript,
+ * so editing and trimming still act on single lines.
+ */
+export const groupTurns = (
+  m: { youLabel: string; othersLabel: string; speakerNames?: string[]; callerNames?: string[] },
+  transcript: TranscriptSeg[],
+  keep: (index: number) => boolean = () => false,
+): Turn[] => {
+  const turns: Turn[] = [];
+  let chars = 0;
+  transcript.forEach((seg, index) => {
+    if (!seg.text.trim() && !keep(index)) return;
+    const label = speakerLabel(m, seg);
+    const last = turns[turns.length - 1];
+    const prev = last?.lines[last.lines.length - 1]?.seg;
+    const same =
+      !!last &&
+      last.label === label &&
+      last.source === seg.source &&
+      !!prev &&
+      segMs(seg) - segMs(prev) < TURN_GAP_MS &&
+      chars < TURN_MAX_CHARS;
+    if (same && last) {
+      last.lines.push({ seg, index });
+      chars += seg.text.length;
+    } else {
+      turns.push({ label, source: seg.source, startMs: segMs(seg), lines: [{ seg, index }] });
+      chars = seg.text.length;
+    }
+  });
+  return turns;
 };
 
 // ---- trim window ---------------------------------------------------------

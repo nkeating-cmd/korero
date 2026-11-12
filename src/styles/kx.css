@@ -860,6 +860,79 @@ body {
     background: rgba(90, 176, 255, 0.08);
   }
 
+  /* ---- Transcript as paragraphs (1.46): one block per speaker turn ------- */
+  .kx-turn {
+    padding: 4px 10px 6px;
+    border-radius: 8px;
+    border-left: 2px solid transparent;
+    max-width: 68ch;
+  }
+  .kx-turn-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 2px;
+  }
+  .kx-turn-actions {
+    display: inline-flex;
+    gap: 2px;
+    margin-left: auto;
+    opacity: 0;
+    transition: opacity var(--kx-fast) var(--kx-ease);
+  }
+  .kx-turn:hover .kx-turn-actions,
+  .kx-turn:focus-within .kx-turn-actions {
+    opacity: 1;
+  }
+  .kx-turn-actions button {
+    font-size: 11.5px;
+    color: var(--kx-ink-2);
+    padding: 1px 5px;
+    border-radius: 5px;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+  }
+  .kx-turn-actions button:hover {
+    color: var(--kx-accent-ink);
+    background: rgba(90, 176, 255, 0.08);
+  }
+  .kx-turn-line {
+    border-radius: 4px;
+    cursor: text;
+  }
+  .kx-turn-line:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .kx-turn-line:focus-visible {
+    outline: 2px solid var(--kx-accent-ink);
+    outline-offset: 1px;
+  }
+  .kx-turn-line-out {
+    opacity: 0.4;
+  }
+  .kx-seg-toggle {
+    display: inline-flex;
+    border: 1px solid var(--kx-hairline);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .kx-seg-toggle button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    padding: 4px 9px;
+    color: var(--kx-ink-2);
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+  }
+  .kx-seg-toggle button[aria-pressed="true"] {
+    color: var(--kx-accent-ink);
+    background: rgba(90, 176, 255, 0.1);
+  }
+
   /* ---- Labelled fields (a label above each control, wrapping by column) -- */
   .kx-fields {
     display: grid;

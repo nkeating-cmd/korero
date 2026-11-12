@@ -23,7 +23,7 @@ import { useMeetingsController, type MeetingsController } from "./useMeetingsCon
  */
 
 /** Below this page width, the library and the detail share one column. */
-const NARROW_BELOW = 820;
+const NARROW_BELOW = 740;
 
 const useElementWidth = (ref: React.RefObject<HTMLElement | null>) => {
   const [width, setWidth] = useState<number>(() => window.innerWidth);

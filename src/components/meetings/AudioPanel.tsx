@@ -5,6 +5,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
 import { FolderOpen, Loader2, RotateCcw, Wand2, GitMerge, Trash2, Users } from "lucide-react";
 import { AudioPlayer } from "../ui/AudioPlayer";
+import { BothSidesPlayer } from "./BothSidesPlayer";
 import { Dropdown } from "../ui/Dropdown";
 import type { MeetingsController } from "../settings/meetings/useMeetingsController";
 import { baseName, titleOf } from "./model";
@@ -20,6 +21,8 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
   // loads, and the Stop-time rebuild would use a different model.
   const meetingLive = useRecorder((s) => s.recording) || !!c.stopping;
   if (!m) return null;
+  const isCall = c.callBlocker === null;
+  const both = !!m.micPath && !!m.systemPath && !m.imported;
 
   const file = (label: string, path: string | null) =>
     path ? (
@@ -49,6 +52,13 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
         <p className="kx-meta">This meeting has no audio files.</p>
       ) : (
         <div className="flex flex-col gap-3">
+          {both && m.micPath && m.systemPath && (
+            <div className="kx-card p-3.5 flex flex-col gap-2">
+              <div className="kx-heading">The whole call</div>
+              <div className="kx-meta">Both sides played together, as it was heard.</div>
+              <BothSidesPlayer a={convertFileSrc(m.micPath, "asset")} b={convertFileSrc(m.systemPath, "asset")} />
+            </div>
+          )}
           {file(m.imported ? "Imported file" : m.youLabel, m.micPath)}
           {file(m.othersLabel, m.systemPath)}
         </div>
@@ -59,9 +69,11 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
           Transcribe again
         </h2>
         <p className="kx-meta">
-          Re-run speech-to-text from the saved recording — useful after switching to a different
-          speech model, or when a capture went wrong. Your current transcript is kept if it fails.
+          {isCall
+            ? "Transcribes both sides again from the recordings and splits the call's side by caller (Caller 1, Caller 2, which you can name on the Transcript tab). Kōrero does this by itself when a call ends; run it again after changing the speech model. Your current transcript is kept if it fails."
+            : "Re-run speech-to-text from the saved recording — useful after switching to a different speech model, or when a capture went wrong. Your current transcript is kept if it fails."}
           {m.mode === "room" && " For a meeting in the room, this rebuilds the transcript by speaker."}
+          {isCall && m.callersFound != null && ` Last time it found ${m.callersFound} ${m.callersFound === 1 ? "voice" : "voices"} on the call.`}
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <span className="kx-meta">Speech model</span>
@@ -79,7 +91,31 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
             {c.busy === "both" && c.busyMeetingId === m.id ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
             Re-transcribe + notes
           </button>
+          {(m.liveTranscript?.length ?? 0) > 0 && (
+            <button
+              type="button"
+              className="kx-btn kx-btn-quiet"
+              onClick={() => c.onRestoreLive()}
+              disabled={!!c.busy || meetingLive}
+              title="Replace the transcript with the one written during the call"
+            >
+              Put the live transcript back
+            </button>
+          )}
         </div>
+        {isCall && (
+          <div className="flex flex-col gap-1 pt-1" style={{ borderTop: "1px solid var(--kx-hairline)" }}>
+            <label className="flex items-center gap-2 kx-meta cursor-pointer pt-2" htmlFor="kx-auto-notes">
+              <input id="kx-auto-notes" type="checkbox" checked={c.autoNotes} onChange={(e) => c.toggleAutoNotes(e.target.checked)} />
+              For every call: write the notes as soon as it ends
+            </label>
+            <p className="kx-meta">
+              {c.notesModelLocal
+                ? "The notes model runs on this computer, so the transcript stays here."
+                : "If your notes model is a cloud service, the transcript is sent to it, so this stays off until you turn it on."}
+            </p>
+          </div>
+        )}
         {c.busy && c.busy !== "speakers" && c.busyMeetingId === m.id && c.task && (
           <div>
             <div className="flex justify-between kx-meta mb-1">
@@ -105,59 +141,6 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
           <p className="kx-meta">Busy with “{c.elsewhereJobTitle}” — one at a time.</p>
         )}
       </section>
-
-      {m.mode !== "room" && !m.imported && (
-        <section aria-labelledby="kx-rebuild" className="kx-card p-4 flex flex-col gap-3">
-          <h2 id="kx-rebuild" className="kx-heading">
-            Transcript from the recordings
-          </h2>
-          <p className="kx-meta">
-            When a call ends, Kōrero transcribes it again from the two recordings: the call's side is
-            split by caller (Caller 1, Caller 2 and so on, which you can name on the Transcript tab),
-            and quiet speech that the live transcript skipped is picked up. It runs on this computer.
-            Run it again after changing the speech model.
-            {m.callersFound != null &&
-              ` Last run found ${m.callersFound} ${m.callersFound === 1 ? "voice" : "voices"} on the call.`}
-          </p>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              className="kx-btn kx-btn-secondary"
-              onClick={() => void c.onCallTranscript()}
-              disabled={!!c.busy || c.callBlocker !== null || meetingLive}
-            >
-              {c.busy === "speakers" && c.busyMeetingId === m.id ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
-              Rebuild from the recordings
-            </button>
-            {(m.liveTranscript?.length ?? 0) > 0 && (
-              <button
-                type="button"
-                className="kx-btn kx-btn-quiet"
-                onClick={() => c.onRestoreLive()}
-                disabled={!!c.busy || meetingLive}
-                title="Replace the rebuilt transcript with the one written during the call"
-              >
-                Put the live transcript back
-              </button>
-            )}
-            {c.callBlocker && <span className="kx-meta">{c.callBlocker}</span>}
-          </div>
-          <label className="flex items-center gap-2 kx-meta cursor-pointer" htmlFor="kx-auto-notes">
-            <input
-              id="kx-auto-notes"
-              type="checkbox"
-              checked={c.autoNotes}
-              onChange={(e) => c.toggleAutoNotes(e.target.checked)}
-            />
-            Write the notes automatically when a call ends
-          </label>
-          <p className="kx-meta">
-            {c.notesModelLocal
-              ? "The notes model runs on this computer, so the transcript stays here."
-              : "Needs an AI model set up in Post-processing. If that model is a cloud service, the transcript is sent to it, so this stays off until you turn it on."}
-          </p>
-        </section>
-      )}
 
       <section aria-labelledby="kx-speakers" className="kx-card p-4 flex flex-col gap-3">
         <h2 id="kx-speakers" className="kx-heading">

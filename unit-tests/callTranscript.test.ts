@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   callRebuildBlocker,
+  groupTurns,
   combine,
   notesInput,
   sourceChipLabel,
@@ -209,5 +210,33 @@ describe("withName", () => {
     expect(withName(undefined, 3, 1, " Mere ")).toEqual(["", "Mere", ""]);
     expect(withName(["Aroha", "Mere"], 2, 1, "")).toEqual(["Aroha", ""]);
     expect(withName(["Aroha"], 1, 2, "Tama")).toEqual(["Aroha", "", "Tama"]);
+  });
+});
+
+describe("the transcript as paragraphs", () => {
+  const labels = { youLabel: "You", othersLabel: "Others" };
+  test("consecutive lines by one speaker become one turn; indexes point back at the lines", () => {
+    const t = [seg("others", "Didn't see me", 1_000), seg("others", "for many years.", 3_000), seg("you", "Right.", 5_000), seg("others", "Indeed,", 6_000)];
+    const turns = groupTurns(labels, t);
+    expect(turns.map((x) => [x.label, x.startMs, x.lines.map((l) => l.index)])).toEqual([
+      ["Others", 1_000, [0, 1]],
+      ["You", 5_000, [2]],
+      ["Others", 6_000, [3]],
+    ]);
+  });
+  test("two callers are two turns even though both are the call's side", () => {
+    const turns = groupTurns(labels, [seg("others", "a", 0, 0), seg("others", "b", 1_000, 1)]);
+    expect(turns.map((x) => x.label)).toEqual(["Caller 1", "Caller 2"]);
+  });
+  test("a long gap or a long monologue starts a new paragraph with its own time", () => {
+    const gap = groupTurns(labels, [seg("you", "a", 0), seg("you", "b", 60_000)]);
+    expect(gap.map((x) => x.startMs)).toEqual([0, 60_000]);
+    const long = Array.from({ length: 12 }, (_, i) => seg("you", "x".repeat(100), i * 2_000));
+    expect(groupTurns(labels, long).length).toBeGreaterThan(1);
+  });
+  test("empty lines are skipped unless one is being edited", () => {
+    const t = [seg("you", "a", 0), seg("you", "  ", 1_000), seg("you", "c", 2_000)];
+    expect(groupTurns(labels, t)[0].lines.map((l) => l.index)).toEqual([0, 2]);
+    expect(groupTurns(labels, t, (i) => i === 1)[0].lines.map((l) => l.index)).toEqual([0, 1, 2]);
   });
 });
