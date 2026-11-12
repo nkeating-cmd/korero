@@ -14,7 +14,14 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        // A machine with its own Chromium (a cloud session) points at it here
+        // instead of downloading the version Playwright pins.
+        launchOptions: process.env.KORERO_CHROMIUM
+          ? { executablePath: process.env.KORERO_CHROMIUM }
+          : {},
+      },
     },
   ],
   webServer: {

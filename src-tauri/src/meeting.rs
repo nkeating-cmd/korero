@@ -2181,14 +2181,13 @@ pub async fn meeting_prewarm_post_process(
 #[specta::specta]
 pub async fn meeting_provider_is_local(app: AppHandle) -> Result<bool, String> {
     let settings = crate::settings::get_settings(&app);
-    let base = match settings.active_post_process_provider() {
-        Some(p) => p.base_url.to_lowercase(),
-        None => return Ok(false),
-    };
-    Ok(base.contains("localhost")
-        || base.contains("127.0.0.1")
-        || base.contains("0.0.0.0")
-        || base.contains("[::1]"))
+    // Kōrero 1.46: this answer now decides whether a call's notes are written without
+    // being asked, so it uses the strict loopback check (the host itself must be
+    // loopback) rather than looking for "localhost" anywhere in the address, which a
+    // remote address such as https://localhost.example.com would have passed.
+    Ok(settings
+        .active_post_process_provider()
+        .is_some_and(|p| crate::commands::history::is_loopback_url(&p.base_url)))
 }
 
 /// Keep a streamed WAV that has audio; delete an empty one so it doesn't
