@@ -20,7 +20,9 @@ permissions:
 
 jobs:
   playwright:
-    runs-on: ubuntu-latest
+    # Pinned: the Playwright version in bun.lock has no Chromium build for the
+    # newer image that ubuntu-latest now points at.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
