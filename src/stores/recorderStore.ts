@@ -179,6 +179,42 @@ const finishCall = async (s: RoomSaved): Promise<void> => {
   }
 };
 
+/**
+ * Kōrero 1.47: a room meeting also carries on by itself. Its transcript is rebuilt by
+ * speaker (as since 1.45) and, under the same rule as a call (`autoNotesOn`: by
+ * default only when the notes model runs on this computer), the notes follow. The
+ * notes job then names the meeting if nobody has.
+ */
+const finishRoom = async (s: RoomSaved & { micPath: string }): Promise<void> => {
+  const settings = useSettingsStore.getState().settings;
+  let providerLocal = false;
+  try {
+    const r = await commands.meetingProviderIsLocal();
+    providerLocal = r.status === "ok" && r.data;
+  } catch {
+    /* unknown counts as not local: nothing is sent by default */
+  }
+  const notes =
+    autoNotesOn(autoNotesChoice(settings?.post_process_provider_id ?? ""), providerLocal) &&
+    notesModelReady(settings);
+  await useMeetingJobs.getState().roomTranscript({
+    meetingId: s.id,
+    title: s.title,
+    micPath: s.micPath,
+    existing: s.segments,
+    thenNotes: notes
+      ? {
+          buildText: (t) => {
+            const next = { ...s.meeting, you: t.you, others: t.others, transcript: t.transcript as Meeting["transcript"] };
+            return notesInput(next, visibleSegs(next));
+          },
+          prompt: DEFAULT_PROMPT,
+          trimKey: trimKeyOf(s.meeting),
+        }
+      : undefined,
+  });
+};
+
 const savedMode = (): MeetingMode => {
   try {
     return localStorage.getItem(MODE_KEY) === "room" ? "room" : "call";
@@ -482,9 +518,7 @@ export const useRecorder = create<RecorderState>((set, get) => {
       // live lines stay if this fails or finds nothing.
       const s = saved as RoomSaved | null;
       if (room && outcome === "saved" && s?.micPath && /\.wav$/i.test(s.micPath)) {
-        void useMeetingJobs
-          .getState()
-          .roomTranscript({ meetingId: s.id, title: s.title, micPath: s.micPath, existing: s.segments });
+        void finishRoom({ ...s, micPath: s.micPath });
       } else if (!room && outcome === "saved" && s) {
         // 1.46: a call carries on by itself. The transcript is rebuilt from the two
         // recordings (the far end by caller), then the notes are written, unless

@@ -15,6 +15,7 @@ import {
   ArrowLeft,
   Loader2,
   Circle,
+  Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -111,6 +112,18 @@ export const MeetingView: React.FC<{ c: MeetingsController; onBack?: () => void 
           <button type="button" aria-label="Rename meeting" title="Rename" className="kx-btn kx-btn-ghost kx-btn-icon kx-btn-sm shrink-0" onClick={() => titleRef.current?.focus()}>
             <Pencil size={14} />
           </button>
+          {(c.canSuggestTitle || c.namingHere) && (
+            <button
+              type="button"
+              className="kx-btn kx-btn-ghost kx-btn-sm shrink-0"
+              title="Name this meeting by its topic, using your notes model"
+              disabled={!!c.busy}
+              onClick={() => void c.onSuggestTitle()}
+            >
+              {c.namingHere ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+              {c.namingHere ? "Naming…" : "Suggest a title"}
+            </button>
+          )}
         </div>
 
         <div className="kx-chips-even flex flex-wrap gap-2 mt-2.5">

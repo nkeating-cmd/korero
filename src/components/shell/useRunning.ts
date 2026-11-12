@@ -119,8 +119,8 @@ export const useRunning = (): RunningItem[] => {
     items.push({
       id: "job",
       kind: "notes",
-      title: job.kind === "refine" ? "Refining notes" : "Writing notes",
-      detail: `${job.title ?? "Meeting"}${n ? ` · ${n.toLocaleString()} words so far` : ""}`,
+      title: job.kind === "title" ? "Naming the meeting" : job.kind === "refine" ? "Refining notes" : "Writing notes",
+      detail: `${job.title ?? "Meeting"}${n && job.kind !== "title" ? ` · ${n.toLocaleString()} words so far` : ""}`,
       progress: null,
       startedAt: job.startedAt,
       target: { section: "meetings", meetingId: job.meetingId, tab: "notes" },

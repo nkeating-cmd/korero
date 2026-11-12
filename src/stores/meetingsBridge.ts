@@ -25,8 +25,10 @@
 //      v1.29.0 R-02 rule): a locked or unreadable meetings.json can never be
 //      replaced by an empty or partial document.
 //
-// Deliberately free of Tauri imports: the IO is injected, so the ordering rules
+// Deliberately free of Tauri imports (titles.ts is pure too): the IO is injected, so the ordering rules
 // above are unit-tested (tests/unit/meetingsBridge.test.ts) without a webview.
+
+import { applyMeetingPatch } from "../components/meetings/titles";
 
 export type MeetingPatch = Record<string, unknown>;
 export type MeetingDoc = Record<string, unknown> & { id: string };
@@ -124,7 +126,7 @@ export function createMeetingsBridge(io: StoreIO): MeetingsBridge {
     const next = read.list.map((m) => {
       if (m && m.id === id) {
         found = true;
-        return { ...m, ...patch };
+        return applyMeetingPatch(m, patch);
       }
       return m;
     });

@@ -55,6 +55,7 @@ import {
   type RecordingFile,
   type TranscriptSeg,
 } from "../../meetings/model";
+import { applyMeetingPatch, isPlaceholderTitle, TITLE_INPUT_CHARS } from "../../meetings/titles";
 
 const LEGACY_MEETINGS_STORAGE = "korero.meetings.v1";
 
@@ -113,7 +114,10 @@ export const useMeetingsController = () => {
   const [asking, setAsking] = useState(false);
 
   const importBusy = task?.kind === "import";
-  const jobRunningHere = job && job.meetingId === activeId ? job : null;
+  // 1.47: naming a meeting uses the same slot but writes no notes, so the Notes tab
+  // keeps showing the notes while it runs.
+  const jobRunningHere = job && job.kind !== "title" && job.meetingId === activeId ? job : null;
+  const namingHere = !!job && job.kind === "title" && job.meetingId === activeId;
   // Keyed off ANY running work: the engine and the local model are shared,
   // and the store runs one thing at a time.
   const busy: null | "transcribe" | "post" | "both" | "speakers" | "other" =
@@ -126,9 +130,11 @@ export const useMeetingsController = () => {
           : task
           ? "other"
           : job
-            ? job.kind === "both"
-              ? "both"
-              : "post"
+            ? job.kind === "title"
+              ? "other"
+              : job.kind === "both"
+                ? "both"
+                : "post"
             : null;
   const busyMeetingId = task ? task.meetingId : (job?.meetingId ?? null);
   const liveProcessed = jobRunningHere ? jobRunningHere.live : "";
@@ -265,7 +271,7 @@ export const useMeetingsController = () => {
       applyPatch: (id, patch) => {
         if (!meetingsRef.current.some((m) => m.id === id)) return "missing";
         const apply = (list: Meeting[]) =>
-          list.map((m) => (m.id === id ? { ...m, ...(patch as Partial<Meeting>) } : m));
+          list.map((m) => (m.id === id ? applyMeetingPatch(m, patch) : m));
         meetingsRef.current = apply(meetingsRef.current);
         setMeetings(apply);
         return activeIdRef.current === id ? "shown" : "view";
@@ -602,6 +608,20 @@ export const useMeetingsController = () => {
       title: titleOf(active),
       micPath: active.micPath,
       systemPath: active.systemPath,
+    });
+  };
+
+  // 1.47: name a meeting that still has a placeholder, from its notes if it has any,
+  // otherwise from the visible transcript.
+  const titleSource = (m: Meeting): string =>
+    m.processed.trim() || notesInput(m, visibleSegs(m)).trim();
+  const canSuggestTitle = !!active && isPlaceholderTitle(active.title) && !!titleSource(active);
+  const onSuggestTitle = async () => {
+    if (!active || busy || !canSuggestTitle) return;
+    await useMeetingJobs.getState().suggestTitle({
+      meetingId: active.id,
+      title: titleOf(active),
+      text: titleSource(active).slice(0, TITLE_INPUT_CHARS),
     });
   };
 
@@ -1289,6 +1309,9 @@ export const useMeetingsController = () => {
     setSearch,
     // actions
     onReTranscribe,
+    namingHere,
+    canSuggestTitle,
+    onSuggestTitle,
     onSeparateSpeakers,
     onRoomTranscript,
     onCallTranscript,

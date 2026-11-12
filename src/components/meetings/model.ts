@@ -5,6 +5,8 @@
 // every consumer reads a meeting the same way. The comments that explain the
 // trim rules travel with the code: they are load-bearing.
 
+import { placeholderTitle } from "./titles";
+
 /** One chronological transcript segment (matches the Rust TranscriptSeg). */
 export interface TranscriptSeg {
   source: string; // "you" | "others"
@@ -410,13 +412,10 @@ export const baseName = (p: string): string =>
   p.replace(/\\/g, "/").split("/").pop() || p;
 
 export const titleOf = (m: Pick<Meeting, "title" | "createdAt">): string =>
-  m.title.trim() || `Meeting · ${new Date(m.createdAt).toLocaleString()}`;
+  m.title.trim() || placeholderTitle(m.createdAt);
 
-export const defaultMeetingTitle = (when: number): string =>
-  `Meeting ${new Date(when).toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  })}`;
+/** 1.47: the name a recording carries until it is given one (see titles.ts). */
+export const defaultMeetingTitle = (when: number): string => placeholderTitle(when);
 
 /** Recording length from the last transcript segment, when no duration was
  *  stored (meetings recorded before 1.42). Null when it cannot be told. */

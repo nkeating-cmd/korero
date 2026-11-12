@@ -26,8 +26,9 @@ const HOUR_MS = 3_600_000;
 export const callMeeting = () => ({
   id: "fixture-call",
   title: "Budget call (fixture)",
-  you: "",
-  others: "",
+  // The app stores each side's joined text beside the timed lines.
+  you: "Kia ora koutou. Yes. Let's do that.",
+  others: "Mōrena. Shall we start with the budget?",
   processed: "**Actions**\n- Mere: send the figures by Friday",
   processPrompt: "",
   createdAt: Date.now() - HOUR_MS,
@@ -49,6 +50,15 @@ export const callMeeting = () => ({
     seg("you", "Yes.", 9000),
     seg("you", "Let's do that.", 11000),
   ],
+});
+
+/** A call nobody has named: it still carries the dated placeholder. Recorded on
+ *  5 November 2026, with notes already written. */
+export const unnamedMeeting = () => ({
+  ...callMeeting(),
+  id: "fixture-unnamed",
+  title: "Meeting 5 Nov 2026, 6:03 pm",
+  createdAt: new Date(2026, 10, 5, 18, 3).getTime(),
 });
 
 /** One imported recording: there are no two sides to rebuild. */
@@ -121,6 +131,7 @@ export async function installTauriMock(
         meetings_store_load: stored,
         meeting_provider_is_local: true,
         meeting_recording_status: null,
+        "plugin:app|version": "9.8.7",
         // What a successful run hands back, so the screens can show the result.
         meeting_call_transcript: {
           segments: [
@@ -173,6 +184,16 @@ export async function installTauriMock(
         convertFileSrc: (path: string) => "asset://" + path,
         invoke: async (cmd: string, args: unknown) => {
           calls.push({ cmd, args });
+          if (cmd === "meeting_post_process") {
+            // The notes model: asked for a title it answers the way models do (quotes,
+            // a full stop); asked for notes it writes a short set.
+            const prompt = String(
+              (args as { prompt?: string } | null)?.prompt ?? "",
+            );
+            return prompt.startsWith("Name this meeting")
+              ? '"Budget forecast and hiring."'
+              : "**Actions**\n- Mere: send the revised figures";
+          }
           return cmd in answers ? answers[cmd] : null;
         },
       };
