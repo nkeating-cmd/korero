@@ -37,6 +37,8 @@ export interface MeetingFlag {
 export interface Meeting {
   id: string;
   title: string;
+  /** 1.47: a person typed this title, so Kōrero never replaces it (see titles.ts). */
+  titleByUser?: boolean;
   you: string;
   others: string;
   transcript?: TranscriptSeg[];

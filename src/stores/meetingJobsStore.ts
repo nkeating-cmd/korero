@@ -33,7 +33,7 @@ import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import { commands } from "@/bindings";
 import { logActivity } from "./activityStore";
-import { isPlaceholderTitle, TITLE_INPUT_CHARS, TITLE_PROMPT } from "../components/meetings/titles";
+import { cleanTopic, isPlaceholderTitle, TITLE_INPUT_CHARS, TITLE_PROMPT } from "../components/meetings/titles";
 import {
   createMeetingsBridge,
   type DeliveryOutcome,
@@ -591,8 +591,9 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
 
   /** Ask the notes model for a topic and offer it to the meeting as its title. The
    *  meeting takes it only if it still has no name of its own (`applyMeetingPatch`). */
-  const titleJob = (a: { meetingId: string; title?: string; text: string; quiet: boolean }) =>
-    runJob({
+  const titleJob = (a: { meetingId: string; title?: string; text: string; quiet: boolean }) => {
+    let usable = false;
+    return runJob({
       meetingId: a.meetingId,
       title: a.title,
       kind: "title",
@@ -600,14 +601,20 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
       prompt: TITLE_PROMPT,
       failLabel: "Naming the meeting",
       quietFail: a.quiet,
-      patchFor: (answer) => ({ titleSuggestion: answer }),
+      patchFor: (answer) => {
+        usable = cleanTopic(answer) !== null;
+        return { titleSuggestion: answer };
+      },
       onLanded: (outcome) => {
         if (a.quiet) return;
         if (outcome === "missing" || outcome === "failed") {
           toast.error("The title could not be saved.");
+        } else if (!usable) {
+          toast.message("No clear topic was found. Type a title, or try again after rewriting the notes.");
         }
       },
     });
+  };
 
   return {
     job: null,
@@ -1025,7 +1032,8 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
           releaseTask(claim);
           void notesJob({
             meetingId: m.id,
-            title: label,
+            // The meeting's own title ("Imported · <file>"), so its notes can name it.
+            title: typeof m.title === "string" ? m.title : label,
             kind: "post",
             text: r.data,
             prompt: notesPrompt,

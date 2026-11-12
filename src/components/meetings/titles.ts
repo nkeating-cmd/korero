@@ -46,7 +46,7 @@ export const placeholderTitle = (when: number): string =>
 const MONTH =
   "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?";
 const DATED = new RegExp(
-  `^Meeting(?: ·)?(?:[ ,./:\\-]+(?:\\d{1,4}|${MONTH}|[ap]\\.?m\\.?))+$`,
+  `^Meeting(?: ·)?(?:[ \u00a0\u202f,./:\\-]+(?:\\d{1,4}|${MONTH}|[ap]\\.?m\\.?))+$`,
   "i",
 );
 const HAS_TIME = /\d{1,2}[:.]\d{2}/;
@@ -72,6 +72,8 @@ const MAX_CHARS = 72;
  */
 export const cleanTopic = (raw: string): string | null => {
   const line = raw
+    // A thinking model's working is not its answer.
+    .replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, "")
     .split(/\r?\n/)
     .map((l) => l.trim())
     .find((l) => l.length > 0);
@@ -92,7 +94,15 @@ export const cleanTopic = (raw: string): string | null => {
       "",
     )
     .trim();
-  if (t.length < 3) return null;
+  if (t.length < 3 || t.startsWith("<")) return null;
+  // "Nothing to name" in the ways models say it, and names that say nothing.
+  if (
+    /^(?:none|n\/a|no (?:clear )?(?:topic|title)|untitled|unknown|unclear|insufficient|not enough)\b/i.test(
+      t,
+    ) ||
+    /^(?:meeting|notes|meeting notes|summary|discussion)$/i.test(t)
+  )
+    return null;
   const words = t.split(" ");
   if (words.length > MAX_WORDS) t = words.slice(0, MAX_WORDS).join(" ");
   if (t.length > MAX_CHARS)
@@ -129,9 +139,29 @@ export const TITLE_INPUT_CHARS = 6000;
 type Doc = Record<string, unknown>;
 
 /**
+ * True when nobody has named this meeting. A person who types in the title box sets
+ * `titleByUser`, so a name that happens to look like a placeholder ("Meeting 2:30 pm")
+ * is still theirs; clearing the box hands the naming back.
+ */
+export const isUnnamed = (m: {
+  title?: unknown;
+  titleByUser?: unknown;
+}): boolean =>
+  m.titleByUser !== true &&
+  isPlaceholderTitle(typeof m.title === "string" ? m.title : "");
+
+/** What the title box writes: the text, and whether a person has now named the meeting. */
+export const typedTitle = (
+  text: string,
+): { title: string; titleByUser: boolean } => ({
+  title: text,
+  titleByUser: text.trim().length > 0,
+});
+
+/**
  * Apply a patch to a meeting. A `titleSuggestion` in the patch becomes the title only
- * if the meeting still has a placeholder at this moment, so a name typed while the
- * model was thinking wins. The suggestion itself is never stored.
+ * if nobody has named the meeting by this moment (`isUnnamed`), so a name typed while
+ * the model was thinking wins. The suggestion itself is never stored.
  */
 export const applyMeetingPatch = <T extends object>(doc: T, patch: Doc): T => {
   if (!("titleSuggestion" in patch)) return { ...doc, ...patch };
@@ -139,11 +169,7 @@ export const applyMeetingPatch = <T extends object>(doc: T, patch: Doc): T => {
   const next = { ...doc, ...rest } as Doc;
   const topic =
     typeof titleSuggestion === "string" ? cleanTopic(titleSuggestion) : null;
-  if (
-    topic &&
-    topic.toUpperCase() !== "NONE" &&
-    isPlaceholderTitle(next.title as string | undefined)
-  ) {
+  if (topic && isUnnamed(next)) {
     const when =
       typeof next.createdAt === "number" ? next.createdAt : Date.now();
     next.title = datedTitle(topic, when);

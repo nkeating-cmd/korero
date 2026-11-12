@@ -103,11 +103,12 @@ export const AudioPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
             </button>
           )}
         </div>
-        {isCall && (
+        {/* 1.47: room meetings write their notes after Stop too, so the choice shows on both. */}
+        {(isCall || m.mode === "room") && (
           <div className="flex flex-col gap-1 pt-1" style={{ borderTop: "1px solid var(--kx-hairline)" }}>
             <label className="flex items-center gap-2 kx-meta cursor-pointer pt-2" htmlFor="kx-auto-notes">
               <input id="kx-auto-notes" type="checkbox" checked={c.autoNotes} onChange={(e) => c.toggleAutoNotes(e.target.checked)} />
-              For every call: write the notes as soon as it ends
+              For every meeting: write the notes as soon as it ends
             </label>
             <p className="kx-meta">
               {c.notesModelLocal

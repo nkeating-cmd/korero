@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   applyMeetingPatch,
+  isUnnamed,
+  typedTitle,
   cleanTopic,
   datedTitle,
   isPlaceholderTitle,
@@ -159,5 +161,67 @@ describe("offering a title to a meeting", () => {
   });
   test("a patch without a suggestion is a plain merge", () => {
     expect(applyMeetingPatch(unnamed, { title: "Typed" }).title).toBe("Typed");
+  });
+  test("a name a person typed is theirs even when it looks like a placeholder", () => {
+    for (const typed of [
+      "Meeting 2:30 pm",
+      "Meeting 12.11.2026 10.30",
+      "Imported · from my phone",
+    ]) {
+      const named = { ...unnamed, ...typedTitle(typed) };
+      expect(isUnnamed(named)).toBe(false);
+      expect(
+        applyMeetingPatch(named, { titleSuggestion: "Budget forecast" }).title,
+      ).toBe(typed);
+    }
+  });
+  test("clearing the title box hands the naming back", () => {
+    const cleared = { ...unnamed, ...typedTitle("Mine"), ...typedTitle("  ") };
+    expect(isUnnamed(cleared)).toBe(true);
+    expect(
+      applyMeetingPatch(cleared, { titleSuggestion: "Budget forecast" }).title,
+    ).toBe("Budget forecast · 12 Nov 2026");
+  });
+});
+
+describe("answers that are not a topic", () => {
+  test("a thinking model's working is dropped, its answer kept", () => {
+    expect(
+      cleanTopic(
+        "<think>They discussed money.</think>\nBudget forecast and hiring",
+      ),
+    ).toBe("Budget forecast and hiring");
+    expect(cleanTopic("<think>never finished")).toBeNull();
+  });
+  test("ways of saying there is nothing to name", () => {
+    for (const s of [
+      "NONE",
+      "None.",
+      "NONE - too little text",
+      "No topic",
+      "N/A",
+      "Insufficient information",
+      "Untitled",
+      "# Meeting notes",
+      "Notes",
+      "<answer>",
+    ]) {
+      expect(cleanTopic(s)).toBeNull();
+    }
+  });
+  test("real topics that start with similar words survive", () => {
+    expect(cleanTopic("Notes app redesign review")).toBe(
+      "Notes app redesign review",
+    );
+    expect(cleanTopic("Q3 2026 budget")).toBe("Q3 2026 budget");
+    expect(cleanTopic("Wānanga planning and kai")).toBe(
+      "Wānanga planning and kai",
+    );
+    expect(cleanTopic("Year-end close: what's left")).toBe(
+      "Year-end close: what's left",
+    );
+  });
+  test("an old placeholder with a narrow space before pm is recognised", () => {
+    expect(isPlaceholderTitle("Meeting 5 Nov 2026, 6:03\u202fpm")).toBe(true);
   });
 });

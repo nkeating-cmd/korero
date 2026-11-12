@@ -55,7 +55,7 @@ import {
   type RecordingFile,
   type TranscriptSeg,
 } from "../../meetings/model";
-import { applyMeetingPatch, isPlaceholderTitle, TITLE_INPUT_CHARS } from "../../meetings/titles";
+import { applyMeetingPatch, isUnnamed, TITLE_INPUT_CHARS } from "../../meetings/titles";
 
 const LEGACY_MEETINGS_STORAGE = "korero.meetings.v1";
 
@@ -615,9 +615,10 @@ export const useMeetingsController = () => {
   // otherwise from the visible transcript.
   const titleSource = (m: Meeting): string =>
     m.processed.trim() || notesInput(m, visibleSegs(m)).trim();
-  const canSuggestTitle = !!active && isPlaceholderTitle(active.title) && !!titleSource(active);
+  const canSuggestTitle = !!active && isUnnamed(active) && !!titleSource(active);
   const onSuggestTitle = async () => {
-    if (!active || busy || !canSuggestTitle) return;
+    // Not while an audio brief's script is being written (same model).
+    if (!active || busy || briefStage === "script" || !canSuggestTitle) return;
     await useMeetingJobs.getState().suggestTitle({
       meetingId: active.id,
       title: titleOf(active),
@@ -953,7 +954,7 @@ export const useMeetingsController = () => {
     // 1.46: a call that has just ended is rebuilt from what Stop saved, possibly
     // after waiting for other work, and would overwrite an edit made meanwhile.
     if (isAwaitingFinish(active.id)) {
-      toast.message("This call is about to be rebuilt from its recordings — edit this line when that finishes.");
+      toast.message("This meeting is about to be rebuilt from its recording — edit this line when that finishes.");
       setEditingSegIdx(null);
       return;
     }
