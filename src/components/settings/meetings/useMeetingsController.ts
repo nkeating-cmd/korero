@@ -29,7 +29,9 @@ import { logActivity } from "../../../stores/activityStore";
 import { useNav, type MeetingTab } from "../../../stores/navStore";
 import { TEMPLATES } from "../../../stores/audioBriefStore";
 import { draftSpokenScript, isEngineMissing } from "../../../lib/briefScript";
-import { useRecorder } from "../../../stores/recorderStore";
+import { isAwaitingFinish, useRecorder } from "../../../stores/recorderStore";
+import { useSettingsStore } from "../../../stores/settingsStore";
+import { autoNotesChoice, autoNotesOn, setAutoNotes } from "../../meetings/autoNotes";
 import {
   DEFAULT_PROMPT,
   baseName,
@@ -43,6 +45,9 @@ import {
   notesInput,
   parseTrimInput,
   separationBlocker,
+  callRebuildBlocker,
+  combineCallers,
+  restoreLivePatch,
   titleOf,
   trimKeyOf,
   visibleSegs,
@@ -486,7 +491,9 @@ export const useMeetingsController = () => {
       you: joinPart(first.you, second.you),
       others: joinPart(first.others, second.others),
       // The FULL transcript of both parts: merge is a write path.
-      transcript: [...(first.transcript ?? []), ...(second.transcript ?? [])],
+      // 1.46: each part numbers its own callers from 1, so the second part's are
+      // moved up past the first's; otherwise two different people share a label.
+      ...combineCallers(first, second),
       // Deliberately UNTRIMMED: the two parts' offsets are not comparable.
       youLabel: first.youLabel,
       othersLabel: first.othersLabel,
@@ -525,6 +532,7 @@ export const useMeetingsController = () => {
       active.othersLabel,
       visibleSegs(active),
       active.speakerNames,
+      active.callerNames,
     );
     if (!transcript.trim()) {
       toast.message("There is no transcript to ask about yet.");
@@ -588,6 +596,7 @@ export const useMeetingsController = () => {
   const onReTranscribe = async () => {
     if (!active || busy) return;
     if (isRoom(active)) return runRoom(active, false);
+    if (isCall(active)) return runCall(active, false);
     await useMeetingJobs.getState().transcribe({
       meetingId: active.id,
       title: titleOf(active),
@@ -609,6 +618,80 @@ export const useMeetingsController = () => {
   const onRoomTranscript = async () => {
     if (!active || busy || !isRoom(active)) return;
     runRoom(active, false);
+  };
+
+  // 1.46: a call with its recordings is transcribed again from them, the far end by
+  // caller. This is the one way to redo a call's transcript; the older loudness-gate
+  // path stays for meetings it cannot handle (imports, combined, pre-1.26).
+  const isCall = (m: Meeting | null | undefined): boolean => !!m && callRebuildBlocker(m) === null;
+  const runCall = (m: Meeting, withNotes: boolean) =>
+    confirmDestructive(
+      "Transcribe this call again from its recordings?",
+      "Each side is transcribed again, and the call's side is split by caller. Corrections you made to lines, and names you gave callers or speakers, are replaced. Lines the new transcript can't cover are kept.",
+      "Transcribe again",
+      async () => {
+        if (withNotes) setTab("notes");
+        await useMeetingJobs.getState().callTranscript({
+          meetingId: m.id,
+          title: titleOf(m),
+          micPath: m.micPath,
+          systemPath: m.systemPath,
+          existing: m.transcript ?? [],
+          thenNotes: withNotes
+            ? {
+                buildText: (t: TranscriptPatch) => {
+                  const next = { ...m, you: t.you, others: t.others, transcript: t.transcript as TranscriptSeg[], callerNames: undefined };
+                  return notesInput(next, visibleSegs(next));
+                },
+                prompt: customPrompt.trim(),
+                trimKey: trimKeyOf(m),
+              }
+            : undefined,
+        });
+      },
+    );
+  const onCallTranscript = async () => {
+    if (!active || busy || !isCall(active)) return;
+    runCall(active, false);
+  };
+  // 1.46: put back the transcript as it was heard live (kept by the rebuild after Stop).
+  const onRestoreLive = () => {
+    if (!active || busy) return;
+    const m = active;
+    const patch = restoreLivePatch(m);
+    if (!patch) return;
+    confirmDestructive(
+      "Put the live transcript back?",
+      "The rebuilt transcript is replaced with the one Kōrero wrote during the call. Corrections you made to the rebuilt lines are lost, and caller and speaker labels and names are cleared. Notes already written are not changed. You can rebuild again afterwards.",
+      "Put it back",
+      async () => {
+        patchMeeting(m.id, patch);
+      },
+    );
+  };
+
+  // Notes after a call: on by default only when the notes model runs on this computer.
+  const notesProviderId = useSettingsStore((s) => s.settings?.post_process_provider_id ?? "");
+  const [autoChoice, setAutoChoice] = useState(() => autoNotesChoice(notesProviderId));
+  const [notesModelLocal, setNotesModelLocal] = useState(false);
+  useEffect(() => {
+    let live = true;
+    // Re-read the stored choice: a yes counts only for the provider it was given for.
+    setAutoChoice(autoNotesChoice(notesProviderId));
+    commands
+      .meetingProviderIsLocal()
+      .then((r) => {
+        if (live) setNotesModelLocal(r.status === "ok" && r.data);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [active?.id, notesProviderId]);
+  const autoNotes = autoNotesOn(autoChoice, notesModelLocal);
+  const toggleAutoNotes = (on: boolean) => {
+    setAutoNotes(on, notesProviderId);
+    setAutoChoice(on ? "on" : "off");
   };
 
   const onPostProcess = async () => {
@@ -638,6 +721,7 @@ export const useMeetingsController = () => {
   const onBoth = async () => {
     if (!active || busy || briefStage === "script") return;
     if (isRoom(active)) return runRoom(active, true);
+    if (isCall(active)) return runCall(active, true);
     const m = active;
     setTab("notes");
     await useMeetingJobs.getState().transcribe({
@@ -735,7 +819,7 @@ export const useMeetingsController = () => {
   // ---- copy / export / brief / notes ------------------------------------
   const copyActive = async () => {
     if (!active) return;
-    const body = combine(active.you, active.others, active.youLabel, active.othersLabel, visibleSegs(active), active.speakerNames);
+    const body = combine(active.you, active.others, active.youLabel, active.othersLabel, visibleSegs(active), active.speakerNames, active.callerNames);
     const text = active.processed.trim()
       ? `${body}\n\n--- Processed ---\n${active.processed.trim()}`
       : body;
@@ -842,7 +926,14 @@ export const useMeetingsController = () => {
     // 1.45: "Separate speakers" will write the whole transcript back when it ends,
     // so an edit made meanwhile would be overwritten. Refuse it, and say why.
     if (task?.kind === "speakers" && task.meetingId === active.id) {
-      toast.message("Separating speakers — edit this line when it finishes.");
+      toast.message("The transcript is being rebuilt — edit this line when it finishes.");
+      setEditingSegIdx(null);
+      return;
+    }
+    // 1.46: a call that has just ended is rebuilt from what Stop saved, possibly
+    // after waiting for other work, and would overwrite an edit made meanwhile.
+    if (isAwaitingFinish(active.id)) {
+      toast.message("This call is about to be rebuilt from its recordings — edit this line when that finishes.");
       setEditingSegIdx(null);
       return;
     }
@@ -885,7 +976,7 @@ export const useMeetingsController = () => {
     const parts = [
       `# ${titleOf(active)}`,
       "",
-      combine(active.you, active.others, active.youLabel, active.othersLabel, visibleSegs(active), active.speakerNames) ||
+      combine(active.you, active.others, active.youLabel, active.othersLabel, visibleSegs(active), active.speakerNames, active.callerNames) ||
         "(no transcript)",
     ];
     if (isTrimmed(active)) {
@@ -1102,6 +1193,7 @@ export const useMeetingsController = () => {
   // 1.45: why speakers can't be separated on this meeting (null = they can).
   const separateBlocker = active ? separationBlocker(active) : "No meeting selected.";
   const activeCanSeparate = separateBlocker === null;
+  const callBlocker = active ? callRebuildBlocker(active) : "No meeting selected.";
 
   const selectMeeting = (id: string) => {
     activeIdRef.current = id;
@@ -1199,6 +1291,12 @@ export const useMeetingsController = () => {
     onReTranscribe,
     onSeparateSpeakers,
     onRoomTranscript,
+    onCallTranscript,
+    onRestoreLive,
+    callBlocker,
+    autoNotes,
+    notesModelLocal,
+    toggleAutoNotes,
     activeCanSeparate,
     separateBlocker,
     onPostProcess,

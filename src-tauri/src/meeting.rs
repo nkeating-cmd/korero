@@ -1965,7 +1965,11 @@ pub async fn meeting_post_process(
     let total_chars = text.chars().count();
 
     let mut system = if prompt.trim().is_empty() {
-        "Summarise this meeting transcript: key points, decisions, and action items with owners."
+        // 1.46: actions and decisions first (the same order as the app's default prompt).
+        "Write notes for this meeting transcript in this order. 1. **Actions**: a list, one line \
+         each: who, what, and by when if a date was said; write \"None agreed\" if there were \
+         none. 2. **Decisions**: a list. 3. **Summary**: three sentences at most. 4. **Key \
+         points**: short bullets. Do not invent owners or dates."
             .to_string()
     } else {
         prompt
@@ -2177,14 +2181,13 @@ pub async fn meeting_prewarm_post_process(
 #[specta::specta]
 pub async fn meeting_provider_is_local(app: AppHandle) -> Result<bool, String> {
     let settings = crate::settings::get_settings(&app);
-    let base = match settings.active_post_process_provider() {
-        Some(p) => p.base_url.to_lowercase(),
-        None => return Ok(false),
-    };
-    Ok(base.contains("localhost")
-        || base.contains("127.0.0.1")
-        || base.contains("0.0.0.0")
-        || base.contains("[::1]"))
+    // Kōrero 1.46: this answer now decides whether a call's notes are written without
+    // being asked, so it uses the strict loopback check (the host itself must be
+    // loopback) rather than looking for "localhost" anywhere in the address, which a
+    // remote address such as https://localhost.example.com would have passed.
+    Ok(settings
+        .active_post_process_provider()
+        .is_some_and(|p| crate::commands::history::is_loopback_url(&p.base_url)))
 }
 
 /// Keep a streamed WAV that has audio; delete an empty one so it doesn't
@@ -2481,7 +2484,7 @@ fn side_label(source: &str) -> &'static str {
 /// the cut speech segments (each carrying its capture-relative `start_ms`).
 /// Streaming: the resampler and segmenter hold at most one in-flight segment,
 /// so memory stays bounded regardless of recording length.
-fn decode_and_segment(path: &str, source: &'static str) -> Result<Vec<LiveSegment>, String> {
+pub(crate) fn decode_and_segment(path: &str, source: &'static str) -> Result<Vec<LiveSegment>, String> {
     let reader = hound::WavReader::open(path).map_err(|e| format!("Could not open {path}: {e}"))?;
     let spec = reader.spec();
     let channels = spec.channels.max(1) as usize;

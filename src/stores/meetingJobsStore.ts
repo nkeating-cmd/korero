@@ -121,9 +121,15 @@ export interface TranscriptSegLike {
   source: string;
   text: string;
   start_ms?: number;
-  /** 1.45: set by "Separate speakers" on microphone lines. */
+  /** 1.45: set by "Separate speakers" on microphone lines. 1.46: the caller, on
+   *  call-audio lines of a call rebuilt from its recordings. */
   speaker?: number | null;
 }
+
+/** 1.46: how a call rebuild ended. "landed": the new transcript is saved. "busy":
+ *  another job held the slot, nothing ran. "missing": the meeting was deleted
+ *  meanwhile. "failed": it ran and did not produce or save a transcript. */
+export type CallRebuildOutcome = "landed" | "busy" | "missing" | "failed";
 
 /** The transcript fields a (re-)transcription produces. */
 export interface TranscriptPatch {
@@ -212,10 +218,32 @@ interface MeetingJobsState {
     };
   }) => Promise<boolean>;
 
+  /** 1.46: rebuild a call's transcript from its two recordings: the far end split by
+   *  caller, both sides found by the speaker model, not by loudness. Resolves true
+   *  when the new transcript landed. `quiet` (the automatic run after Stop) reports
+   *  problems to Activity only, since the live transcript is already saved. */
+  callTranscript: (args: {
+    meetingId: string;
+    title: string;
+    micPath: string | null;
+    systemPath: string | null;
+    existing: TranscriptSegLike[];
+    quiet?: boolean;
+    /** Keep `existing` on the meeting as its live transcript (the run after Stop). */
+    keepLive?: boolean;
+    thenNotes?: {
+      buildText: (t: TranscriptPatch) => string;
+      prompt: string;
+      trimKey: string;
+    };
+  }) => Promise<CallRebuildOutcome>;
+
   /** Stop the running meeting and turn it into a meeting entry. */
   stopMeeting: (args: {
     /** 1.45: an "In the room" meeting, whose transcript is rebuilt right after. */
     room?: boolean;
+    /** 1.46: a call, whose transcript is rebuilt from its recordings right after. */
+    rebuildFollows?: boolean;
     /** Pure: builds the new meeting from the stop result. */
     makeMeeting: (r: {
       you: string;
@@ -385,6 +413,11 @@ const ROOM_MSGS = {
   done: "The room transcript is ready, sorted by speaker.",
   saved: "The room transcript is ready and saved.",
   what: "Transcribing the room",
+};
+const CALL_MSGS = {
+  done: "The transcript was rebuilt from the recordings.",
+  saved: "The transcript was rebuilt from the recordings and saved.",
+  what: "Rebuilding the transcript",
 };
 const TRANSCRIPT_MSGS = {
   done: "Transcription finished.",
@@ -614,6 +647,9 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
           ...patch,
           // 1.45: the new lines carry no speakers, so the last separation's count is stale.
           speakersFound: undefined,
+          // 1.46: likewise the callers and the names given to them.
+          callersFound: undefined,
+          callerNames: undefined,
         });
         if (outcome === "missing" || outcome === "failed") {
           reportLanding(outcome, TRANSCRIPT_MSGS, meetingId, "transcript");
@@ -797,6 +833,105 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
       }
     },
 
+    callTranscript: async ({ meetingId, title, micPath, systemPath, existing, quiet, keepLive, thenNotes }) => {
+      const claim = claimTask({
+        kind: "speakers",
+        meetingId,
+        label: `rebuilding the transcript of “${title}”`,
+      });
+      if (claim === null) {
+        // The automatic run never interrupts with "busy": the caller decides.
+        if (!quiet) refuse();
+        return "busy";
+      }
+      const target = { section: "meetings" as const, meetingId, tab: "transcript" as const };
+      try {
+        const r = await commands.meetingCallTranscript(
+          micPath,
+          systemPath,
+          existing.map((s) => ({
+            source: s.source,
+            text: s.text,
+            start_ms: s.start_ms ?? 0,
+            speaker: s.speaker ?? null,
+          })),
+        );
+        if (r.status !== "ok") throw new Error(r.error);
+        const { segments, callers, rebuilt, failed, notes } = r.data;
+        const join = (source: string) =>
+          segments
+            .filter((s) => s.source === source)
+            .map((s) => s.text)
+            .join(" ");
+        const patch: TranscriptPatch = { transcript: segments, you: join("you"), others: join("others") };
+        const others = rebuilt.includes("others");
+        const outcome = await meetingsBridge.deliverPatch(meetingId, {
+          ...patch,
+          // Caller numbers are new whenever the call's side was rebuilt, so names
+          // given to the old numbers no longer apply. If it was not, they still do.
+          ...(others ? { callersFound: callers, callerNames: undefined } : {}),
+          // Microphone lines were rebuilt without speaker labels.
+          ...(rebuilt.includes("you") ? { speakersFound: undefined, speakerNames: undefined } : {}),
+          ...(keepLive ? { liveTranscript: existing } : {}),
+        });
+        if (outcome === "missing" || outcome === "failed") {
+          if (!quiet || outcome === "failed") reportLanding(outcome, CALL_MSGS, meetingId, "transcript");
+          return outcome;
+        }
+        const detail = [
+          others && callers > 1 ? `${callers} callers found.` : "",
+          failed > 0 ? `${failed} part${failed === 1 ? "" : "s"} could not be transcribed; the live lines there were kept.` : "",
+          ...notes,
+        ]
+          .filter(Boolean)
+          .join(" ");
+        if (quiet) {
+          logActivity({
+            status: failed > 0 || notes.length > 0 ? "attention" : "done",
+            title: "Transcript rebuilt from the recordings",
+            detail: detail || undefined,
+            target,
+          });
+        } else {
+          if (failed > 0 || notes.length > 0) toast.warning(detail);
+          reportLanding(outcome, CALL_MSGS, meetingId, "transcript");
+        }
+        if (!thenNotes) return "landed";
+        const text = thenNotes.buildText(patch);
+        if (!text.trim()) return "landed";
+        releaseTask(claim);
+        void notesJob({
+          meetingId,
+          title,
+          kind: "both",
+          text,
+          prompt: thenNotes.prompt,
+          trimKey: thenNotes.trimKey,
+        });
+        return "landed";
+      } catch (e) {
+        if (quiet) {
+          logActivity({
+            status: "attention",
+            title: "The transcript was not rebuilt; the live one was kept",
+            detail: errText(e),
+            target,
+          });
+        } else {
+          toast.error(`Rebuilding the transcript failed: ${errText(e)}. The transcript was left as it was.`);
+          logActivity({
+            status: "failed",
+            title: "Rebuilding the transcript failed",
+            detail: errText(e),
+            target: { section: "meetings", meetingId, tab: "audio" },
+          });
+        }
+        return "failed";
+      } finally {
+        releaseTask(claim);
+      }
+    },
+
     importFile: async ({ path, label, makeMeeting, notesPrompt }) => {
       const claim = claimTask({
         kind: "import",
@@ -892,7 +1027,7 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
       }
     },
 
-    stopMeeting: async ({ makeMeeting, room }) => {
+    stopMeeting: async ({ makeMeeting, room, rebuildFollows }) => {
       if (get().stopping) return "nothing";
       set(() => ({ stopping: { startedAt: Date.now() } }));
       try {
@@ -937,7 +1072,10 @@ export const useMeetingJobs = create<MeetingJobsState>((set, get) => {
         });
         // Review L3: a room meeting goes straight on to its rebuild, which needs the
         // speech engine; warming the notes model now would compete with it.
-        if ((you.trim() || others.trim()) && !room) {
+        // 1.46: the same holds for a call, whose rebuild now follows Stop.
+        if (rebuildFollows) {
+          /* nothing to warm or announce: the rebuild reports for itself */
+        } else if ((you.trim() || others.trim()) && !room) {
           // v1.17.0: warm the local notes model so the first "Generate notes"
           // doesn't pay the cold model-load cost.
           // 1.43: sized to this transcript so the notes call reuses the load.

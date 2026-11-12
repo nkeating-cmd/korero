@@ -736,6 +736,19 @@ async meetingRoomTranscript(micPath: string, existing: { source: string; text: s
 }
 },
 /**
+ * Kōrero 1.46: rebuild a call's transcript from its two recordings (see above).
+ * `existing` is the transcript as saved; lines the rebuild cannot improve are kept.
+ * Errors only when neither side could be rebuilt, so the caller keeps what it has.
+ */
+async meetingCallTranscript(micPath: string | null, systemPath: string | null, existing: { source: string; text: string; start_ms: number; speaker: number | null }[]) : Promise<Result<CallTranscript, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_call_transcript", { micPath, systemPath, existing }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Kōrero 1.45 (D-007): separate the speakers in a meeting's microphone recording and
  * say which speaker each microphone line belongs to. Downloads the two models on first
  * use (about 32 MB, checked by sha256). Runs on the CPU; nothing leaves the computer
@@ -1294,6 +1307,26 @@ export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding
 /**
  * Result of rebuilding a room meeting's transcript.
  */
+/**
+ * Result of rebuilding a call's transcript from its recordings.
+ */
+export type CallTranscript = { segments: { source: string; text: string; start_ms: number; speaker: number | null }[]; 
+/**
+ * Voices found in the call's audio; 0 when that side was not rebuilt.
+ */
+callers: number; 
+/**
+ * The sides rebuilt from their recording: "you", "others", both or neither.
+ */
+rebuilt: string[]; 
+/**
+ * Pieces that could not be transcribed, over both sides.
+ */
+failed: number; 
+/**
+ * Why a side was left as it was, in plain words (for the activity log).
+ */
+notes: string[]; audio_s: number; took_s: number }
 export type RoomTranscript = { segments: { source: string; text: string; start_ms: number; speaker: number | null }[]; speakers: number; failed: number; audio_s: number; took_s: number }
 /**
  * Result of "Separate speakers" on a meeting.

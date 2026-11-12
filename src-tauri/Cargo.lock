@@ -3289,7 +3289,7 @@ dependencies = [
 
 [[package]]
 name = "korero"
-version = "1.45.1"
+version = "1.46.0"
 dependencies = [
  "anyhow",
  "chrono",

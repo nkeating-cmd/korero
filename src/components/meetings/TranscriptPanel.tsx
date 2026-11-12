@@ -1,10 +1,22 @@
 /* eslint-disable i18next/no-literal-string */
 import React, { useEffect, useRef, useState } from "react";
-import { GraduationCap, Pencil, Scissors, TriangleAlert, X, Flag } from "lucide-react";
+import { AlignLeft, GraduationCap, List, Pencil, Scissors, TriangleAlert, X, Flag } from "lucide-react";
 import { AddCorrectionInline } from "../ui/Corrections";
 import type { MeetingsController } from "../settings/meetings/useMeetingsController";
 import { Highlighted, containsFolded } from "./Highlighted";
-import { fmtClock, fmtTrimMs, hiddenCount, isTrimmed, segInWindow, segMs, speakerLabel } from "./model";
+import { SpeakerNames } from "./SpeakerNames";
+import { fmtClock, fmtTrimMs, groupTurns, hiddenCount, isTrimmed, segInWindow, segMs, speakerLabel } from "./model";
+
+// 1.46: paragraphs by speaker for reading (the default), or one row per line.
+const VIEW_KEY = "korero.transcriptView";
+type TranscriptView = "read" | "lines";
+const savedView = (): TranscriptView => {
+  try {
+    return localStorage.getItem(VIEW_KEY) === "lines" ? "lines" : "read";
+  } catch {
+    return "read";
+  }
+};
 
 /**
  * Kōrero 1.42: the transcript tab. The reading surface leads; speaker labels,
@@ -15,6 +27,15 @@ export const TranscriptPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
   const m = c.active;
   const firstHitRef = useRef<HTMLDivElement | null>(null);
   const [labelDraft, setLabelDraft] = useState<string>("");
+  const [view, setView] = useState<TranscriptView>(savedView);
+  const chooseView = (v: TranscriptView) => {
+    setView(v);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      /* the choice just doesn't persist */
+    }
+  };
 
   // From search: scroll to the first line that matches, once.
   useEffect(() => {
@@ -72,7 +93,33 @@ export const TranscriptPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
         <span className="kx-meta">Speakers</span>
         {speaker("you")}
         {m.mode !== "room" && speaker("others")}
+        {(m.callersFound ?? 0) > 1 && (
+          <SpeakerNames
+            kind="caller"
+            count={m.callersFound ?? 0}
+            names={m.callerNames}
+            onRename={(callerNames) => c.patchMeeting(m.id, { callerNames })}
+          />
+        )}
+        {(m.speakersFound ?? 0) > 1 && (
+          <SpeakerNames
+            kind="speaker"
+            count={m.speakersFound ?? 0}
+            names={m.speakerNames}
+            onRename={(speakerNames) => c.patchMeeting(m.id, { speakerNames })}
+          />
+        )}
         <div className="flex-1" />
+        {ordered && (
+          <div className="kx-seg-toggle" role="group" aria-label="How the transcript is laid out">
+            <button type="button" aria-pressed={view === "read"} onClick={() => chooseView("read")} title="Each speaker's lines joined into paragraphs">
+              <AlignLeft size={13} /> Paragraphs
+            </button>
+            <button type="button" aria-pressed={view === "lines"} onClick={() => chooseView("lines")} title="One row per line, with its time">
+              <List size={13} /> Lines
+            </button>
+          </div>
+        )}
         {c.teachWrong === null && (
           <button
             type="button"
@@ -201,6 +248,94 @@ export const TranscriptPanel: React.FC<{ c: MeetingsController }> = ({ c }) => {
               </p>
             </div>
           ))}
+        </div>
+      ) : view === "read" ? (
+        <div className="flex flex-col gap-3.5">
+          {groupTurns(m, m.transcript ?? [], (i) => c.editingSegIdx === i).map((t) => {
+            const first = t.lines[0];
+            const flagged = t.lines.some(({ seg }) => flags.some((f) => Math.abs(f.atSec * 1000 - segMs(seg)) < 6000));
+            const allOut = t.lines.every(({ seg }) => !segInWindow(m, seg));
+            return (
+              <div key={first.index} className={`kx-turn ${allOut ? "kx-seg-out" : flagged ? "kx-seg-flag" : ""}`}>
+                <div className="kx-turn-head">
+                  <span className={`text-[12.5px] font-semibold ${t.source === "you" ? "kx-accent-ink" : "text-[var(--kx-ink-soft)]"}`}>
+                    {t.label}
+                  </span>
+                  <span className="kx-mono kx-ink-2 text-[11px]">{fmtClock(t.startMs / 1000)}</span>
+                  <span className="kx-turn-actions">
+                    <button
+                      type="button"
+                      onClick={() => c.setTrimPoint("start", t.startMs)}
+                      aria-label={`Start the trim at this turn (${fmtTrimMs(t.startMs)})`}
+                      title={`Start here — hide everything before ${fmtTrimMs(t.startMs)}`}
+                    >
+                      Start here
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => c.setTrimPoint("end", segMs(t.lines[t.lines.length - 1].seg))}
+                      aria-label="End the trim at the end of this turn"
+                      title="End here — hide everything after this turn"
+                    >
+                      End here
+                    </button>
+                  </span>
+                </div>
+                <p className="kx-read m-0 break-words">
+                  {t.lines.map(({ seg, index }) => {
+                    const hit = !!c.highlight && containsFolded(seg.text, c.highlight);
+                    const isFirstHit = hit && !firstHitAssigned;
+                    if (isFirstHit) firstHitAssigned = true;
+                    if (c.editingSegIdx === index) {
+                      return (
+                        <input
+                          key={index}
+                          autoFocus
+                          aria-label="Edit this line"
+                          defaultValue={seg.text.trim()}
+                          onBlur={(e) => c.saveSegment(index, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") c.saveSegment(index, (e.target as HTMLInputElement).value);
+                            else if (e.key === "Escape") c.setEditingSegIdx(null);
+                          }}
+                          className="kx-input text-[14.5px] my-1"
+                        />
+                      );
+                    }
+                    return (
+                      <span
+                        key={index}
+                        ref={isFirstHit ? (firstHitRef as React.RefObject<HTMLSpanElement>) : undefined}
+                        role="button"
+                        tabIndex={0}
+                        className={`kx-turn-line ${allOut || segInWindow(m, seg) ? "" : "kx-turn-line-out"}`}
+                        title={
+                          segInWindow(m, seg)
+                            ? `${fmtClock(segMs(seg) / 1000)} · click to correct this line`
+                            : "Outside the current trim — hidden from copy, export, search and notes, but still on the record."
+                        }
+                        aria-label={`Correct this line, said at ${fmtClock(segMs(seg) / 1000)}: ${seg.text.trim()}`}
+                        onClick={() => {
+                          // Dragging to select words (to copy, or to teach a correction)
+                          // ends in a click; that must not open the editor.
+                          if (window.getSelection()?.toString().trim()) return;
+                          c.setEditingSegIdx(index);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            c.setEditingSegIdx(index);
+                          }
+                        }}
+                      >
+                        <Highlighted text={seg.text.trim()} query={c.highlight} />{" "}
+                      </span>
+                    );
+                  })}
+                </p>
+              </div>
+            );
+          })}
         </div>
       ) : (
         <div className="flex flex-col">

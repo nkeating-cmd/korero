@@ -15,7 +15,9 @@ export interface TranscriptSeg {
   start_ms?: number;
   /** Kōrero 1.45 (D-007): who said a microphone line, set by "Separate speakers"
    *  (0-based; shown as "Speaker n+1" or the name given). Absent or null before it
-   *  runs, for call-audio lines, and on every meeting saved before 1.45. */
+   *  runs and on every meeting saved before 1.45.
+   *  1.46: a call-audio ("others") line carries its caller the same way, shown as
+   *  "Caller n+1" or the name given. The two sides number their voices separately. */
   speaker?: number | null;
 }
 
@@ -61,6 +63,14 @@ export interface Meeting {
   speakersFound?: number;
   /** 1.45: names for Speaker 1..N, by index; blank or missing = "Speaker n". */
   speakerNames?: string[];
+  /** 1.46: how many voices were found in the call's audio. Absent until the call's
+   *  transcript has been rebuilt from its recordings. */
+  callersFound?: number;
+  /** 1.46: names for Caller 1..N, by index; blank or missing = "Caller n". */
+  callerNames?: string[];
+  /** 1.46: the transcript as it was heard live, kept when the automatic rebuild
+   *  after Stop replaces it, so it can be put back if the rebuild is worse. */
+  liveTranscript?: TranscriptSeg[];
   /** 1.45: the two meetings this one was combined from (set by Combine). */
   mergedFrom?: string[];
   /** 1.45 (B3): how it was recorded. Absent on older meetings, which were calls. */
@@ -73,8 +83,10 @@ export interface RecordingFile {
   modified: number;
 }
 
+// 1.46: what you need after a meeting comes first. The actions and decisions used to
+// sit at the bottom of a long summary; now they open the notes.
 export const DEFAULT_PROMPT =
-  "Summarise this meeting: key points, decisions, and action items (with owners).";
+  "Write notes for this meeting in this order. 1. **Actions**: a list, one line each: who, what, and by when if a date was said. Write \"None agreed\" if there were none. 2. **Decisions**: a list, one line each. 3. **Summary**: three sentences at most. 4. **Key points**: short bullets, most important first. Use the speakers' names where the transcript gives them. Do not invent owners or dates.";
 
 export const newId = (): string =>
   (crypto as unknown as { randomUUID?: () => string })?.randomUUID?.() ??
@@ -159,22 +171,111 @@ export const sourceChipLabel = (m: Meeting): string => {
   if (m.imported) return "Imported file";
   if (m.mode === "room")
     return m.speakersFound && m.speakersFound > 1 ? `${m.speakersFound} speakers` : "In the room";
+  if (m.systemCaptured && m.callersFound && m.callersFound > 1)
+    return `${m.youLabel} + ${m.callersFound} callers`;
   return m.systemCaptured ? `${m.youLabel} + ${m.othersLabel}` : `${m.youLabel} only`;
 };
 
 /**
+ * Kōrero 1.46: why a call's transcript cannot be rebuilt from its recordings, or null
+ * if it can. A room meeting has its own rebuild; an import has no separate sides; a
+ * combined meeting mixes two recordings.
+ */
+export const callRebuildBlocker = (m: Meeting): string | null => {
+  if (m.mode === "room") return "A room meeting is rebuilt by speaker instead.";
+  if (m.imported) return "An imported file has one recording, not the two sides of a call.";
+  if (m.mergedFrom && m.mergedFrom.length > 0)
+    return "A combined meeting mixes two recordings, so its lines can't be matched to one.";
+  const wav = (p: string | null) => !!p && /\.wav$/i.test(p);
+  if (!wav(m.micPath) && !wav(m.systemPath)) return "The recordings for this meeting are no longer on this computer.";
+  // The rebuild matches saved lines to the recordings by time (as `call_timing_problem`
+  // in diarise.rs does), so lines without timings would all be kept beside the new ones.
+  const segs = (m.transcript ?? []).filter((s) => s.text.trim());
+  if (segs.length === 0 && (m.you.trim() || m.others.trim()))
+    return "Its lines have no timings (recorded before Kōrero 1.26). Re-transcribe it first.";
+  if (segs.length >= 2 && segs.every((s) => (s.start_ms ?? 0) === (segs[0].start_ms ?? 0)))
+    return "Its lines have no timings (recorded before Kōrero 1.26). Re-transcribe it first.";
+  return null;
+};
+
+/**
+ * Kōrero 1.46: the fields that put a call's live transcript back in place of the
+ * rebuilt one, or null when no live transcript was kept. Caller labels and names
+ * belong to the rebuilt lines, so they go; the kept copy stays for another change of mind.
+ */
+export const restoreLivePatch = (
+  m: Pick<Meeting, "liveTranscript">,
+): Pick<
+  Meeting,
+  "transcript" | "you" | "others" | "callersFound" | "callerNames" | "speakersFound" | "speakerNames"
+> | null => {
+  const live = m.liveTranscript;
+  if (!live || live.length === 0) return null;
+  const join = (source: string) =>
+    live
+      .filter((s) => s.source === source)
+      .map((s) => s.text)
+      .join(" ");
+  return {
+    transcript: live,
+    you: join("you"),
+    others: join("others"),
+    callersFound: undefined,
+    callerNames: undefined,
+    speakersFound: undefined,
+    speakerNames: undefined,
+  };
+};
+
+/**
+ * Kōrero 1.46: the transcript and caller fields of two meetings combined. Each meeting
+ * numbers its callers from 0, so the second meeting's callers are moved up past the
+ * first's and the name lists are joined: "Caller 1" of one meeting never becomes the
+ * same person as "Caller 1" of the other. Microphone speakers are left as they were
+ * (a combined meeting already refuses "Separate speakers").
+ */
+export const combineCallers = (
+  first: Pick<Meeting, "transcript" | "callersFound" | "callerNames">,
+  second: Pick<Meeting, "transcript" | "callersFound" | "callerNames">,
+): Pick<Meeting, "transcript" | "callersFound" | "callerNames"> => {
+  const used = (m: Pick<Meeting, "transcript" | "callersFound">) =>
+    Math.max(
+      m.callersFound ?? 0,
+      ...(m.transcript ?? []).map((s) => (s.source === "others" && s.speaker != null ? s.speaker + 1 : 0)),
+    );
+  const a = used(first);
+  const b = used(second);
+  const transcript = [
+    ...(first.transcript ?? []),
+    ...(second.transcript ?? []).map((s) =>
+      s.source === "others" && s.speaker != null ? { ...s, speaker: s.speaker + a } : s,
+    ),
+  ];
+  if (a + b === 0) return { transcript };
+  const names = [
+    ...Array.from({ length: a }, (_, i) => first.callerNames?.[i]?.trim() ?? ""),
+    ...Array.from({ length: b }, (_, i) => second.callerNames?.[i]?.trim() ?? ""),
+  ];
+  return { transcript, callersFound: a + b, callerNames: names.some(Boolean) ? names : undefined };
+};
+
+/**
  * Kōrero 1.45: the label for one transcript line. A microphone line that "Separate
- * speakers" assigned shows its speaker ("Speaker 2", or the name given); every other
- * line keeps the two channel labels. The transcript view and `combine` (which feeds
- * the notes) both use this, so what you read is what the notes model reads.
+ * speakers" assigned shows its speaker ("Speaker 2", or the name given). 1.46: a
+ * call-audio line whose caller is known shows that caller ("Caller 2", or the name
+ * given). Every other line keeps the two channel labels. The transcript view and
+ * `combine` (which feeds the notes) both use this, so what you read is what the notes
+ * model reads.
  */
 export const speakerLabel = (
-  m: { youLabel: string; othersLabel: string; speakerNames?: string[] },
+  m: { youLabel: string; othersLabel: string; speakerNames?: string[]; callerNames?: string[] },
   s: { source: string; speaker?: number | null },
-): string =>
-  s.source === "you" && s.speaker != null
+): string => {
+  if (s.speaker == null) return labelFor(s.source, m.youLabel, m.othersLabel);
+  return s.source === "you"
     ? m.speakerNames?.[s.speaker]?.trim() || `Speaker ${s.speaker + 1}`
-    : labelFor(s.source, m.youLabel, m.othersLabel);
+    : m.callerNames?.[s.speaker]?.trim() || `Caller ${s.speaker + 1}`;
+};
 
 /**
  * The transcript as text, in speaking order (`Label: line` per turn). Consecutive
@@ -188,6 +289,7 @@ export const combine = (
   othersLabel = "Others",
   transcript?: TranscriptSeg[],
   speakerNames?: string[],
+  callerNames?: string[],
 ): string => {
   if (transcript && transcript.length > 0) {
     // 1.45: lines are grouped by their label, so separated speakers become separate
@@ -196,13 +298,13 @@ export const combine = (
     for (const s of transcript) {
       const text = s.text.trim();
       if (!text) continue;
-      const key = `${s.source}|${s.source === "you" && s.speaker != null ? s.speaker : ""}`;
+      const key = `${s.source}|${s.speaker != null ? s.speaker : ""}`;
       const last = merged[merged.length - 1];
       if (last && last.key === key) last.text += ` ${text}`;
       else merged.push({ key, seg: s, text });
     }
     return merged
-      .map((m) => `${speakerLabel({ youLabel, othersLabel, speakerNames }, m.seg)}: ${m.text}`)
+      .map((m) => `${speakerLabel({ youLabel, othersLabel, speakerNames, callerNames }, m.seg)}: ${m.text}`)
       .join("\n");
   }
   return [
@@ -211,6 +313,58 @@ export const combine = (
   ]
     .filter(Boolean)
     .join("\n\n");
+};
+
+// ---- reading view (1.46) ---------------------------------------------------
+
+/** One speaker turn for reading: consecutive lines by one speaker, as a paragraph. */
+export interface Turn {
+  label: string;
+  source: string;
+  startMs: number;
+  /** The lines of this turn, each with its index in the meeting's transcript. */
+  lines: { seg: TranscriptSeg; index: number }[];
+}
+
+/** A turn is broken (same speaker, new paragraph with its own time) after this
+ *  long a gap, or once it is this long, so a monologue still has landmarks. */
+const TURN_GAP_MS = 45_000;
+const TURN_MAX_CHARS = 700;
+
+/**
+ * Kōrero 1.46: the transcript grouped for reading. Consecutive lines with the same
+ * label become one turn; empty lines are skipped (unless `keep` says otherwise, for
+ * a line being edited). Grouping is a VIEW: indexes point back into the transcript,
+ * so editing and trimming still act on single lines.
+ */
+export const groupTurns = (
+  m: { youLabel: string; othersLabel: string; speakerNames?: string[]; callerNames?: string[] },
+  transcript: TranscriptSeg[],
+  keep: (index: number) => boolean = () => false,
+): Turn[] => {
+  const turns: Turn[] = [];
+  let chars = 0;
+  transcript.forEach((seg, index) => {
+    if (!seg.text.trim() && !keep(index)) return;
+    const label = speakerLabel(m, seg);
+    const last = turns[turns.length - 1];
+    const prev = last?.lines[last.lines.length - 1]?.seg;
+    const same =
+      !!last &&
+      last.label === label &&
+      last.source === seg.source &&
+      !!prev &&
+      segMs(seg) - segMs(prev) < TURN_GAP_MS &&
+      chars < TURN_MAX_CHARS;
+    if (same && last) {
+      last.lines.push({ seg, index });
+      chars += seg.text.length;
+    } else {
+      turns.push({ label, source: seg.source, startMs: segMs(seg), lines: [{ seg, index }] });
+      chars = seg.text.length;
+    }
+  });
+  return turns;
 };
 
 // ---- trim window ---------------------------------------------------------
@@ -313,7 +467,7 @@ export const FLAGS_INTRO =
  * not contain a blank line, because the backend ends it at the first one.
  */
 export const notesInput = (m: Meeting, segs: TranscriptSeg[]): string => {
-  const body = combine(m.you, m.others, m.youLabel, m.othersLabel, segs, m.speakerNames);
+  const body = combine(m.you, m.others, m.youLabel, m.othersLabel, segs, m.speakerNames, m.callerNames);
   const flags = (m.flags ?? []).filter((f) => Number.isFinite(f.atSec));
   if (!body.trim() || flags.length === 0) return body;
   const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();

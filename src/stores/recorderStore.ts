@@ -29,11 +29,17 @@ import {
   type RecorderSnapshot,
 } from "./recorderProtocol";
 import {
+  DEFAULT_PROMPT,
   defaultMeetingTitle,
   newId,
+  notesInput,
+  trimKeyOf,
+  visibleSegs,
   type Meeting,
   type MeetingMode,
 } from "../components/meetings/model";
+import { afterStopPlan, autoNotesChoice, autoNotesOn, notesModelReady } from "../components/meetings/autoNotes";
+import { useSettingsStore } from "./settingsStore";
 
 // 1.45 (B3): the meeting type is chosen before Record and remembered on this computer.
 const MODE_KEY = "korero.meetingMode";
@@ -42,9 +48,137 @@ const MODE_KEY = "korero.meetingMode";
 type RoomSaved = {
   id: string;
   micPath: string | null;
+  systemPath: string | null;
   title: string;
   segments: NonNullable<Meeting["transcript"]>;
+  meeting: Meeting;
 };
+const isWav = (p: string | null | undefined): p is string => !!p && /\.wav$/i.test(p);
+/** Resolves true once no meeting job is running and nothing is being recorded, or
+ *  false after `maxMs`. A call that ends while another job holds the slot (the
+ *  rebuild of the call before it, an import) waits its turn here. */
+const whenIdle = (maxMs: number): Promise<boolean> =>
+  new Promise((resolve) => {
+    const idle = () => {
+      const j = useMeetingJobs.getState();
+      return !j.task && !j.job && !j.stopping && !useRecorder.getState().recording;
+    };
+    if (idle()) return resolve(true);
+    const started = Date.now();
+    const timer = setInterval(() => {
+      if (idle()) {
+        clearInterval(timer);
+        resolve(true);
+      } else if (Date.now() - started > maxMs) {
+        clearInterval(timer);
+        resolve(false);
+      }
+    }, 3_000);
+  });
+
+/** How long a finished call waits for its turn before giving up and saying so. */
+const FINISH_WAIT_MS = 3 * 60 * 60 * 1000;
+
+/** Calls saved by Stop that have not been finished yet (waiting or running). */
+const awaitingFinish = new Set<string>();
+/** Finished calls are dealt with one after another, in the order they stopped. */
+let finishChain: Promise<void> = Promise.resolve();
+
+/** 1.46: true while a call is waiting for, or going through, its automatic rebuild.
+ *  The rebuild replaces the transcript from what Stop saved, so a line edited
+ *  meanwhile would be overwritten: the transcript view refuses the edit and says why. */
+export const isAwaitingFinish = (meetingId: string): boolean => awaitingFinish.has(meetingId);
+
+const queueFinish = (s: RoomSaved): void => {
+  awaitingFinish.add(s.id);
+  finishChain = finishChain
+    .then(() => finishCall(s))
+    .catch(() => {})
+    .finally(() => {
+      awaitingFinish.delete(s.id);
+    });
+};
+
+/**
+ * Kōrero 1.46: what happens to a call after Stop has saved it: the transcript is
+ * rebuilt from the recordings, then the notes are written. The rules are in
+ * `afterStopPlan` (tested); this only wires the jobs, one call at a time. It runs
+ * only while Kōrero stays open: a call still waiting when the app closes is not
+ * picked up again (the live transcript is already saved).
+ */
+const finishCall = async (s: RoomSaved): Promise<void> => {
+  const target = { section: "meetings" as const, meetingId: s.id, tab: "audio" as const };
+  const skipped = (why: string) =>
+    logActivity({
+      status: "attention",
+      title: "A call was not finished automatically",
+      detail: `${why} Open the meeting's Audio tab and choose Rebuild from the recordings.`,
+      target,
+    });
+  if (!(await whenIdle(FINISH_WAIT_MS))) {
+    skipped("Kōrero was busy with other work for too long.");
+    return;
+  }
+  // Decided now, not at Stop: the notes provider may have changed while waiting.
+  const settings = useSettingsStore.getState().settings;
+  let providerLocal = false;
+  try {
+    const r = await commands.meetingProviderIsLocal();
+    providerLocal = r.status === "ok" && r.data;
+  } catch {
+    /* unknown counts as not local: nothing is sent by default */
+  }
+  const plan = afterStopPlan({
+    micWav: isWav(s.micPath),
+    systemWav: isWav(s.systemPath),
+    hasLiveText: !!(s.meeting.you.trim() || s.meeting.others.trim()),
+    autoNotes: autoNotesOn(autoNotesChoice(settings?.post_process_provider_id ?? ""), providerLocal),
+    modelReady: notesModelReady(settings),
+  });
+  if (!plan.rebuild && !plan.notes) return;
+  const jobs = useMeetingJobs.getState();
+  const notesFrom = (m: Meeting) => ({ text: notesInput(m, visibleSegs(m)), trimKey: trimKeyOf(m) });
+  let outcome: "landed" | "busy" | "missing" | "failed" | "none" = "none";
+  if (plan.rebuild) {
+    // Someone may start a job in the moment between "idle" and the claim: wait again.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      outcome = await jobs.callTranscript({
+        meetingId: s.id,
+        title: s.title,
+        micPath: s.micPath,
+        systemPath: s.systemPath,
+        existing: s.segments,
+        quiet: true,
+        keepLive: true,
+        thenNotes: plan.notes
+          ? {
+              buildText: (t) =>
+                notesFrom({ ...s.meeting, you: t.you, others: t.others, transcript: t.transcript as Meeting["transcript"], callerNames: undefined }).text,
+              prompt: DEFAULT_PROMPT,
+              trimKey: trimKeyOf(s.meeting),
+            }
+          : undefined,
+      });
+      if (outcome !== "busy" || !(await whenIdle(FINISH_WAIT_MS))) break;
+    }
+  }
+  if (outcome === "busy") {
+    skipped("Other work kept starting first.");
+    return;
+  }
+  // The rebuild could not run or failed: the notes are still written, from the live
+  // transcript. Not when the meeting was deleted meanwhile.
+  if ((outcome === "failed" || outcome === "none") && plan.notes && plan.notesFromLive) {
+    const n = notesFrom(s.meeting);
+    if (!n.text.trim()) return;
+    if (!(await whenIdle(FINISH_WAIT_MS))) {
+      skipped("The notes were not written: Kōrero was busy with other work for too long.");
+      return;
+    }
+    await jobs.start({ meetingId: s.id, title: s.title, kind: "post", text: n.text, prompt: DEFAULT_PROMPT, trimKey: n.trimKey });
+  }
+};
+
 const savedMode = (): MeetingMode => {
   try {
     return localStorage.getItem(MODE_KEY) === "room" ? "room" : "call";
@@ -302,6 +436,8 @@ export const useRecorder = create<RecorderState>((set, get) => {
       set({ recording: false, paused: false, runStartedAt: null, systemCaptured: null, recordingMode: null });
       const outcome = await useMeetingJobs.getState().stopMeeting({
         room,
+        // 1.46: a call's transcript is rebuilt from its recordings straight after.
+        rebuildFollows: !room,
         makeMeeting: ({ you, others, segments, mic_path, system_path, warnings }) => {
           const m: Meeting = {
             id: newId(),
@@ -329,7 +465,7 @@ export const useRecorder = create<RecorderState>((set, get) => {
               ...liveWarnings.filter((w) => !warnings.includes(w)),
             ],
           };
-          saved = { id: m.id, micPath: mic_path, title, segments: segments ?? [] };
+          saved = { id: m.id, micPath: mic_path, systemPath: system_path, title, segments: segments ?? [], meeting: m };
           return m as unknown as MeetingDoc;
         },
       });
@@ -349,6 +485,12 @@ export const useRecorder = create<RecorderState>((set, get) => {
         void useMeetingJobs
           .getState()
           .roomTranscript({ meetingId: s.id, title: s.title, micPath: s.micPath, existing: s.segments });
+      } else if (!room && outcome === "saved" && s) {
+        // 1.46: a call carries on by itself. The transcript is rebuilt from the two
+        // recordings (the far end by caller), then the notes are written, unless
+        // that is switched off or no AI model is set up. Each step keeps what the
+        // step before it saved, so stopping at any point loses nothing.
+        queueFinish(s);
       }
     },
 
