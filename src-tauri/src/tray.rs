@@ -356,29 +356,70 @@ mod tests {
     }
 }
 
-/// Kōrero (1.45.2): guards the theme → icon mapping by looking at the pixels,
-/// not the file names (the names misled the original mapping).
+/// Kōrero (1.45.2, reworked 1.48): guards the theme → icon mapping by looking
+/// at the pixels, not the file names (the names misled the original mapping).
+///
+/// Since 1.48 the tray icon is a coloured speech bubble holding an ō, so the
+/// check is contrast, not glyph brightness: on its own taskbar every bubble
+/// must reach 3:1, and every ō 3:1 against its bubble (WCAG 1.4.11,
+/// non-text contrast). The reference taskbars are Windows 11's light
+/// (~#F3F3F3) and dark (~#202020). A swapped mapping fails here because the
+/// dark-taskbar idle and transcribing bubbles drop below 3:1 on a light
+/// taskbar.
 #[cfg(test)]
 mod icon_contrast_tests {
     use super::{get_icon_path, AppTheme, TrayIconState};
 
-    /// Mean luma of opaque, grey (glyph) pixels — ignores the coloured
-    /// recording/transcribing dot.
-    fn glyph_luma(rel: &str) -> f64 {
+    const LIGHT_TASKBAR: [f64; 3] = [243.0, 243.0, 243.0];
+    const DARK_TASKBAR: [f64; 3] = [32.0, 32.0, 32.0];
+
+    fn linear(c: f64) -> f64 {
+        let c = c / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn luminance(rgb: [f64; 3]) -> f64 {
+        0.2126 * linear(rgb[0]) + 0.7152 * linear(rgb[1]) + 0.0722 * linear(rgb[2])
+    }
+
+    fn contrast(a: [f64; 3], b: [f64; 3]) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    /// Mean colour of the opaque bubble (saturated) and ō (grey) pixels.
+    fn bubble_and_glyph(rel: &str) -> ([f64; 3], [f64; 3]) {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
         let img = tauri::image::Image::from_path(&path)
             .unwrap_or_else(|e| panic!("load {}: {}", path.display(), e));
-        let (mut sum, mut n) = (0f64, 0f64);
+        let (mut bubble, mut nb) = ([0f64; 3], 0f64);
+        let (mut glyph, mut ng) = ([0f64; 3], 0f64);
         for px in img.rgba().chunks_exact(4) {
-            let (r, g, b, a) = (px[0] as i32, px[1] as i32, px[2] as i32, px[3]);
-            let grey = (r - g).abs() < 24 && (g - b).abs() < 24;
-            if a > 200 && grey {
-                sum += 0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64;
-                n += 1.0;
+            if px[3] < 230 {
+                continue;
+            }
+            let (hi, lo) = (px[0].max(px[1]).max(px[2]), px[0].min(px[1]).min(px[2]));
+            let sat = (hi - lo) as i32;
+            let target = if sat < 30 {
+                ng += 1.0;
+                &mut glyph
+            } else if sat > 80 {
+                nb += 1.0;
+                &mut bubble
+            } else {
+                continue; // anti-aliased edge between bubble and ō
+            };
+            for i in 0..3 {
+                target[i] += px[i] as f64;
             }
         }
-        assert!(n > 20.0, "{} has no glyph pixels", rel);
-        sum / n
+        assert!(nb > 200.0, "{} has no bubble pixels", rel);
+        assert!(ng > 20.0, "{} has no ō pixels", rel);
+        (bubble.map(|v| v / nb), glyph.map(|v| v / ng))
     }
 
     #[test]
@@ -388,10 +429,31 @@ mod icon_contrast_tests {
             TrayIconState::Recording,
             TrayIconState::Transcribing,
         ] {
-            let dark = glyph_luma(get_icon_path(AppTheme::Dark, state.clone()));
-            let light = glyph_luma(get_icon_path(AppTheme::Light, state.clone()));
-            assert!(dark > 170.0, "dark taskbar {:?} glyph too dark: {:.0}", state, dark);
-            assert!(light < 110.0, "light taskbar {:?} glyph too light: {:.0}", state, light);
+            for (theme, taskbar) in [
+                (AppTheme::Light, LIGHT_TASKBAR),
+                (AppTheme::Dark, DARK_TASKBAR),
+            ] {
+                let rel = get_icon_path(theme.clone(), state.clone());
+                let (bubble, glyph) = bubble_and_glyph(rel);
+                let on_bar = contrast(bubble, taskbar);
+                let o_on_bubble = contrast(glyph, bubble);
+                assert!(
+                    on_bar >= 3.0,
+                    "{:?} taskbar {:?}: bubble only {:.2}:1 against the taskbar ({})",
+                    theme,
+                    state,
+                    on_bar,
+                    rel
+                );
+                assert!(
+                    o_on_bubble >= 3.0,
+                    "{:?} taskbar {:?}: ō only {:.2}:1 against its bubble ({})",
+                    theme,
+                    state,
+                    o_on_bubble,
+                    rel
+                );
+            }
         }
     }
 }
