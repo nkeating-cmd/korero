@@ -36,9 +36,12 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
+      # Pinned to match rust-toolchain.toml (see the note there): Rust 1.100's
+      # Cargo build-dir layout breaks ort-sys 2.0.0-rc.12's DLL copy.
+      - name: Install Rust (1.99.1, pinned)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 14 Nov 2026
         with:
+          toolchain: 1.99.1
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
@@ -88,9 +91,11 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
 
-      - name: Install Rust (stable)
+      - name: Install Rust (1.99.1, pinned)
         if: ${{ env.TAURI_SIGNING_PRIVATE_KEY != '' && env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD != '' }}
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 14 Nov 2026
+        with:
+          toolchain: 1.99.1
 
       - uses: Swatinem/rust-cache@v2
         if: ${{ env.TAURI_SIGNING_PRIVATE_KEY != '' && env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD != '' }}
