@@ -1,0 +1,17 @@
+# Kōrero: Rust is pinned to 1.99.1 (14 Nov 2026).
+#
+# Rust 1.100.0 (Cargo 1.100) writes build-script output one directory deeper
+# (target/<profile>/build/<pkg>/<hash>/out). ort-sys 2.0.0-rc.12's
+# `copy_dylibs` (build/dynamic_link.rs) finds the target directory as
+# OUT_DIR.ancestors().nth(3), which under the new layout is target/<profile>/build.
+# It then copies the ONNX Runtime DLLs into a folder that does not exist and
+# panics, so nothing builds on Windows with 1.100. CI on main went red
+# with the 1.99.1 -> 1.100.0 runner update.
+#
+# Remove this file (and the pin in .github/workflows/ci.yml) once `ort` is
+# on a release that handles the new layout. `ort` is pinned to =2.0.0-rc.12
+# in src-tauri/Cargo.toml to match transcribe-rs.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
