@@ -17,7 +17,7 @@ Two things do reach the network, and it is worth naming them rather than roundin
 speech models are downloaded on first use, and the app asks GitHub once at startup whether a newer
 release exists. Neither carries audio, transcripts, or anything about you. No telemetry, ever.
 
-Current version: **v1.47.0** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.47.0)).
+Current version: **v1.48.0** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.48.0)).
 
 ---
 
@@ -92,6 +92,7 @@ Current version: **v1.47.0** ([release notes](https://github.com/nkeating-cmd/ko
 - Sensible defaults: trailing space on insert, 15-minute model unload timeout.
 
 ### Look & feel
+- **A new mark** (v1.48). A speech bubble holding an ō, in the tray and as the app icon. The tray bubble is blue when Kōrero is ready, red while it records and amber while it transcribes, and the ō becomes a progress arc while it transcribes, so the state shows by shape as well as colour. Each bubble keeps at least 3:1 contrast on both light and dark taskbars.
 - **One system across the app** (v1.42). The sidebar is grouped into Capture, Library and Set up, with plain-English names. The dictation pill uses the same palette and shows when New Zealand English is on, a clock and a real Stop when hands-free, and the prompt it is cleaning up with.
 - **Quiet Instrument** (v1.33.0) — a true-neutral dark ladder with **one** accent, replacing the aurora-on-navy theme. The animated cyan/purple/pink background is gone: it was three competing hues, a permanently-promoted full-window compositing layer, and the loudest thing on every screen.
 - **Glass is chrome only.** Sidebar and toolbars keep the material; anything you *read* sits on an opaque surface. Following Apple's own 2025–26 position that the material exists to bring focus to content, not to sit under it.
