@@ -418,7 +418,7 @@ pub(crate) async fn read_bounded(resp: reqwest::Response, cap: usize) -> Result<
 /// The context the model is loaded with right now, if any (`/api/ps`).
 /// Never fails: anything unexpected is `None`.
 pub async fn loaded_context(base: &str, model: &str) -> Option<u32> {
-    let client = reqwest::Client::builder()
+    let client = crate::llm_client::direct_to_loopback(reqwest::Client::builder(), base)
         .connect_timeout(Duration::from_secs(2))
         .timeout(Duration::from_secs(2))
         .build()
@@ -470,9 +470,10 @@ fn client(
     limit: Limit,
 ) -> Result<reqwest::Client, String> {
     let headers = crate::llm_client::build_headers(provider, api_key)?;
-    let mut b = reqwest::Client::builder()
-        .default_headers(headers)
-        .connect_timeout(CONNECT_TIMEOUT);
+    let mut b =
+        crate::llm_client::direct_to_loopback(reqwest::Client::builder(), &provider.base_url)
+            .default_headers(headers)
+            .connect_timeout(CONNECT_TIMEOUT);
     b = match limit {
         Limit::Total(t) => b.timeout(t),
         Limit::Read(t) => b.read_timeout(t),
@@ -743,7 +744,7 @@ pub async fn warm(base_url: &str, model: &str, prompt_tokens: u32, num_predict: 
         "stream": false,
         "options": {"num_ctx": num_ctx}
     });
-    let Ok(client) = reqwest::Client::builder()
+    let Ok(client) = crate::llm_client::direct_to_loopback(reqwest::Client::builder(), &base)
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(WARM_LIMIT)
         .build()

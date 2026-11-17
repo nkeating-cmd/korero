@@ -38,6 +38,7 @@ import {
   type Meeting,
 } from "../meetings/model";
 import { HealthPanel } from "./HealthPanel";
+import { cleanupOutcome } from "../../lib/cleanupOutcome";
 import { formatBinding } from "./formatBinding";
 
 /**
@@ -352,10 +353,17 @@ export const TodayPage: React.FC = () => {
                       </span>
                       <span className="kx-meta">
                         Dictation · {relative(r.at)}
-                        {r.entry.post_processed_text ? " · cleaned up" : ""}
-                        {r.entry.post_process_requested && !r.entry.post_processed_text && (
-                          <span className="text-[var(--kx-warn)]"> · clean-up failed, pasted as spoken</span>
-                        )}
+                        {(() => {
+                          // Kōrero 1.49: say why, from the stored reason.
+                          const o = cleanupOutcome(r.entry);
+                          if (o.state === "none") return null;
+                          const sep = " · ";
+                          return o.state === "failed" ? (
+                            <span className="text-[var(--kx-warn)]">{sep + o.short}</span>
+                          ) : (
+                            sep + o.short
+                          );
+                        })()}
                       </span>
                     </span>
                     <button

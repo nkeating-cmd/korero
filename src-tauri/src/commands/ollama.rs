@@ -160,7 +160,7 @@ pub async fn pull_ollama_model(
     let is_cancelled = move || CANCELLED_SEQ.load(Ordering::SeqCst) >= id;
 
     let pull_url = format!("{}/api/pull", native_base);
-    let client = reqwest::Client::builder()
+    let client = crate::llm_client::direct_to_loopback(reqwest::Client::builder(), &native_base)
         .connect_timeout(PULL_CONNECT_TIMEOUT)
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
@@ -262,7 +262,7 @@ pub async fn ollama_test_model(
         return Err("That isn't a model name.".to_string());
     }
     let base = ollama_native_base(&app)?;
-    let client = reqwest::Client::builder()
+    let client = crate::llm_client::direct_to_loopback(reqwest::Client::builder(), &base)
         .connect_timeout(PULL_CONNECT_TIMEOUT)
         .timeout(Duration::from_secs(20))
         .build()
@@ -387,13 +387,14 @@ pub async fn check_ollama_connection(base_url: String) -> bool {
 
     let tags_url = format!("{}/api/tags", native_base);
 
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(4))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
+    let client =
+        match crate::llm_client::direct_to_loopback(reqwest::Client::builder(), &native_base)
+            .timeout(std::time::Duration::from_secs(4))
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
 
     client
         .get(&tags_url)
@@ -447,16 +448,17 @@ pub async fn warm_model(base_url: &str, model: &str, keep_alive_secs: u64) {
         "keep_alive": format!("{keep_alive_secs}s"),
         "stream": false
     });
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            log::warn!("warm_model: client build failed: {e}");
-            return;
-        }
-    };
+    let client =
+        match crate::llm_client::direct_to_loopback(reqwest::Client::builder(), &native_base)
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("warm_model: client build failed: {e}");
+                return;
+            }
+        };
     match client.post(&url).json(&body).send().await {
         Ok(r) if r.status().is_success() => {
             log::info!(

@@ -2,6 +2,7 @@
 use crate::apple_intelligence;
 use crate::audio_feedback::{play_feedback_sound, play_feedback_sound_blocking, SoundType};
 use crate::audio_toolkit::{is_microphone_access_denied, is_no_input_device_error};
+use crate::cleanup_failure::CleanupFailReason;
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::history::HistoryManager;
 use crate::managers::transcription::TranscriptionManager;
@@ -105,12 +106,17 @@ fn resolve_prompt_name(settings: &AppSettings) -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 
-async fn post_process_transcription(settings: &AppSettings, transcription: &str) -> Option<String> {
+/// Kōrero 1.49: ends in the cleaned text, or in the reason it did not land
+/// (`CleanupFailReason`), which History keeps and the doctor reads.
+async fn post_process_transcription(
+    settings: &AppSettings,
+    transcription: &str,
+) -> Result<String, CleanupFailReason> {
     let provider = match settings.active_post_process_provider().cloned() {
         Some(provider) => provider,
         None => {
             debug!("Post-processing enabled but no provider is selected");
-            return None;
+            return Err(CleanupFailReason::NotSetUp);
         }
     };
 
@@ -125,20 +131,20 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
             "Post-processing skipped because provider '{}' has no model configured",
             provider.id
         );
-        return None;
+        return Err(CleanupFailReason::NotSetUp);
     }
 
     // Korero (v1.25.0, upstream cherry-pick, Handy #1537): a blank
     // transcription has nothing to clean up -- skip the LLM round-trip.
     if transcription.trim().is_empty() {
         debug!("Post-processing skipped: transcription is empty");
-        return None;
+        return Err(CleanupFailReason::NotSetUp);
     }
     let selected_prompt_id = match resolve_prompt_id(settings) {
         Some(id) => id,
         None => {
             debug!("Post-processing skipped because no prompt is selected");
-            return None;
+            return Err(CleanupFailReason::NotSetUp);
         }
     };
 
@@ -153,13 +159,13 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
                 "Post-processing skipped because prompt '{}' was not found",
                 selected_prompt_id
             );
-            return None;
+            return Err(CleanupFailReason::NotSetUp);
         }
     };
 
     if prompt.trim().is_empty() {
         debug!("Post-processing skipped because the selected prompt is empty");
-        return None;
+        return Err(CleanupFailReason::NotSetUp);
     }
 
     debug!(
@@ -205,7 +211,7 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
                     debug!(
                         "Apple Intelligence selected but not currently available on this device"
                     );
-                    return None;
+                    return Err(CleanupFailReason::NotSetUp);
                 }
 
                 let token_limit = model.trim().parse::<i32>().unwrap_or(0);
@@ -217,19 +223,19 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
                     Ok(result) => {
                         if result.trim().is_empty() {
                             debug!("Apple Intelligence returned an empty response");
-                            None
+                            Err(CleanupFailReason::Empty)
                         } else {
                             let result = strip_invisible_chars(&result);
                             debug!(
                                 "Apple Intelligence post-processing succeeded. Output length: {} chars",
                                 result.len()
                             );
-                            Some(result)
+                            Ok(result)
                         }
                     }
                     Err(err) => {
                         error!("Apple Intelligence post-processing failed: {}", err);
-                        None
+                        Err(CleanupFailReason::Other)
                     }
                 };
             }
@@ -237,7 +243,7 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
             #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
             {
                 debug!("Apple Intelligence provider selected on unsupported platform");
-                return None;
+                return Err(CleanupFailReason::NotSetUp);
             }
         }
 
@@ -280,10 +286,10 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
                                 provider.id,
                                 result.len()
                             );
-                            return Some(result);
+                            return Ok(result);
                         } else {
                             error!("Structured output response missing 'transcription' field");
-                            return Some(strip_invisible_chars(&content));
+                            return Ok(strip_invisible_chars(&content));
                         }
                     }
                     Err(e) => {
@@ -291,13 +297,13 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
                             "Failed to parse structured output JSON: {}. Returning raw content.",
                             e
                         );
-                        return Some(strip_invisible_chars(&content));
+                        return Ok(strip_invisible_chars(&content));
                     }
                 }
             }
             Ok(None) => {
                 error!("LLM API response has no content");
-                return None;
+                return Err(CleanupFailReason::Empty);
             }
             Err(e) => {
                 warn!(
@@ -331,11 +337,11 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
                 provider.id,
                 content.len()
             );
-            Some(content)
+            Ok(content)
         }
         Ok(None) => {
             error!("LLM API response has no content");
-            None
+            Err(CleanupFailReason::Empty)
         }
         Err(e) => {
             error!(
@@ -343,7 +349,7 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
                 provider.id,
                 e
             );
-            None
+            Err(CleanupFailReason::classify(&e))
         }
     }
 }
@@ -410,26 +416,34 @@ pub(crate) enum CleanupWait {
     UntilDone,
 }
 
-/// Wait for a clean-up task as `wait` allows. `Some(result)` when it finished
-/// (`result` is `None` if it failed), `None` when the cursor wait ran out first.
-/// Giving up here leaves the task running: the handle is only borrowed.
+/// The outcome of one clean-up: the text, or why there is none (1.49).
+pub(crate) type Cleanup = Result<String, CleanupFailReason>;
+
+/// A task that panicked or was dropped counts as `Other`.
+fn joined(r: Result<Cleanup, tauri::Error>) -> Cleanup {
+    r.unwrap_or(Err(CleanupFailReason::Other))
+}
+
+/// Wait for a clean-up task as `wait` allows. `Some(outcome)` when it
+/// finished, `None` when the cursor wait ran out first. Giving up here leaves
+/// the task running: the handle is only borrowed.
 async fn await_cleanup(
-    handle: &mut tauri::async_runtime::JoinHandle<Option<String>>,
+    handle: &mut tauri::async_runtime::JoinHandle<Cleanup>,
     wait: CleanupWait,
     cursor_wait: Duration,
-) -> Option<Option<String>> {
+) -> Option<Cleanup> {
     match wait {
-        CleanupWait::UntilDone => Some(handle.await.ok().flatten()),
+        CleanupWait::UntilDone => Some(joined(handle.await)),
         CleanupWait::AtCursor => tokio::time::timeout(cursor_wait, handle)
             .await
             .ok()
-            .map(|joined| joined.ok().flatten()),
+            .map(joined),
     }
 }
 
 /// A clean-up still running when the cursor wait ran out (D-010).
 pub(crate) struct LateCleanup {
-    handle: tauri::async_runtime::JoinHandle<Option<String>>,
+    handle: tauri::async_runtime::JoinHandle<Cleanup>,
     prompt: Option<String>,
 }
 
@@ -451,6 +465,9 @@ pub(crate) struct ProcessedTranscription {
     /// Set when `final_text` is the words as spoken because the clean-up had
     /// not finished within `CURSOR_WAIT`. Hand it to `finish_late_cleanup`.
     pub late_cleanup: Option<LateCleanup>,
+    /// 1.49: why there is no cleaned text, when clean-up was asked for.
+    /// `StillRunning` while a late clean-up is on its way.
+    pub post_process_failure: Option<CleanupFailReason>,
 }
 
 /// D-010: let a clean-up that outlasted the cursor wait finish, and file the
@@ -467,9 +484,9 @@ pub(crate) fn finish_late_cleanup(
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let started = Instant::now();
-        let result = late.handle.await.ok().flatten();
+        let result = joined(late.handle.await);
         match (result, entry_id) {
-            (Some(text), Some(id)) => {
+            (Ok(text), Some(id)) => {
                 let hm = app.state::<Arc<HistoryManager>>();
                 match hm.set_late_post_process(id, text, late.prompt, &spoken) {
                     Ok(Some(_)) => log::info!(
@@ -485,11 +502,20 @@ pub(crate) fn finish_late_cleanup(
                     Err(e) => error!("Late clean-up finished but could not be saved: {}", e),
                 }
             }
-            (Some(_), None) => {
+            (Ok(_), None) => {
                 log::info!("Late clean-up finished; this dictation has no History entry to hold it")
             }
-            (None, _) => {
-                warn!("Late clean-up did not finish either; History keeps the words as spoken")
+            (Err(reason), id) => {
+                warn!(
+                    "Late clean-up did not finish either ({}); History keeps the words as spoken",
+                    reason.as_db()
+                );
+                if let Some(id) = id {
+                    let hm = app.state::<Arc<HistoryManager>>();
+                    if let Err(e) = hm.set_post_process_failure(id, reason) {
+                        error!("Could not record why the late clean-up failed: {}", e);
+                    }
+                }
             }
         }
     });
@@ -574,6 +600,7 @@ pub(crate) async fn process_transcription_output(
     let mut post_processed_text: Option<String> = None;
     let mut post_process_prompt: Option<String> = None;
     let mut late_cleanup: Option<LateCleanup> = None;
+    let mut post_process_failure: Option<CleanupFailReason> = None;
 
     if let Some(converted_text) = maybe_convert_chinese_variant(&settings, transcription).await {
         final_text = converted_text;
@@ -595,13 +622,14 @@ pub(crate) async fn process_transcription_output(
             post_process_transcription(&task_settings, &task_text).await
         });
         match await_cleanup(&mut handle, wait, CURSOR_WAIT).await {
-            Some(Some(processed_text)) => {
+            Some(Ok(processed_text)) => {
                 post_processed_text = Some(processed_text.clone());
                 final_text = processed_text;
                 post_process_prompt = prompt_text;
             }
-            Some(None) => {}
+            Some(Err(reason)) => post_process_failure = Some(reason),
             None => {
+                post_process_failure = Some(CleanupFailReason::StillRunning);
                 warn!(
                     "Clean-up not finished after {} s: pasting the words as spoken; \
                      the clean-up carries on and goes to History",
@@ -622,6 +650,7 @@ pub(crate) async fn process_transcription_output(
         post_processed_text,
         post_process_prompt,
         late_cleanup,
+        post_process_failure,
     }
 }
 
@@ -863,6 +892,7 @@ impl ShortcutAction for TranscribeAction {
                                     post_process,
                                     processed.post_processed_text.clone(),
                                     processed.post_process_prompt.clone(),
+                                    processed.post_process_failure,
                                 ) {
                                     Ok(entry) => entry_id = Some(entry.id),
                                     Err(err) => error!("Failed to save history entry: {}", err),
@@ -946,6 +976,7 @@ impl ShortcutAction for TranscribeAction {
                                     file_name,
                                     String::new(),
                                     post_process,
+                                    None,
                                     None,
                                     None,
                                 ) {
@@ -1043,10 +1074,10 @@ pub static ACTION_MAP: Lazy<HashMap<String, Arc<dyn ShortcutAction>>> = Lazy::ne
 mod cleanup_wait_tests {
     use super::*;
 
-    fn slow_cleanup(after_ms: u64) -> tauri::async_runtime::JoinHandle<Option<String>> {
+    fn slow_cleanup(after_ms: u64) -> tauri::async_runtime::JoinHandle<Cleanup> {
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(Duration::from_millis(after_ms)).await;
-            Some("Cleaned.".to_string())
+            Ok("Cleaned.".to_string())
         })
     }
 
@@ -1056,7 +1087,7 @@ mod cleanup_wait_tests {
         tauri::async_runtime::block_on(async {
             let mut h = slow_cleanup(10);
             let got = await_cleanup(&mut h, CleanupWait::AtCursor, Duration::from_secs(5)).await;
-            assert_eq!(got, Some(Some("Cleaned.".to_string())));
+            assert_eq!(got, Some(Ok("Cleaned.".to_string())));
         });
     }
 
@@ -1072,7 +1103,7 @@ mod cleanup_wait_tests {
             let got = await_cleanup(&mut h, CleanupWait::AtCursor, Duration::from_millis(50)).await;
             assert_eq!(got, None, "the cursor wait must run out first");
             assert!(started.elapsed() < Duration::from_millis(250));
-            assert_eq!(h.await.ok().flatten(), Some("Cleaned.".to_string()));
+            assert_eq!(joined(h.await), Ok("Cleaned.".to_string()));
         });
     }
 
@@ -1083,17 +1114,44 @@ mod cleanup_wait_tests {
             let mut h = slow_cleanup(120);
             let got =
                 await_cleanup(&mut h, CleanupWait::UntilDone, Duration::from_millis(10)).await;
-            assert_eq!(got, Some(Some("Cleaned.".to_string())));
+            assert_eq!(got, Some(Ok("Cleaned.".to_string())));
         });
     }
 
-    /// A failed clean-up is reported as finished-without-text, not as late.
+    /// A failed clean-up is reported as finished with its reason, not as late.
     #[test]
     fn a_failed_clean_up_is_not_late() {
         tauri::async_runtime::block_on(async {
-            let mut h = tauri::async_runtime::spawn(async { None::<String> });
+            let mut h: tauri::async_runtime::JoinHandle<Cleanup> =
+                tauri::async_runtime::spawn(async { Err(CleanupFailReason::ModelMissing) });
             let got = await_cleanup(&mut h, CleanupWait::AtCursor, Duration::from_secs(5)).await;
-            assert_eq!(got, Some(None));
+            assert_eq!(got, Some(Err(CleanupFailReason::ModelMissing)));
+        });
+    }
+
+    /// 1.49: a clean-up task that panics is `Other`, never a silent `None`.
+    #[test]
+    fn a_panicked_clean_up_is_other() {
+        tauri::async_runtime::block_on(async {
+            let mut h: tauri::async_runtime::JoinHandle<Cleanup> =
+                tauri::async_runtime::spawn(async { panic!("boom") });
+            let got = await_cleanup(&mut h, CleanupWait::UntilDone, Duration::from_secs(5)).await;
+            assert_eq!(got, Some(Err(CleanupFailReason::Other)));
+        });
+    }
+
+    /// 1.49: clean-up that is on but not set up says so, and never calls out.
+    #[test]
+    fn clean_up_with_no_model_is_not_set_up() {
+        tauri::async_runtime::block_on(async {
+            let mut s = crate::settings::get_default_settings();
+            s.post_process_provider_id = "ollama".to_string();
+            s.post_process_models
+                .insert("ollama".to_string(), String::new());
+            assert_eq!(
+                post_process_transcription(&s, "kia ora").await,
+                Err(CleanupFailReason::NotSetUp)
+            );
         });
     }
 

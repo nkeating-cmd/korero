@@ -5,6 +5,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use rusqlite_migration::{Migrations, M};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+
+use crate::cleanup_failure::CleanupFailReason;
 use std::fs;
 use std::path::PathBuf;
 use tauri::AppHandle;
@@ -31,6 +33,9 @@ static MIGRATIONS: &[M] = &[
     M::up("ALTER TABLE transcription_history ADD COLUMN post_processed_text TEXT;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN post_process_prompt TEXT;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN post_process_requested BOOLEAN NOT NULL DEFAULT 0;"),
+    // Kōrero 1.49: why a requested clean-up did not land (a fixed word from
+    // `CleanupFailReason::as_db`, never text). NULL = cleaned, or not asked for.
+    M::up("ALTER TABLE transcription_history ADD COLUMN post_process_failure TEXT;"),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -63,6 +68,8 @@ pub struct HistoryEntry {
     pub post_processed_text: Option<String>,
     pub post_process_prompt: Option<String>,
     pub post_process_requested: bool,
+    /// Kōrero 1.49: why there is no clean-up, when one was asked for.
+    pub post_process_failure: Option<CleanupFailReason>,
 }
 
 pub struct HistoryManager {
@@ -275,6 +282,9 @@ impl HistoryManager {
             post_processed_text: row.get("post_processed_text")?,
             post_process_prompt: row.get("post_process_prompt")?,
             post_process_requested: row.get("post_process_requested")?,
+            post_process_failure: row
+                .get::<_, Option<String>>("post_process_failure")?
+                .map(|s| CleanupFailReason::from_db(&s)),
         })
     }
 
@@ -291,6 +301,7 @@ impl HistoryManager {
         post_process_requested: bool,
         post_processed_text: Option<String>,
         post_process_prompt: Option<String>,
+        post_process_failure: Option<CleanupFailReason>,
     ) -> Result<HistoryEntry> {
         let timestamp = Utc::now().timestamp();
         let title = self.format_timestamp_title(timestamp);
@@ -305,8 +316,9 @@ impl HistoryManager {
                 transcription_text,
                 post_processed_text,
                 post_process_prompt,
-                post_process_requested
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                post_process_requested,
+                post_process_failure
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 &file_name,
                 timestamp,
@@ -316,6 +328,7 @@ impl HistoryManager {
                 &post_processed_text,
                 &post_process_prompt,
                 post_process_requested,
+                post_process_failure.map(CleanupFailReason::as_db),
             ],
         )?;
 
@@ -329,6 +342,7 @@ impl HistoryManager {
             post_processed_text,
             post_process_prompt,
             post_process_requested,
+            post_process_failure,
         };
 
         debug!("Saved history entry with id {}", entry.id);
@@ -354,19 +368,22 @@ impl HistoryManager {
         transcription_text: String,
         post_processed_text: Option<String>,
         post_process_prompt: Option<String>,
+        post_process_failure: Option<CleanupFailReason>,
     ) -> Result<HistoryEntry> {
         let conn = self.get_connection()?;
         let updated = conn.execute(
             "UPDATE transcription_history
              SET transcription_text = ?1,
                  post_processed_text = ?2,
-                 post_process_prompt = ?3
+                 post_process_prompt = ?3,
+                 post_process_failure = ?5
              WHERE id = ?4",
             params![
                 transcription_text,
                 post_processed_text,
                 post_process_prompt,
-                id
+                id,
+                post_process_failure.map(CleanupFailReason::as_db)
             ],
         )?;
 
@@ -376,7 +393,7 @@ impl HistoryManager {
 
         let entry = conn
             .query_row(
-                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, post_process_failure
                  FROM transcription_history WHERE id = ?1",
                 params![id],
                 Self::map_history_entry,
@@ -527,7 +544,7 @@ impl HistoryManager {
             (Some(cursor_id), Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, post_process_failure
                      FROM transcription_history
                      WHERE id < ?1
                      ORDER BY id DESC
@@ -541,7 +558,7 @@ impl HistoryManager {
             (None, Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, post_process_failure
                      FROM transcription_history
                      ORDER BY id DESC
                      LIMIT ?1",
@@ -553,7 +570,7 @@ impl HistoryManager {
             }
             (_, None) => {
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, post_process_failure
                      FROM transcription_history
                      ORDER BY id DESC",
                 )?;
@@ -584,7 +601,8 @@ impl HistoryManager {
                 transcription_text,
                 post_processed_text,
                 post_process_prompt,
-                post_process_requested
+                post_process_requested,
+                post_process_failure
              FROM transcription_history
              ORDER BY timestamp DESC
              LIMIT 1",
@@ -611,7 +629,8 @@ impl HistoryManager {
                 transcription_text,
                 post_processed_text,
                 post_process_prompt,
-                post_process_requested
+                post_process_requested,
+                post_process_failure
              FROM transcription_history
              WHERE transcription_text != ''
              ORDER BY timestamp DESC
@@ -693,7 +712,8 @@ impl HistoryManager {
         // also drops tabs and line breaks (review, Minor 6).
         let updated = conn.execute(
             "UPDATE transcription_history
-                SET post_processed_text = ?1, post_process_prompt = ?2
+                SET post_processed_text = ?1, post_process_prompt = ?2,
+                    post_process_failure = 'came_late'
               WHERE id = ?3
                 AND transcription_text = ?4
                 AND (post_processed_text IS NULL
@@ -704,12 +724,43 @@ impl HistoryManager {
             return Ok(None);
         }
         let entry = conn.query_row(
-            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, post_process_failure
              FROM transcription_history WHERE id = ?1",
             params![id],
             Self::map_history_entry,
         )?;
         Ok(Some(entry))
+    }
+
+    /// Kōrero 1.49: record why a late clean-up failed after all, replacing
+    /// `still_running`. Leaves an entry that has since been cleaned or
+    /// corrected alone.
+    pub fn set_post_process_failure(&self, id: i64, reason: CleanupFailReason) -> Result<()> {
+        let conn = self.get_connection()?;
+        Self::set_post_process_failure_with_conn(&conn, id, reason)?;
+        if let Ok(entry) = conn.query_row(
+            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, post_process_failure
+             FROM transcription_history WHERE id = ?1",
+            params![id],
+            Self::map_history_entry,
+        ) {
+            let _ = (HistoryUpdatePayload::Updated { entry }).emit(&self.app_handle);
+        }
+        Ok(())
+    }
+
+    fn set_post_process_failure_with_conn(
+        conn: &Connection,
+        id: i64,
+        reason: CleanupFailReason,
+    ) -> Result<usize> {
+        Ok(conn.execute(
+            "UPDATE transcription_history SET post_process_failure = ?1
+              WHERE id = ?2
+                AND (post_processed_text IS NULL
+                     OR trim(post_processed_text, ' ' || char(9) || char(10) || char(13)) = '')",
+            params![reason.as_db(), id],
+        )?)
     }
 
     /// Update only the post-processed text for a history entry.
@@ -733,7 +784,7 @@ impl HistoryManager {
         }
 
         let entry = conn.query_row(
-            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, post_process_failure
              FROM transcription_history WHERE id = ?1",
             params![id],
             Self::map_history_entry,
@@ -768,7 +819,8 @@ impl HistoryManager {
                 transcription_text,
                 post_processed_text,
                 post_process_prompt,
-                post_process_requested
+                post_process_requested,
+                post_process_failure
              FROM transcription_history
              WHERE id = ?1",
         )?;
@@ -837,7 +889,8 @@ mod tests {
                 transcription_text TEXT NOT NULL,
                 post_processed_text TEXT,
                 post_process_prompt TEXT,
-                post_process_requested BOOLEAN NOT NULL DEFAULT 0
+                post_process_requested BOOLEAN NOT NULL DEFAULT 0,
+                post_process_failure TEXT
             );",
         )
         .expect("create transcription_history table");
@@ -935,6 +988,83 @@ mod tests {
             .is_none(),
             "a clean-up of other words must not be filed"
         );
+    }
+
+    /// Kōrero 1.49: a late clean-up that lands says it came late; a late one
+    /// that fails records its reason, but never over a clean-up or a
+    /// correction that is already there.
+    #[test]
+    fn the_failure_word_follows_the_late_clean_up() {
+        let conn = setup_conn();
+        insert_entry(&conn, 100, "as spoken", None);
+        insert_entry(&conn, 200, "corrected", Some("my correction"));
+        insert_entry(&conn, 300, "stuck", None);
+        let failure = |id: i64| -> Option<String> {
+            conn.query_row(
+                "SELECT post_process_failure FROM transcription_history WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        let filled = HistoryManager::set_late_post_process_with_conn(
+            &conn,
+            1,
+            "Cleaned.",
+            None,
+            "as spoken",
+        )
+        .unwrap()
+        .expect("filled");
+        assert_eq!(
+            filled.post_process_failure,
+            Some(CleanupFailReason::CameLate)
+        );
+        assert_eq!(failure(1).as_deref(), Some("came_late"));
+
+        assert_eq!(
+            HistoryManager::set_post_process_failure_with_conn(
+                &conn,
+                2,
+                CleanupFailReason::TimedOut
+            )
+            .unwrap(),
+            0,
+            "a correction made in the meantime keeps no failure"
+        );
+        assert_eq!(failure(2), None);
+
+        assert_eq!(
+            HistoryManager::set_post_process_failure_with_conn(
+                &conn,
+                3,
+                CleanupFailReason::OutOfMemory
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(failure(3).as_deref(), Some("out_of_memory"));
+    }
+
+    /// An unknown word written by a later version still loads, as `Other`.
+    #[test]
+    fn an_unknown_failure_word_loads_as_other() {
+        let conn = setup_conn();
+        insert_entry(&conn, 100, "x", None);
+        conn.execute(
+            "UPDATE transcription_history SET post_process_failure = 'gremlins' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        let e = conn
+            .query_row(
+                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, post_process_failure FROM transcription_history WHERE id = 1",
+                [],
+                HistoryManager::map_history_entry,
+            )
+            .unwrap();
+        assert_eq!(e.post_process_failure, Some(CleanupFailReason::Other));
     }
 
     #[test]

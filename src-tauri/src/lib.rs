@@ -4,6 +4,7 @@ mod apple_intelligence;
 mod audio_feedback;
 pub mod audio_toolkit;
 pub mod cli;
+mod cleanup_failure; // Kōrero 1.49: why a clean-up did not land
 mod clipboard;
 mod commands;
 mod crash; // Kōrero (v1.12.0): global panic hook + crash report files
