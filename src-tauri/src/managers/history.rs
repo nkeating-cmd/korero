@@ -763,6 +763,39 @@ impl HistoryManager {
         )?)
     }
 
+    /// Kōrero 1.49: the last `limit` dictations that asked for a clean-up,
+    /// newest first: whether each was cleaned, and the stored reason. Reads
+    /// no text: only lengths and the reason word.
+    pub fn recent_cleanup_outcomes(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(bool, Option<CleanupFailReason>)>> {
+        let conn = self.get_connection()?;
+        Self::recent_cleanup_outcomes_with_conn(&conn, limit)
+    }
+
+    fn recent_cleanup_outcomes_with_conn(
+        conn: &Connection,
+        limit: usize,
+    ) -> Result<Vec<(bool, Option<CleanupFailReason>)>> {
+        let mut stmt = conn.prepare(
+            "SELECT length(trim(coalesce(post_processed_text, ''), ' ' || char(9) || char(10) || char(13))) > 0,
+                    post_process_failure
+               FROM transcription_history
+              WHERE post_process_requested = 1
+              ORDER BY timestamp DESC, id DESC
+              LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok((
+                r.get::<_, bool>(0)?,
+                r.get::<_, Option<String>>(1)?
+                    .map(|s| CleanupFailReason::from_db(&s)),
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Update only the post-processed text for a history entry.
     ///
     /// Korero (v1.4.0): used by the inline correction UI in the History panel.
@@ -1045,6 +1078,39 @@ mod tests {
             1
         );
         assert_eq!(failure(3).as_deref(), Some("out_of_memory"));
+    }
+
+    #[test]
+    fn recent_outcomes_read_only_requested_clean_ups_newest_first() {
+        let conn = setup_conn();
+        let add = |ts: i64, cleaned: Option<&str>, requested: bool, why: Option<&str>| {
+            conn.execute(
+                "INSERT INTO transcription_history (file_name, timestamp, saved, title, transcription_text,
+                 post_processed_text, post_process_prompt, post_process_requested, post_process_failure)
+                 VALUES ('f.wav', ?1, 0, 't', 'spoken', ?2, NULL, ?3, ?4)",
+                params![ts, cleaned, requested, why],
+            )
+            .unwrap();
+        };
+        add(100, Some("Tidy."), true, None);
+        add(200, None, true, Some("timed_out"));
+        add(300, Some("x"), false, None);
+        add(400, Some("  "), true, Some("model_missing"));
+        let got = HistoryManager::recent_cleanup_outcomes_with_conn(&conn, 10).unwrap();
+        assert_eq!(
+            got,
+            vec![
+                (false, Some(CleanupFailReason::ModelMissing)),
+                (false, Some(CleanupFailReason::TimedOut)),
+                (true, None),
+            ]
+        );
+        assert_eq!(
+            HistoryManager::recent_cleanup_outcomes_with_conn(&conn, 1)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     /// An unknown word written by a later version still loads, as `Other`.

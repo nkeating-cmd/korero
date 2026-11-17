@@ -16,6 +16,7 @@ mod meeting; // Kōrero (v1.13.0): meeting recorder (mic + system loopback)
 mod meeting_capture; // Kōrero (v1.13.2, Phase A): streaming-to-disk meeting capture
 #[cfg(windows)]
 mod meeting_capture_wasapi; // Kōrero (v1.13.6): native WASAPI loopback for "Others"
+mod doctor; // Kōrero 1.49 (B10): "Check local AI"
 mod denoise; // Kōrero (v1.11.0): optional RNNoise mic denoiser (nnnoiseless)
 mod eval; // Kōrero (v1.40.0): --eval-transcribe entry point (accuracy harness)
 mod helpers;
@@ -677,6 +678,7 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
             local_runtime::local_ai_runtime_cancel,
             local_runtime::local_ai_runtime_use,
             local_runtime::local_ai_runtime_stop_using,
+            doctor::local_ai_check, // Kōrero 1.49 (B10)
             commands::history_extra::update_post_processed_text,
             helpers::clamshell::is_laptop,
         ])

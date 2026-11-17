@@ -800,6 +800,47 @@ fn point_cleanup_at(port: u16) -> Result<(), String> {
     Ok(())
 }
 
+// ------------------------------------------------------------ doctor facts
+
+/// What the doctor needs to know about Kōrero's own runtime (Kōrero 1.49).
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeFacts {
+    pub supported: bool,
+    pub managed: bool,
+    pub core_installed: bool,
+    /// Still to download for this computer's plan, in MB.
+    pub missing_mb: u32,
+}
+
+pub async fn facts() -> RuntimeFacts {
+    let Some(root) = root() else {
+        return RuntimeFacts {
+            supported: cfg!(windows),
+            ..Default::default()
+        };
+    };
+    let state = read_state(&root);
+    let installed = installed_groups(&root);
+    let plan = tauri::async_runtime::spawn_blocking(plan_now)
+        .await
+        .ok()
+        .map(|(p, _)| p);
+    let missing: Vec<RuntimeGroup> = plan
+        .map(|p| {
+            p.groups
+                .into_iter()
+                .filter(|g| !installed.contains(g))
+                .collect()
+        })
+        .unwrap_or_default();
+    RuntimeFacts {
+        supported: cfg!(windows),
+        managed: state.managed,
+        core_installed: installed.contains(&RuntimeGroup::Core),
+        missing_mb: mb(manifest().sizes(&missing).0),
+    }
+}
+
 // ----------------------------------------------------------------- commands
 
 #[derive(Debug, Clone, Serialize, Type)]

@@ -258,10 +258,17 @@ pub async fn ollama_test_model(
     model: String,
 ) -> Result<OllamaTestRun, String> {
     super::require_main_window(&window)?;
+    test_run(&app, &model).await
+}
+
+/// The test run behind `ollama_test_model`; also the doctor's full check
+/// (Kōrero 1.49).
+pub(crate) async fn test_run(app: &AppHandle, model: &str) -> Result<OllamaTestRun, String> {
+    let model = model.to_string();
     if model.trim().is_empty() || model.len() > 200 || model.chars().any(char::is_whitespace) {
         return Err("That isn't a model name.".to_string());
     }
-    let base = ollama_native_base(&app)?;
+    let base = ollama_native_base(app)?;
     let client = crate::llm_client::direct_to_loopback(reqwest::Client::builder(), &base)
         .connect_timeout(PULL_CONNECT_TIMEOUT)
         .timeout(Duration::from_secs(20))
@@ -284,7 +291,7 @@ pub async fn ollama_test_model(
             .unwrap_or(text);
         return Err(format!("Ollama can't use {model} (HTTP {status}): {msg}"));
     }
-    let settings = crate::settings::get_settings(&app);
+    let settings = crate::settings::get_settings(app);
     let provider = settings
         .post_process_providers
         .iter()
@@ -473,7 +480,7 @@ pub async fn warm_model(base_url: &str, model: &str, keep_alive_secs: u64) {
 /// Locate the Ollama executable. Prefers the GUI app ("ollama app.exe" —
 /// starting it brings up the tray AND the server), falls back to the CLI,
 /// then to a PATH probe (catches custom installs; cross-platform).
-fn find_ollama_exe() -> Option<std::path::PathBuf> {
+pub(crate) fn find_ollama_exe() -> Option<std::path::PathBuf> {
     #[cfg(windows)]
     {
         if let Ok(local) = std::env::var("LOCALAPPDATA") {

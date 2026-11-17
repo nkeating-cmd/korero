@@ -1250,6 +1250,17 @@ async localAiRuntimeStopUsing() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Kōrero 1.49: run "Check local AI". `full` adds a test clean-up of a fixed, invented sentence.
+ */
+async localAiCheck(full: boolean) : Promise<Result<DoctorReport, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("local_ai_check", { full }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async meetingGenerateAudioBrief(text: string, speaker: string | null, style: string | null, tempo: number | null) : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("meeting_generate_audio_brief", { text, speaker, style, tempo }) };
@@ -1403,10 +1414,16 @@ export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { whisper: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
 export type BindingResponse = { success: boolean; binding: ShortcutBinding | null; error: string | null }
+export type CheckId = "cleanup_on" | "address_local" | "runtime" | "answers_as_ollama" | "ollama_version" | "model_chosen" | "model_present" | "model_runs" | "model_fits" | "memory_now" | "gpu_shared" | "test_answer" | "recent"
+export type CheckMode = "quick" | "full"
+export type CheckResult = { id: CheckId; status: CheckStatus; title: string; detail: string; fix: Fix | null }
+export type CheckStatus = "pass" | "warn" | "fail" | "not_checked" | "skipped"
 export type CleanupFailReason = "not_set_up" | "unreachable" | "proxy_blocked" | "model_missing" | "out_of_memory" | "too_long" | "timed_out" | "key_rejected" | "http_error" | "empty" | "still_running" | "came_late" | "other"
 export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
 export type CustomSounds = { start: boolean; stop: boolean }
+export type DoctorReport = { mode: CheckMode; verdict: Verdict; checks: CheckResult[]; report_text: string; took_ms: number }
 export type EngineType = "Whisper" | "Parakeet" | "Moonshine" | "MoonshineStreaming" | "SenseVoice" | "GigaAM" | "Canary" | "Cohere"
+export type Fix = { kind: "turn_on_cleanup" } | { kind: "start_runtime" } | { kind: "start_ollama" } | { kind: "install_runtime"; download_mb: number } | { kind: "use_runtime" } | { kind: "install_ollama" } | { kind: "update_ollama" } | { kind: "download_model"; model: string } | { kind: "choose_model" } | { kind: "proxy_help" } | { kind: "port_taken"; port: number } | { kind: "free_memory" }
 export type GpuDeviceOption = { id: number; name: string; total_vram_mb: number }
 export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean; 
 /**
@@ -1467,6 +1484,7 @@ export type RuntimeGroup = "core" | "vulkan" | "cuda_v12" | "cuda_v13"
 export type RuntimePlan = { version: string; groups: RuntimeGroup[]; download_mb: number; unpacked_mb: number; nvidia: boolean; nvidia_driver: string | null }
 export type RuntimeProgress = { done_bytes: number; total_bytes: number; file: string }
 export type RuntimeStatus = { supported: boolean; version: string; installed: RuntimeGroup[]; plan: RuntimePlan; missing_mb: number; free_disk_mb: number | null; running: boolean; port: number; in_use: boolean; installing: boolean }
+export type Verdict = "working" | "looks_set_up" | "needs_attention" | "not_local" | "off"
 export type Result<T, E> =
 	| { status: "ok"; data: T }
 	| { status: "error"; error: E };
