@@ -802,6 +802,15 @@ fn point_cleanup_at(port: u16) -> Result<(), String> {
 
 // ------------------------------------------------------------ doctor facts
 
+/// Clean-up is set to use Kōrero's own runtime, and it is downloaded. For
+/// `ollama_status`, which otherwise looks only for a user-installed Ollama
+/// and would tell the person to install it (Kōrero 1.49).
+pub fn in_use_and_installed() -> bool {
+    root().is_some_and(|r| {
+        read_state(&r).managed && installed_groups(&r).contains(&RuntimeGroup::Core)
+    })
+}
+
 /// What the doctor needs to know about Kōrero's own runtime (Kōrero 1.49).
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeFacts {

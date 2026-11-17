@@ -519,7 +519,8 @@ pub(crate) fn find_ollama_exe() -> Option<std::path::PathBuf> {
 pub async fn ollama_status(base_url: String) -> OllamaStatus {
     let exe = find_ollama_exe();
     OllamaStatus {
-        installed: exe.is_some(),
+        // Kōrero 1.49: Kōrero's own runtime counts as installed when clean-up uses it.
+        installed: exe.is_some() || crate::local_runtime::in_use_and_installed(),
         running: is_reachable(&base_url).await,
         exe_path: exe.map(|p| p.to_string_lossy().to_string()),
     }

@@ -9,6 +9,20 @@ import { CATALOGUE, type CatalogueEntry } from "../../../lib/modelCatalogue";
 import { fitFor, gpuSummary, recommend, sortByFit, type Fit, type ProfileLike } from "../../../lib/modelFit";
 import { etaSeconds, ok, useOllamaJob, type Step } from "../../../stores/ollamaJobStore";
 import { isLocalInUse, isLoopbackUrl } from "../../shell/inUseModel";
+import { useLocalAi } from "../../../stores/localAiStore";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+
+/** Kōrero 1.49 (D-014): what to tell an IT team before Kōrero adds its own local AI. */
+export function itRequestText(version: string, mb: number): string {
+  return (
+    `Kōrero, a dictation app, would like to run Ollama, a free open-source AI runtime (MIT licence) from Ollama Inc., ` +
+    `to tidy dictated text on this computer. It downloads Ollama's official Windows build (version ${version}, about ${mb} MB) ` +
+    `from github.com/ollama/ollama into the user's own folder (%LOCALAPPDATA%\\com.kyt.korero\\local-ai). ` +
+    `No administrator rights are needed. Every file is checked against a SHA-256 hash pinned in Kōrero, and ollama.exe is ` +
+    `signed by Ollama Inc. It listens only on 127.0.0.1 (this computer), port 11435. The only network use is that download ` +
+    `and AI model downloads from registry.ollama.ai.`
+  );
+}
 
 /**
  * Kōrero 1.43: "Run AI clean-up on this computer".
@@ -52,6 +66,10 @@ export const LocalModelSetup: React.FC = () => {
   const [ollama, setOllama] = useState<{ installed: boolean; running: boolean } | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [fixing, setFixing] = useState(false);
+  const [showIt, setShowIt] = useState(false);
+  const localAi = useLocalAi();
+  const runtime = localAi.runtime;
+  const addingRuntime = localAi.step === "downloading" || localAi.step === "starting";
   // Keep keyboard focus somewhere sensible as buttons appear and vanish (A11Y-01).
   const primaryRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -69,6 +87,7 @@ export const LocalModelSetup: React.FC = () => {
   const busy = BUSY.includes(job.step);
 
   useEffect(() => {
+    void useLocalAi.getState().refreshRuntime();
     commands
       .getMachineProfile()
       .then((r) => setProfile(ok(r)))
@@ -118,6 +137,15 @@ export const LocalModelSetup: React.FC = () => {
       toast.message("The Ollama installer opened in a console window. When it finishes, press Check again.");
     } catch {
       await openUrl("https://ollama.com/download").catch(() => {});
+    }
+  };
+  const addRuntime = async () => {
+    if (await useLocalAi.getState().addRuntime()) {
+      toast.success("Kōrero's local AI is ready. Now choose a model.");
+      void probe();
+    } else {
+      const s = useLocalAi.getState();
+      if (s.step === "error" && s.error) toast.error("Kōrero's local AI didn't install", { description: s.error });
     }
   };
   const go = (tag: string) => {
@@ -180,7 +208,60 @@ export const LocalModelSetup: React.FC = () => {
         )}
       </div>
 
-      {ollama && !ollama.installed && (
+      {ollama && !ollama.installed && runtime?.supported && (
+        <div className="kx-banner kx-banner-info flex flex-col gap-2">
+          <div className="flex items-center gap-3">
+            <span className="flex-1 text-[13px]">
+              Local clean-up needs an AI runtime. Kōrero can add its own: Ollama, free, from its official release, with
+              every file checked. {runtime.missing_mb} MB download. It runs only on this computer.
+            </span>
+            <button type="button" className="kx-btn kx-btn-primary kx-btn-sm" disabled={addingRuntime} onClick={() => void addRuntime()}>
+              {addingRuntime ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Download size={14} aria-hidden="true" />}{" "}
+              Add local AI ({runtime.missing_mb} MB)
+            </button>
+          </div>
+          {addingRuntime && (
+            <div
+              className="kx-progress"
+              role="progressbar"
+              aria-label="Downloading Kōrero's local AI"
+              aria-valuenow={localAi.totalBytes > 0 ? Math.round((localAi.doneBytes / localAi.totalBytes) * 100) : 0}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <span style={{ width: `${localAi.totalBytes > 0 ? Math.round((localAi.doneBytes / localAi.totalBytes) * 100) : 0}%` }} />
+            </div>
+          )}
+          <div className="flex gap-2 items-center">
+            <button type="button" className="kx-btn kx-btn-quiet kx-btn-sm -ml-2.5" aria-expanded={showIt} onClick={() => setShowIt((v) => !v)}>
+              On a work laptop?
+            </button>
+            <button type="button" className="kx-btn kx-btn-quiet kx-btn-sm" onClick={() => void installOllama()}>
+              Install Ollama yourself instead
+            </button>
+          </div>
+          {showIt && (
+            <div className="flex flex-col gap-2">
+              <p className="kx-meta">
+                Some organisations don't allow new software without asking. If yours is one, send your IT team this:
+              </p>
+              <p className="text-[12.5px] text-[var(--kx-ink-read)] select-text">{itRequestText(runtime.version, runtime.plan.download_mb)}</p>
+              <button
+                type="button"
+                className="kx-btn kx-btn-secondary kx-btn-sm self-start"
+                onClick={() =>
+                  void writeText(itRequestText(runtime.version, runtime.plan.download_mb))
+                    .then(() => toast.success("Copied for your IT team."))
+                    .catch(() => toast.error("Couldn't copy."))
+                }
+              >
+                Copy for IT
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      {ollama && !ollama.installed && !runtime?.supported && (
         <div className="kx-banner kx-banner-info flex items-center gap-3">
           <span className="flex-1 text-[13px]">
             Local models run in Ollama, a free app. Install it once (about 1 GB), then come back here.

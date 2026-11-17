@@ -33,6 +33,9 @@ Every meeting, name and setting in that file is invented.
 | "Suggest a title" names an unnamed meeting `<topic> · <its own date>`, with the model's quotes and full stop removed, and leaves the notes alone | Positive |
 | Writing notes names an unnamed meeting; a meeting with a name of its own keeps it and is not offered a new one | Positive and negative |
 | No uncaught error on any page visited | Health |
+| 1.49 "Check local AI": with no local AI, the problem is said plainly, steps after it read "not checked", and the fix button states its size; nothing downloads until it is pressed, then `local_ai_runtime_install` and `local_ai_runtime_use` are called | Guard rail |
+| 1.49 the setup card offers Kōrero's own local AI with its size, and "On a work laptop?" shows text for an IT team (loopback only, no administrator rights) | Positive |
+| 1.49 a working check shows no problem card; only the quick check runs by itself; the report is emailed only when asked | Negative |
 
 Seen failing (12 November 2026):
 
@@ -47,6 +50,9 @@ Seen failing (12 November 2026):
 
 - 1.47: with both title guards removed, the "never renames a named one" claim went red
   (exit 1); with only the patch guard removed, two unit tests went red.
+
+- 1.49: with the size taken out of the runtime button, the "fix states its size" claim went
+  red, and so did its unit test (`unit-tests/doctor.test.ts`).
 
 Not covered by this check: trimming from a paragraph, search highlighting, and console
 errors (it watches uncaught errors only).
@@ -70,6 +76,24 @@ Running it where Playwright's pinned Chromium is not installed:
 6. **Settings, Notes, Dictation history, Ask and onboarding screens** have no browser
    check yet. Add one spec per screen when it next changes, reusing `tauriMock.ts`.
 7. **Accessibility.** No automated check. Add axe to the browser check, one page per screen.
+
+## Local AI (1.49): by hand on Windows
+
+The Rust checks and the runtime download are unit-tested (a local range server stands in for
+GitHub); the real Ollama is not. Before a release that changes `local_runtime` or `doctor`:
+
+1. **Clean machine** (yoga-26, no Ollama installed): AI clean-up & notes, "Add local AI", watch
+   the size and the progress, then download the recommended model and see "Check local AI"
+   end with "Local clean-up is working." Dictate one sentence and see it cleaned.
+2. **Broken on purpose** (legion-26, each put back afterwards): stop Kōrero's runtime
+   (Task Manager); choose a model that isn't downloaded; set the Ollama address to a free
+   port; hold port 11435 with another program; set `HTTP_PROXY` for Kōrero; dictate with the
+   model unloaded and little memory free. Each must show its own problem and fix, and Today
+   must show the reason on the dictation.
+3. **Your own Ollama is left alone:** with a user-installed Ollama running on 11434, adding
+   Kōrero's runtime must not stop it, use its models folder, or change its settings.
+4. Close Kōrero from the tray: no `ollama.exe` from `%LOCALAPPDATA%\com.kyt.korero\local-ai`
+   is left running.
 
 ## Targets
 
