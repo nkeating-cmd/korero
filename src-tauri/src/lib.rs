@@ -21,6 +21,7 @@ mod eval; // Kōrero (v1.40.0): --eval-transcribe entry point (accuracy harness)
 mod helpers;
 mod input;
 mod llm_client;
+mod local_runtime; // Kōrero 1.49 (D-014): Kōrero's own Ollama
 mod notes_parts; // Kōrero 1.44: long meetings read in parts
 mod ollama_chat; // Kōrero 1.43: native Ollama chat with a sized context
 mod managers;
@@ -670,6 +671,12 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
             commands::ollama::ollama_test_model,  // Kōrero 1.43
             commands::ollama::use_local_ollama_model, // Kōrero 1.43
             commands::machine::get_machine_profile, // Kōrero 1.43
+            local_runtime::local_ai_runtime_status, // Kōrero 1.49 (D-014)
+            local_runtime::local_ai_runtime_install,
+            local_runtime::local_ai_runtime_repair,
+            local_runtime::local_ai_runtime_cancel,
+            local_runtime::local_ai_runtime_use,
+            local_runtime::local_ai_runtime_stop_using,
             commands::history_extra::update_post_processed_text,
             helpers::clamshell::is_laptop,
         ])
@@ -993,6 +1000,9 @@ pub fn run(cli_args: CliArgs) {
             if !cli_args.is_eval() {
                 update_check::spawn_update_check(app.handle().clone());
             }
+            // Kōrero 1.49 (D-014): Kōrero's own Ollama needs the app handle to
+            // find its folders; the startup check below then starts it.
+            local_runtime::init(app.handle());
             // Kōrero (v1.17.0): if post-processing runs on local Ollama,
             // quietly make sure it's actually up (PC optimisers and reboots
             // routinely leave it stopped). Best-effort; never blocks startup.

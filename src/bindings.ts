@@ -1196,6 +1196,60 @@ async getMachineProfile() : Promise<Result<MachineProfile, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Kōrero 1.49: what Kōrero's own local AI has, needs and is doing.
+ */
+async localAiRuntimeStatus() : Promise<Result<RuntimeStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("local_ai_runtime_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Kōrero 1.49: download the runtime this computer needs (progress: local-ai-runtime-progress).
+ */
+async localAiRuntimeInstall() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("local_ai_runtime_install") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async localAiRuntimeRepair() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("local_ai_runtime_repair") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async localAiRuntimeCancel() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("local_ai_runtime_cancel") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async localAiRuntimeUse() : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("local_ai_runtime_use") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async localAiRuntimeStopUsing() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("local_ai_runtime_stop_using") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async meetingGenerateAudioBrief(text: string, speaker: string | null, style: string | null, tempo: number | null) : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("meeting_generate_audio_brief", { text, speaker, style, tempo }) };
@@ -1409,6 +1463,10 @@ type __EventObj__<T> = {
 		: (payload: T) => ReturnType<typeof TAURI_API_EVENT.emit>;
 };
 
+export type RuntimeGroup = "core" | "vulkan" | "cuda_v12" | "cuda_v13"
+export type RuntimePlan = { version: string; groups: RuntimeGroup[]; download_mb: number; unpacked_mb: number; nvidia: boolean; nvidia_driver: string | null }
+export type RuntimeProgress = { done_bytes: number; total_bytes: number; file: string }
+export type RuntimeStatus = { supported: boolean; version: string; installed: RuntimeGroup[]; plan: RuntimePlan; missing_mb: number; free_disk_mb: number | null; running: boolean; port: number; in_use: boolean; installing: boolean }
 export type Result<T, E> =
 	| { status: "ok"; data: T }
 	| { status: "error"; error: E };

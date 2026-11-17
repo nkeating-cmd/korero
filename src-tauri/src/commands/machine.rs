@@ -259,7 +259,7 @@ fn ram_mb() -> Option<u32> {
 }
 
 #[cfg(windows)]
-fn free_disk_mb(p: &Path) -> Option<u32> {
+pub(crate) fn free_disk_mb(p: &Path) -> Option<u32> {
     use windows::core::HSTRING;
     use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
     let dir = nearest_existing_ancestor(p)?;
@@ -313,7 +313,7 @@ fn gpus() -> Vec<GpuInfo> {
 }
 
 #[cfg(not(windows))]
-fn free_disk_mb(p: &Path) -> Option<u32> {
+pub(crate) fn free_disk_mb(p: &Path) -> Option<u32> {
     let dir = nearest_existing_ancestor(p)?;
     let dir = dir.to_str()?.to_string();
     with_timeout(move || parse_df(&run_tool("/bin/df", &["-Pk", "--", &dir])?))

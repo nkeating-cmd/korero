@@ -524,6 +524,11 @@ pub async fn start_and_wait(base_url: &str) -> Result<bool, String> {
     if is_reachable(base_url).await {
         return Ok(true);
     }
+    // Kōrero 1.49 (D-014): clean-up that points at Kōrero's own runtime
+    // starts that, never a user-installed Ollama.
+    if let Some(started) = crate::local_runtime::start_if_ours(base_url).await {
+        return started;
+    }
     let exe = find_ollama_exe()
         .ok_or_else(|| "Ollama doesn't appear to be installed on this machine.".to_string())?;
     let mut cmd = std::process::Command::new(&exe);
