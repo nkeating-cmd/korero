@@ -238,6 +238,10 @@ pub fn default_reasoning_effort(provider: &PostProcessProvider) -> Option<String
     }
 }
 
+/// Kōrero 1.49: something other than Kōrero's own runtime answered on its
+/// port. The text is not sent anywhere else.
+const NOT_OURS: &str = "Another program answered on the port Kōrero's local AI uses, so the text wasn't sent to it. Couldn't reach Ollama.";
+
 /// Send a chat completion request to an OpenAI-compatible API
 /// Returns Ok(Some(content)) on success, Ok(None) if response has no content,
 /// or Err on actual errors (HTTP, parsing, etc.)
@@ -372,6 +376,9 @@ pub async fn send_chat_completion_with_schema(
         {
             crate::ollama_chat::Outcome::Done(v) => return Ok(v),
             crate::ollama_chat::Outcome::NotOllama => {
+                if crate::local_runtime::is_ours(&provider.base_url) {
+                    return Err(NOT_OURS.to_string());
+                }
                 log::info!("Ollama provider is not an Ollama server; using the OpenAI-compatible path")
             }
         }
@@ -495,6 +502,9 @@ pub async fn send_chat_completion_meeting(
         {
             crate::ollama_chat::Outcome::Done(v) => return Ok(v.unwrap_or_default()),
             crate::ollama_chat::Outcome::NotOllama => {
+                if crate::local_runtime::is_ours(&provider.base_url) {
+                    return Err(NOT_OURS.to_string());
+                }
                 log::info!("Ollama provider is not an Ollama server; using the OpenAI-compatible path")
             }
         }
@@ -609,6 +619,9 @@ pub async fn stream_chat_completion<F: FnMut(&str)>(
         {
             crate::ollama_chat::Outcome::Done(v) => return Ok(v),
             crate::ollama_chat::Outcome::NotOllama => {
+                if crate::local_runtime::is_ours(&provider.base_url) {
+                    return Err(NOT_OURS.to_string());
+                }
                 log::info!("Ollama provider is not an Ollama server; using the OpenAI-compatible path")
             }
         }

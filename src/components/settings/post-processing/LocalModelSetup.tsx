@@ -17,10 +17,12 @@ export function itRequestText(version: string, mb: number): string {
   return (
     `Kōrero, a dictation app, would like to run Ollama, a free open-source AI runtime (MIT licence) from Ollama Inc., ` +
     `to tidy dictated text on this computer. It downloads Ollama's official Windows build (version ${version}, about ${mb} MB) ` +
-    `from github.com/ollama/ollama into the user's own folder (%LOCALAPPDATA%\\com.kyt.korero\\local-ai). ` +
-    `No administrator rights are needed. Every file is checked against a SHA-256 hash pinned in Kōrero, and ollama.exe is ` +
-    `signed by Ollama Inc. It listens only on 127.0.0.1 (this computer), port 11435. The only network use is that download ` +
-    `and AI model downloads from registry.ollama.ai.`
+    `from github.com/ollama/ollama (served from release-assets.githubusercontent.com) into the user's own folder ` +
+    `(%LOCALAPPDATA%\\com.kyt.korero\\local-ai, or the portable folder in portable mode), and runs ollama.exe from there, ` +
+    `so a software restriction policy must allow that folder. No administrator rights are needed. Every file is checked ` +
+    `against a SHA-256 hash pinned in Kōrero, and ollama.exe is signed by Ollama Inc. It listens only on 127.0.0.1 ` +
+    `(this computer), on port 11435 (or the next free port up to 11444). The only network use is that download and AI ` +
+    `model downloads from registry.ollama.ai and the storage servers it redirects to.`
   );
 }
 

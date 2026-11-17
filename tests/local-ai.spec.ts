@@ -36,6 +36,8 @@ const runtimeStatus = (overrides: Record<string, unknown> = {}) => ({
   port: 11435,
   in_use: false,
   installing: false,
+  update_needed: false,
+  disk_mb: 0,
   ...overrides,
 });
 
@@ -77,7 +79,9 @@ test.describe("Check local AI", () => {
     await expect(page.getByText("There's no local AI on this computer", { exact: true }).first()).toBeVisible();
     const add = page.getByRole("button", { name: "Add local AI to Kōrero (40 MB)" });
     await expect(add).toBeVisible();
-    // A step after a failure is never shown as passed.
+    // A step the engine marked "not checked" shows as that, not as passed.
+    // (Which steps get marked is the Rust ladder's job, tested there:
+    // `a_failure_never_lets_later_steps_pass`.)
     await expect(page.getByRole("img", { name: "Not checked" }).first()).toBeVisible();
     // Nothing downloads until the button is pressed.
     expect(await invoked(page)).not.toContain("local_ai_runtime_install");
@@ -120,5 +124,50 @@ test.describe("Check local AI", () => {
     // Only the quick check ran by itself; the full one waits for a click.
     const calls = await invoked(page);
     expect(calls.filter((c) => c === "local_ai_check").length).toBe(1);
+  });
+
+  test("Kōrero's own local AI can be repaired, switched off and removed, and removing asks first", async ({ page }) => {
+    await installTauriMock(page, [], {
+      local_ai_check: report("working", [
+        check("cleanup_on", "pass", "Clean-up is on", "Clean-up uses Ollama (local)."),
+        check("test_answer", "pass", "A test clean-up works", "Answered in 2.1 s."),
+      ]),
+      local_ai_runtime_status: runtimeStatus({
+        installed: ["core", "vulkan"],
+        missing_mb: 0,
+        running: true,
+        in_use: true,
+        disk_mb: 8300,
+      }),
+      ollama_status: { installed: true, running: true, exe_path: null },
+      get_machine_profile: profile,
+    });
+    await openCleanup(page);
+    await expect(page.getByText(/Kōrero's local AI \(Ollama 0\.40\.16\) · 8\.1 GB/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Repair" })).toBeVisible();
+    await page.getByRole("button", { name: "Stop using it" }).click();
+    await expect.poll(() => invoked(page)).toContain("local_ai_runtime_stop_using");
+    await page.getByRole("button", { name: "Remove…" }).click();
+    await expect(page.getByText("Remove Kōrero's local AI and its models? This frees 8.1 GB.")).toBeVisible();
+    expect(await invoked(page)).not.toContain("local_ai_runtime_remove");
+    await page.getByRole("button", { name: "Remove", exact: true }).click();
+    await expect.poll(() => invoked(page)).toContain("local_ai_runtime_remove");
+  });
+
+  test("a download already running when the page opens is followed, not shown as an error", async ({ page }) => {
+    await installTauriMock(page, [], {
+      local_ai_check: report("needs_attention", [
+        check("runtime", "fail", "There's no local AI on this computer", "Ollama isn't installed.", {
+          kind: "install_runtime",
+          download_mb: 40,
+        }),
+      ]),
+      local_ai_runtime_status: runtimeStatus({ installing: true }),
+      ollama_status: { installed: false, running: false, exe_path: null },
+      get_machine_profile: profile,
+    });
+    await openCleanup(page);
+    await expect(page.locator(`[role="progressbar"][aria-label="Downloading Kōrero's local AI"]:visible`).first()).toBeVisible();
+    expect(await invoked(page)).not.toContain("local_ai_runtime_install");
   });
 });

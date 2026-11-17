@@ -763,6 +763,23 @@ impl HistoryManager {
         )?)
     }
 
+    /// Kōrero 1.49 (review): a clean-up stored as "still running" when
+    /// Kōrero closed can never finish. At startup, entries older than
+    /// `older_than_s` become "other", so History stops promising a result
+    /// and the doctor counts them.
+    pub fn retire_stale_still_running(&self, older_than_s: i64) -> Result<usize> {
+        let conn = self.get_connection()?;
+        Self::retire_stale_still_running_with_conn(&conn, Utc::now().timestamp() - older_than_s)
+    }
+
+    fn retire_stale_still_running_with_conn(conn: &Connection, before: i64) -> Result<usize> {
+        Ok(conn.execute(
+            "UPDATE transcription_history SET post_process_failure = 'other'
+              WHERE post_process_failure = 'still_running' AND timestamp < ?1",
+            params![before],
+        )?)
+    }
+
     /// Kōrero 1.49: the last `limit` dictations that asked for a clean-up,
     /// newest first: whether each was cleaned, and the stored reason. Reads
     /// no text: only lengths and the reason word.
@@ -783,6 +800,7 @@ impl HistoryManager {
                     post_process_failure
                FROM transcription_history
               WHERE post_process_requested = 1
+                AND length(trim(transcription_text, ' ' || char(9) || char(10) || char(13))) > 0
               ORDER BY timestamp DESC, id DESC
               LIMIT ?1",
         )?;
@@ -1110,6 +1128,40 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    /// Review, 17 Nov 2026: a dictation that heard nothing is not a failed
+    /// clean-up, and "still running" from before a close becomes "other".
+    #[test]
+    fn empty_dictations_are_not_counted_and_stale_running_is_retired() {
+        let conn = setup_conn();
+        let add = |ts: i64, spoken: &str, why: Option<&str>| {
+            conn.execute(
+                "INSERT INTO transcription_history (file_name, timestamp, saved, title, transcription_text,
+                 post_processed_text, post_process_prompt, post_process_requested, post_process_failure)
+                 VALUES ('f.wav', ?1, 0, 't', ?2, NULL, NULL, 1, ?3)",
+                params![ts, spoken, why],
+            )
+            .unwrap();
+        };
+        add(100, "", None);
+        add(200, "spoken", Some("still_running"));
+        add(900, "spoken", Some("still_running"));
+        assert_eq!(
+            HistoryManager::recent_cleanup_outcomes_with_conn(&conn, 10).unwrap().len(),
+            2
+        );
+        assert_eq!(
+            HistoryManager::retire_stale_still_running_with_conn(&conn, 500).unwrap(),
+            1
+        );
+        assert_eq!(
+            HistoryManager::recent_cleanup_outcomes_with_conn(&conn, 10).unwrap(),
+            vec![
+                (false, Some(CleanupFailReason::StillRunning)),
+                (false, Some(CleanupFailReason::Other)),
+            ]
         );
     }
 

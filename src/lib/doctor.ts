@@ -8,6 +8,7 @@
  */
 
 import type { CheckResult, DoctorReport, Fix, Verdict } from "../bindings";
+import { CATALOGUE } from "./modelCatalogue";
 
 /**
  * How a fix is run:
@@ -29,6 +30,12 @@ export const KYT_SUPPORT_EMAIL = "nic@kyt.nz";
 
 const size = (mb: number) => (mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`);
 
+/** A model's download size, when the catalogue knows it (tags match with or without `:latest`). */
+export function modelDownloadMb(model: string): number | null {
+  const norm = (t: string) => t.trim().toLowerCase().replace(/:latest$/, "");
+  return CATALOGUE.find((e) => norm(e.tag) === norm(model))?.downloadMb ?? null;
+}
+
 export function fixOffer(f: Fix): FixOffer {
   switch (f.kind) {
     case "start_runtime":
@@ -36,7 +43,7 @@ export function fixOffer(f: Fix): FixOffer {
     case "start_ollama":
       return { safety: "auto", button: "Start Ollama", help: "" };
     case "turn_on_cleanup":
-      return { safety: "confirm", button: "Turn on clean-up", help: "" };
+      return { safety: "confirm", button: "Turn on clean-up", help: "Clean-up will run on this computer." };
     case "install_runtime":
       return {
         safety: "confirm",
@@ -62,13 +69,28 @@ export function fixOffer(f: Fix): FixOffer {
         button: "",
         help: "Update Ollama from ollama.com (or quit it and reopen it to let it update), then run the check again.",
       };
-    case "download_model":
-      return { safety: "confirm", button: `Download ${f.model}`, help: "The size is shown before it starts." };
+    case "download_model": {
+      // Review M5: the button says what it costs before anything downloads.
+      const mb = modelDownloadMb(f.model);
+      return {
+        safety: "confirm",
+        button: mb ? `Download ${f.model} (${size(mb)})` : `Download ${f.model} (size not known)`,
+        help: mb
+          ? "It downloads once and stays on this computer. You can cancel it."
+          : "Kōrero doesn't know this model's size. Large models can be 10 GB or more. You can cancel it.",
+      };
+    }
     case "choose_model":
       return {
         safety: "guide",
         button: "",
         help: 'Choose a model under "Run AI clean-up on this computer" above. The recommended one fits this computer.',
+      };
+    case "choose_prompt":
+      return {
+        safety: "guide",
+        button: "",
+        help: 'Choose a clean-up prompt under "Prompts" in these settings, and make sure it has text. "Clean transcript (NZ English)" is the usual one.',
       };
     case "proxy_help":
       return {
@@ -106,7 +128,7 @@ export function headline(v: Verdict): Headline {
     case "needs_attention":
       return { tone: "warn", text: "Local clean-up needs attention." };
     case "not_local":
-      return { tone: "off", text: "Clean-up uses a cloud provider, so there is nothing local to check." };
+      return { tone: "off", text: "Clean-up doesn't use Kōrero's local AI or Ollama on this computer, so there is nothing here to check." };
     case "off":
       return { tone: "off", text: "AI clean-up is off." };
   }
@@ -130,8 +152,13 @@ export function reportMailto(r: DoctorReport, to = KYT_SUPPORT_EMAIL): string {
   const subject = `Kōrero local AI check: ${r.verdict.replace(/_/g, " ")}`;
   const intro =
     "Kia ora Kyt,\n\nKōrero's local AI check found the following. This report holds no dictation, names or keys.\n\n";
-  const max = 1800;
-  let body = intro + r.report_text;
-  if (body.length > max) body = `${body.slice(0, max)}\n(cut short)`;
-  return `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  // The limit is on the encoded link (macrons and new lines grow when
+  // encoded), so measure that, not the text.
+  const max = 1900;
+  const link = (b: string) => `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(b)}`;
+  const full = intro + r.report_text;
+  if (link(full).length <= max) return link(full);
+  let keep = full.length;
+  while (keep > 0 && link(`${full.slice(0, keep)}\n(cut short)`).length > max) keep -= 20;
+  return link(`${full.slice(0, Math.max(0, keep))}\n(cut short)`);
 }

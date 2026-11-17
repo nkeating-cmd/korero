@@ -108,6 +108,7 @@ pub fn title_of(id: CheckId) -> &'static str {
         CheckId::AnswersAsOllama => "The local AI answers",
         CheckId::OllamaVersion => "Ollama is recent enough",
         CheckId::ModelChosen => "A model is chosen",
+        CheckId::PromptChosen => "A clean-up prompt is chosen",
         CheckId::ModelPresent => "The model is downloaded",
         CheckId::ModelRuns => "Ollama can run the model",
         CheckId::ModelFits => "The model fits this computer",
@@ -123,6 +124,7 @@ const AFTER_ADDRESS: &[CheckId] = &[
     CheckId::AnswersAsOllama,
     CheckId::OllamaVersion,
     CheckId::ModelChosen,
+    CheckId::PromptChosen,
     CheckId::ModelPresent,
     CheckId::ModelRuns,
     CheckId::ModelFits,
@@ -130,6 +132,15 @@ const AFTER_ADDRESS: &[CheckId] = &[
     CheckId::GpuShared,
     CheckId::TestAnswer,
 ];
+
+/// The steps after `id`, which a failure at `id` marks "not checked".
+fn after(id: CheckId) -> &'static [CheckId] {
+    let i = AFTER_ADDRESS
+        .iter()
+        .position(|x| *x == id)
+        .expect("every step after the address is in AFTER_ADDRESS");
+    &AFTER_ADDRESS[i + 1..]
+}
 
 /// Walk the ladder.
 pub fn evaluate(f: &Facts) -> (Vec<CheckResult>, Verdict) {
@@ -139,12 +150,25 @@ pub fn evaluate(f: &Facts) -> (Vec<CheckResult>, Verdict) {
 
     // 1. On at all.
     if !f.cleanup_enabled || f.provider_id.is_empty() {
+        // Turning clean-up on here is offered only when it would run on this
+        // computer: on this page it must never start sending text to a cloud
+        // provider (review M6).
+        let (detail, fix) = if f.provider_id.is_empty() {
+            ("AI clean-up has no provider chosen, so dictations are pasted as spoken. Choose the local AI above to keep clean-up on this computer.".to_string(), None)
+        } else if f.provider_local && f.provider_is_ollama {
+            (
+                "AI clean-up is off, so dictations are pasted as spoken.".to_string(),
+                Some(Fix::TurnOnCleanup),
+            )
+        } else {
+            (format!("AI clean-up is off, so dictations are pasted as spoken. Turning it on would send them to {}; choose the local AI above to keep them on this computer.", f.provider_label), None)
+        };
         l.push(
             CheckId::CleanupOn,
             Fail,
             title_of(CheckId::CleanupOn),
-            "AI clean-up is off, so dictations are pasted as spoken.".into(),
-            Some(Fix::TurnOnCleanup),
+            detail,
+            fix,
         );
         l.not_checked(&[CheckId::AddressLocal], fix_first);
         l.not_checked(AFTER_ADDRESS, fix_first);
@@ -197,19 +221,33 @@ pub fn evaluate(f: &Facts) -> (Vec<CheckResult>, Verdict) {
 
     // 3. Something is running there.
     let rt = &f.runtime;
-    let runtime_ok = if rt.managed {
-        if !rt.core_installed {
+    let runtime_ok = if rt.in_use {
+        if !rt.core_installed && !rt.update_needed {
             l.push(CheckId::Runtime, Fail, "Kōrero's local AI isn't downloaded",
                 "Clean-up is set to use Kōrero's own local AI, but it isn't on this computer (it may have been removed).".into(),
                 Some(Fix::InstallRuntime { download_mb: rt.missing_mb }))
-        } else if f.answered_http.is_none() {
+        } else if !rt.alive && f.answered_http.is_some() {
+            // Something answers on Kōrero's port, and it isn't Kōrero's
+            // own process (review M4).
+            l.push(CheckId::Runtime, Fail, "Another program is on Kōrero's port",
+                format!("Kōrero's local AI isn't running, and another program is answering on port {port}. Kōrero won't send text to it."),
+                Some(Fix::PortTaken { port }))
+        } else if !rt.alive || f.answered_http.is_none() {
             l.push(
                 CheckId::Runtime,
                 Fail,
                 "Kōrero's local AI isn't running",
-                "It is downloaded but not running.".into(),
+                if rt.alive {
+                    "It is running but not answering.".into()
+                } else {
+                    "It is downloaded but not running.".into()
+                },
                 Some(Fix::StartRuntime),
             )
+        } else if rt.update_needed {
+            l.push(CheckId::Runtime, Warn, "Kōrero's local AI needs an update",
+                "It is running the version from an earlier Kōrero until this Kōrero's version is downloaded.".into(),
+                Some(Fix::InstallRuntime { download_mb: rt.missing_mb }))
         } else {
             l.push(
                 CheckId::Runtime,
@@ -250,7 +288,7 @@ pub fn evaluate(f: &Facts) -> (Vec<CheckResult>, Verdict) {
             Some(fix))
     };
     if !runtime_ok {
-        l.not_checked(&AFTER_ADDRESS[1..], fix_first);
+        l.not_checked(after(CheckId::Runtime), fix_first);
         recent(&mut l, f);
         return (l.out, Verdict::NeedsAttention);
     }
@@ -272,7 +310,7 @@ pub fn evaluate(f: &Facts) -> (Vec<CheckResult>, Verdict) {
             detail,
             Some(fix),
         );
-        l.not_checked(&AFTER_ADDRESS[2..], fix_first);
+        l.not_checked(after(CheckId::AnswersAsOllama), fix_first);
         recent(&mut l, f);
         return (l.out, Verdict::NeedsAttention);
     };
@@ -286,7 +324,7 @@ pub fn evaluate(f: &Facts) -> (Vec<CheckResult>, Verdict) {
 
     // 5. Version (only a user-installed Ollama can be old; Kōrero's is pinned).
     match version_tuple(version) {
-        Some(v) if !rt.managed && v < TESTED_OLLAMA => {
+        Some(v) if !rt.in_use && v < TESTED_OLLAMA => {
             l.push(
                 CheckId::OllamaVersion,
                 Warn,
@@ -303,7 +341,7 @@ pub fn evaluate(f: &Facts) -> (Vec<CheckResult>, Verdict) {
                 CheckId::OllamaVersion,
                 Pass,
                 title_of(CheckId::OllamaVersion),
-                if rt.managed {
+                if rt.in_use {
                     format!("Kōrero's own copy, Ollama {version}.")
                 } else {
                     format!("Ollama {version}.")
@@ -322,7 +360,7 @@ pub fn evaluate(f: &Facts) -> (Vec<CheckResult>, Verdict) {
             "Clean-up has no AI model to use.".into(),
             Some(Fix::ChooseModel),
         );
-        l.not_checked(&AFTER_ADDRESS[4..], fix_first);
+        l.not_checked(after(CheckId::ModelChosen), fix_first);
         recent(&mut l, f);
         return (l.out, Verdict::NeedsAttention);
     }
@@ -334,8 +372,42 @@ pub fn evaluate(f: &Facts) -> (Vec<CheckResult>, Verdict) {
         None,
     );
 
+    // 7. A prompt: without one every dictation is pasted as spoken, however
+    // well the model runs (review M3).
+    if !f.prompt_ok {
+        l.push(
+            CheckId::PromptChosen,
+            Fail,
+            "No clean-up prompt is ready",
+            "No clean-up prompt is chosen, or the chosen one is empty, so dictations are pasted as spoken.".into(),
+            Some(Fix::ChoosePrompt),
+        );
+        l.not_checked(after(CheckId::PromptChosen), fix_first);
+        recent(&mut l, f);
+        return (l.out, Verdict::NeedsAttention);
+    }
+    l.push(
+        CheckId::PromptChosen,
+        Pass,
+        title_of(CheckId::PromptChosen),
+        "The clean-up prompt has text.".into(),
+        None,
+    );
+
+    if !f.tags_read {
+        l.push(
+            CheckId::ModelPresent,
+            NotChecked,
+            "Couldn't read the list of models",
+            "Ollama didn't list its models in time, so this check can't tell whether the model is downloaded. Run the check again.".into(),
+            None,
+        );
+        l.not_checked(after(CheckId::ModelPresent), fix_first);
+        recent(&mut l, f);
+        return (l.out, Verdict::NeedsAttention);
+    }
     let Some(model_mb) = f.model_mb else {
-        let detail = if rt.managed {
+        let detail = if rt.in_use {
             format!("{} isn't in Kōrero's own models folder. Kōrero's local AI keeps its own models, so it needs its own copy.", f.model)
         } else {
             format!("{} isn't downloaded in Ollama on this computer.", f.model)
@@ -349,7 +421,7 @@ pub fn evaluate(f: &Facts) -> (Vec<CheckResult>, Verdict) {
                 model: f.model.clone(),
             }),
         );
-        l.not_checked(&AFTER_ADDRESS[5..], fix_first);
+        l.not_checked(after(CheckId::ModelPresent), fix_first);
         recent(&mut l, f);
         return (l.out, Verdict::NeedsAttention);
     };
@@ -379,7 +451,7 @@ pub fn evaluate(f: &Facts) -> (Vec<CheckResult>, Verdict) {
             detail,
             Some(Fix::ChooseModel),
         );
-        l.not_checked(&AFTER_ADDRESS[6..], fix_first);
+        l.not_checked(after(CheckId::ModelRuns), fix_first);
         recent(&mut l, f);
         return (l.out, Verdict::NeedsAttention);
     }
@@ -408,8 +480,13 @@ pub fn evaluate(f: &Facts) -> (Vec<CheckResult>, Verdict) {
             None,
         );
     } else if ram == 0 || need * 4 <= ram * 3 {
+        let detail = if fast == 0 {
+            format!("It needs about {}, and this computer has no graphics card that Kōrero can use, so it runs on the processor and clean-up is slower. A smaller model would be quicker.", gb(need))
+        } else {
+            format!("It needs about {}, more than the graphics card holds, so clean-up is slower. A smaller model would be quicker.", gb(need))
+        };
         l.push(CheckId::ModelFits, Warn, "The model runs partly on the processor",
-            format!("It needs about {}, more than the graphics card holds, so clean-up is slower. A smaller model would be quicker.", gb(need)),
+            detail,
             Some(Fix::ChooseModel));
     } else {
         l.push(
@@ -486,14 +563,15 @@ pub fn evaluate(f: &Facts) -> (Vec<CheckResult>, Verdict) {
             };
             l.not_checked(&[CheckId::TestAnswer], why);
         }
-        (CheckMode::Full, Some(Err(e))) => {
-            let r = CleanupFailReason::classify(e);
+        (CheckMode::Full, Some(Err(r))) => {
+            let r = *r;
             let fix = match r {
                 CleanupFailReason::OutOfMemory => Some(Fix::FreeMemory),
                 CleanupFailReason::ModelMissing => Some(Fix::DownloadModel {
                     model: f.model.clone(),
                 }),
-                CleanupFailReason::Unreachable => Some(if rt.managed {
+                CleanupFailReason::NotSetUp => Some(Fix::ChoosePrompt),
+                CleanupFailReason::Unreachable => Some(if rt.in_use {
                     Fix::StartRuntime
                 } else {
                     Fix::StartOllama
@@ -604,9 +682,16 @@ fn recent(l: &mut Ladder, f: &Facts) {
     } else {
         counts.sort_by_key(|c| std::cmp::Reverse(c.1));
         let (top, top_n) = counts[0];
+        // Most dictations failing because clean-up isn't set up is a fault
+        // now, not history (review M3).
+        let status = if top == CleanupFailReason::NotSetUp && failed * 2 > n {
+            CheckStatus::Fail
+        } else {
+            CheckStatus::Warn
+        };
         l.push(
             CheckId::Recent,
-            CheckStatus::Warn,
+            status,
             "Some recent clean-ups failed",
             format!(
                 "{failed} of the last {n} were pasted as spoken, most often because {} ({top_n}).",
@@ -635,8 +720,10 @@ mod tests {
             model: "gemma4:12b".into(),
             runtime: RuntimeFacts {
                 supported: true,
-                managed: true,
+                in_use: true,
                 core_installed: true,
+                update_needed: false,
+                alive: true,
                 missing_mb: 0,
             },
             own_ollama_installed: false,
@@ -650,6 +737,8 @@ mod tests {
             best_vram_mb: 12 * 1024,
             ram_mb: 32 * 1024,
             available_ram_mb: Some(16 * 1024),
+            prompt_ok: true,
+            tags_read: true,
             test: Some(Ok(TestFacts {
                 seconds: 3.2,
                 gpu_share: Some(1.0),
@@ -679,7 +768,7 @@ mod tests {
         assert!(c.iter().all(|x| x.status == CheckStatus::Pass), "{c:#?}");
         let mut ids: Vec<_> = c.iter().map(|x| x.id).collect();
         ids.dedup();
-        assert_eq!(ids.len(), 13);
+        assert_eq!(ids.len(), 14);
     }
 
     #[test]
@@ -695,7 +784,7 @@ mod tests {
     #[test]
     fn a_failure_never_lets_later_steps_pass() {
         let mut f = healthy();
-        f.runtime.managed = false;
+        f.runtime.in_use = false;
         f.answered_http = None;
         f.runtime.core_installed = false;
         f.runtime.missing_mb = 40;
@@ -730,7 +819,7 @@ mod tests {
         );
 
         let mut g = healthy();
-        g.runtime.managed = false;
+        g.runtime.in_use = false;
         g.answered_http = None;
         g.own_ollama_installed = true;
         assert_eq!(
@@ -848,9 +937,7 @@ mod tests {
             status(&evaluate(&f).0, CheckId::TestAnswer),
             CheckStatus::Fail
         );
-        f.test = Some(Err(
-            "The local model didn't finish its answer within 900 s.".into(),
-        ));
+        f.test = Some(Err(CleanupFailReason::TimedOut));
         let (c, v) = evaluate(&f);
         assert_eq!(status(&c, CheckId::TestAnswer), CheckStatus::Fail);
         assert_eq!(v, Verdict::NeedsAttention);
@@ -906,12 +993,104 @@ mod tests {
             status(&evaluate(&f).0, CheckId::OllamaVersion),
             CheckStatus::Pass
         );
-        f.runtime.managed = false;
+        f.runtime.in_use = false;
         assert_eq!(
             status(&evaluate(&f).0, CheckId::OllamaVersion),
             CheckStatus::Warn
         );
         assert_eq!(version_tuple("v0.40.16"), Some((0, 40)));
         assert_eq!(version_tuple("nonsense"), None);
+    }
+
+    // ---- review fixes, 17 Nov 2026
+
+    #[test]
+    fn turning_clean_up_on_is_never_offered_for_a_cloud_provider() {
+        let mut f = healthy();
+        f.cleanup_enabled = false;
+        f.provider_local = false;
+        f.provider_is_ollama = false;
+        f.provider_id = "openai".into();
+        f.provider_label = "OpenAI".into();
+        let (c, v) = evaluate(&f);
+        assert_eq!(v, Verdict::Off);
+        assert_eq!(fix(&c, CheckId::CleanupOn), None);
+        f.provider_local = true;
+        f.provider_is_ollama = true;
+        assert_eq!(
+            fix(&evaluate(&f).0, CheckId::CleanupOn),
+            Some(Fix::TurnOnCleanup)
+        );
+    }
+
+    #[test]
+    fn no_prompt_fails_and_nothing_after_it_passes() {
+        let mut f = healthy();
+        f.prompt_ok = false;
+        let (c, v) = evaluate(&f);
+        assert_eq!(v, Verdict::NeedsAttention);
+        assert_eq!(status(&c, CheckId::PromptChosen), CheckStatus::Fail);
+        assert_eq!(fix(&c, CheckId::PromptChosen), Some(Fix::ChoosePrompt));
+        for id in [CheckId::ModelPresent, CheckId::TestAnswer] {
+            assert_eq!(status(&c, id), CheckStatus::NotChecked);
+        }
+    }
+
+    #[test]
+    fn another_program_on_korero_port_is_never_taken_for_korero() {
+        let mut f = healthy();
+        f.runtime.alive = false; // something answers, but not Kōrero's process
+        let (c, v) = evaluate(&f);
+        assert_eq!(v, Verdict::NeedsAttention);
+        assert_eq!(status(&c, CheckId::Runtime), CheckStatus::Fail);
+        assert_eq!(
+            fix(&c, CheckId::Runtime),
+            Some(Fix::PortTaken { port: 11435 })
+        );
+        f.answered_http = None;
+        assert_eq!(
+            fix(&evaluate(&f).0, CheckId::Runtime),
+            Some(Fix::StartRuntime)
+        );
+    }
+
+    #[test]
+    fn an_earlier_version_still_running_is_a_warning_with_the_update() {
+        let mut f = healthy();
+        f.runtime.core_installed = false;
+        f.runtime.update_needed = true;
+        f.runtime.missing_mb = 40;
+        let (c, _) = evaluate(&f);
+        assert_eq!(status(&c, CheckId::Runtime), CheckStatus::Warn);
+        assert_eq!(
+            fix(&c, CheckId::Runtime),
+            Some(Fix::InstallRuntime { download_mb: 40 })
+        );
+        assert_eq!(status(&c, CheckId::TestAnswer), CheckStatus::Pass);
+    }
+
+    #[test]
+    fn an_unreadable_model_list_never_offers_a_download() {
+        let mut f = healthy();
+        f.tags_read = false;
+        f.model_mb = None;
+        let (c, v) = evaluate(&f);
+        assert_eq!(v, Verdict::NeedsAttention);
+        assert_eq!(status(&c, CheckId::ModelPresent), CheckStatus::NotChecked);
+        assert!(c
+            .iter()
+            .all(|x| !matches!(x.fix, Some(Fix::DownloadModel { .. }))));
+    }
+
+    #[test]
+    fn mostly_not_set_up_recently_is_a_failure() {
+        let mut f = healthy();
+        f.recent = vec![(false, Some(CleanupFailReason::NotSetUp)); 4];
+        f.recent.push((true, None));
+        let (c, v) = evaluate(&f);
+        assert_eq!(status(&c, CheckId::Recent), CheckStatus::Fail);
+        assert_eq!(v, Verdict::NeedsAttention);
+        f.recent = vec![(false, Some(CleanupFailReason::TimedOut)); 4];
+        assert_eq!(status(&evaluate(&f).0, CheckId::Recent), CheckStatus::Warn);
     }
 }

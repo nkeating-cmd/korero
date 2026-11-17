@@ -36,6 +36,8 @@ Every meeting, name and setting in that file is invented.
 | 1.49 "Check local AI": with no local AI, the problem is said plainly, steps after it read "not checked", and the fix button states its size; nothing downloads until it is pressed, then `local_ai_runtime_install` and `local_ai_runtime_use` are called | Guard rail |
 | 1.49 the setup card offers Kōrero's own local AI with its size, and "On a work laptop?" shows text for an IT team (loopback only, no administrator rights) | Positive |
 | 1.49 a working check shows no problem card; only the quick check runs by itself; the report is emailed only when asked | Negative |
+| 1.49 Kōrero's own local AI shows its size and can be repaired, switched off and removed; "Remove" asks first and calls nothing until confirmed | Guard rail |
+| 1.49 a runtime download already running when the page opens is shown as progress, not as an error, and no second download starts | Negative |
 
 Seen failing (12 November 2026):
 
@@ -94,6 +96,17 @@ GitHub); the real Ollama is not. Before a release that changes `local_runtime` o
    Kōrero's runtime must not stop it, use its models folder, or change its settings.
 4. Close Kōrero from the tray: no `ollama.exe` from `%LOCALAPPDATA%\com.kyt.korero\local-ai`
    is left running.
+5. **Stopping frees the graphics card** (review M7): with a model loaded, "Stop using it", then
+   Task Manager: no `ollama.exe` (`serve` or runner) from Kōrero's folder, and the graphics
+   memory is back. "Stop using it" also puts back the provider and address used before.
+6. **A pinned-version update keeps clean-up working** (review M1): copy the runtime folder to
+   `runtime\ollama-0.0.1`, delete this version's `runtime\ollama-<version>`, restart Kōrero and
+   dictate: it is cleaned (the earlier copy runs), and "Check local AI" offers the update.
+   After the update, the earlier folder is gone.
+7. **A blocked folder** (review M8): on a laptop with AppLocker or WDAC blocking
+   `%LOCALAPPDATA%`, "Add local AI" stops after about 28 MB with the plain "security settings"
+   message and no path, before the CUDA files download.
+8. **Remove** frees the space it states, and leaves the user's own Ollama alone.
 
 ## Targets
 

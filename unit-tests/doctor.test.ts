@@ -14,6 +14,7 @@ const ALL_FIXES: Fix[] = [
   { kind: "update_ollama" },
   { kind: "download_model", model: "gemma4:12b" },
   { kind: "choose_model" },
+  { kind: "choose_prompt" },
   { kind: "proxy_help" },
   { kind: "port_taken", port: 11435 },
   { kind: "free_memory" },
@@ -40,7 +41,10 @@ describe("fixOffer", () => {
     expect(fixOffer({ kind: "install_runtime", download_mb: 40 }).button).toContain("40 MB");
     expect(fixOffer({ kind: "install_runtime", download_mb: 649 }).button).toContain("649 MB");
     expect(fixOffer({ kind: "install_runtime", download_mb: 1543 }).button).toContain("1.5 GB");
-    expect(fixOffer({ kind: "download_model", model: "qwen3.5:4b" }).button).toContain("qwen3.5:4b");
+    // Review M5: a model download says its size on the button, or says it isn't known.
+    expect(fixOffer({ kind: "download_model", model: "gemma4:12b" }).button).toBe("Download gemma4:12b (8.0 GB)");
+    expect(fixOffer({ kind: "download_model", model: "qwen3.5:4b:latest" }).button).toContain("3.4 GB");
+    expect(fixOffer({ kind: "download_model", model: "someone/odd-model" }).button).toContain("size not known");
     expect(fixOffer({ kind: "install_runtime", download_mb: 40 }).safety).toBe("confirm");
   });
 
@@ -111,5 +115,16 @@ describe("reportMailto", () => {
     const body = decodeURIComponent(reportMailto(report("x".repeat(5000))).split("&body=")[1]);
     expect(body.length).toBeLessThan(1900);
     expect(body.endsWith("(cut short)")).toBe(true);
+  });
+
+  test("the limit is on the encoded link, which macrons and new lines make longer", () => {
+    const heavy = "Kōrero ā ē ī ō ū\n".repeat(200);
+    const url = reportMailto(report(heavy));
+    expect(url.length).toBeLessThanOrEqual(1900);
+    expect(decodeURIComponent(url.split("&body=")[1]).endsWith("(cut short)")).toBe(true);
+    // Short as text, long once encoded.
+    expect(reportMailto(report("ā\n".repeat(600))).length).toBeLessThanOrEqual(1900);
+    const short = reportMailto(report("Kōrero local AI check: working\n"));
+    expect(decodeURIComponent(short.split("&body=")[1])).not.toContain("cut short");
   });
 });

@@ -39,7 +39,8 @@ describe("cleanupOutcome", () => {
   test("came late says why, and is not a fault", () => {
     const o = cleanupOutcome(entry(true, "Tidy.", "came_late"));
     expect(o.state).toBe("late");
-    expect(o.short).toContain("loading");
+    // It says the model was slow, not why (a cloud provider can be slow too).
+    expect(o.short).toContain("slow to answer");
     expect(o.suggestCheck).toBe(false);
   });
 

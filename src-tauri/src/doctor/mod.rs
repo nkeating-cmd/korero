@@ -52,6 +52,7 @@ pub enum CheckId {
     AnswersAsOllama,
     OllamaVersion,
     ModelChosen,
+    PromptChosen,
     ModelPresent,
     ModelRuns,
     ModelFits,
@@ -75,6 +76,7 @@ pub enum Fix {
     UpdateOllama,
     DownloadModel { model: String },
     ChooseModel,
+    ChoosePrompt,
     ProxyHelp,
     PortTaken { port: u16 },
     FreeMemory,
@@ -150,7 +152,13 @@ pub struct Facts {
     pub best_vram_mb: u32,
     pub ram_mb: u32,
     pub available_ram_mb: Option<u32>,
-    pub test: Option<Result<TestFacts, String>>,
+    /// A clean-up prompt is chosen and has text.
+    pub prompt_ok: bool,
+    /// Ollama listed its models (`/api/tags` answered and parsed). False
+    /// means "couldn't tell", never "the model is missing".
+    pub tags_read: bool,
+    /// The test clean-up, through the same path a dictation takes.
+    pub test: Option<Result<TestFacts, CleanupFailReason>>,
     /// Newest first: (cleaned, stored reason).
     pub recent: Vec<(bool, Option<CleanupFailReason>)>,
     pub recording: bool,
@@ -269,6 +277,8 @@ async fn gather(app: &AppHandle, mode: CheckMode) -> Facts {
         best_vram_mb,
         ram_mb: profile.ram_mb,
         available_ram_mb: available,
+        prompt_ok: crate::actions::prompt_ready(&settings),
+        tags_read: false,
         test: None,
         recent,
         recording,
@@ -300,6 +310,7 @@ async fn gather(app: &AppHandle, mode: CheckMode) -> Facts {
 
     let want = crate::ollama_chat::normalise_model(&model);
     if let (_, Some(tags)) = get_json(&client, format!("{native}/api/tags")).await {
+        f.tags_read = tags["models"].is_array();
         f.model_mb = tags["models"].as_array().and_then(|ms| {
             ms.iter().find_map(|m| {
                 let name = m["name"].as_str().or_else(|| m["model"].as_str())?;
@@ -346,16 +357,35 @@ async fn gather(app: &AppHandle, mode: CheckMode) -> Facts {
         }
         Err(e) => f.show_error = Some(format!("Couldn't ask Ollama about the model: {e}")),
     }
-    if mode == CheckMode::Full && f.show_error.is_none() && !recording {
-        f.test = Some(
-            crate::commands::ollama::test_run(app, &model)
-                .await
-                .map(|t| TestFacts {
-                    seconds: t.seconds,
-                    gpu_share: t.gpu_share,
-                    answer: t.sample,
-                }),
-        );
+    if mode == CheckMode::Full && f.show_error.is_none() && f.prompt_ok && !recording {
+        // The same call a dictation makes: the user's prompt, model and
+        // provider settings, on an invented sentence (review M3).
+        let started = Instant::now();
+        let outcome = crate::actions::post_process_transcription(
+            &settings,
+            crate::commands::ollama::TEST_SENTENCE,
+        )
+        .await;
+        let seconds = started.elapsed().as_secs_f32();
+        f.test = Some(match outcome {
+            Ok(answer) => {
+                let gpu_share = match client.get(format!("{native}/api/ps")).send().await {
+                    Ok(r) if r.status().is_success() => {
+                        crate::ollama_chat::read_bounded(r, crate::ollama_chat::SMALL_BODY)
+                            .await
+                            .ok()
+                            .and_then(|t| crate::commands::ollama::gpu_share_from(&t, &model))
+                    }
+                    _ => None,
+                };
+                Ok(TestFacts {
+                    seconds,
+                    gpu_share,
+                    answer,
+                })
+            }
+            Err(reason) => Err(reason),
+        });
     }
     f
 }
@@ -409,12 +439,14 @@ pub fn report_text(
         std::env::consts::OS,
         chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
     ));
-    let model = if f
-        .model
+    // Only the last part of a model name: "hf.co/<account>/<model>" or a
+    // company registry path could name a person or a client (review).
+    let last = f.model.rsplit('/').next().unwrap_or("");
+    let model = if last
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || ":._-/".contains(c))
+        .all(|c| c.is_ascii_alphanumeric() || ":._-".contains(c))
     {
-        f.model.as_str()
+        last
     } else {
         "(unusual name)"
     };
@@ -438,9 +470,11 @@ pub fn report_text(
     ));
     s.push_str(&format!(
         "Local AI: {}; Ollama {}; port {}; answered HTTP {}\n",
-        if f.runtime.managed {
+        if f.runtime.in_use {
             if f.runtime.core_installed {
                 "Kōrero's own (downloaded)"
+            } else if f.runtime.update_needed {
+                "Kōrero's own (earlier version)"
             } else {
                 "Kōrero's own (not downloaded)"
             }
@@ -449,9 +483,15 @@ pub fn report_text(
         } else {
             "no Ollama installed"
         },
+        // What answered wrote this: digits, letters, dots and dashes only,
+        // so it can't add lines to the report.
         f.ollama_version
             .as_deref()
-            .filter(|v| v.len() < 24)
+            .filter(|v| {
+                !v.is_empty()
+                    && v.len() < 24
+                    && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+            })
             .unwrap_or("-"),
         f.port.map(|p| p.to_string()).unwrap_or_else(|| "-".into()),
         f.answered_http
@@ -582,8 +622,10 @@ mod report_tests {
             model: "gemma4:12b".into(),
             runtime: RuntimeFacts {
                 supported: true,
-                managed: true,
+                in_use: true,
                 core_installed: true,
+                update_needed: false,
+                alive: true,
                 missing_mb: 0,
             },
             own_ollama_installed: false,
@@ -597,6 +639,8 @@ mod report_tests {
             best_vram_mb: 12288,
             ram_mb: 32768,
             available_ram_mb: Some(10000),
+            prompt_ok: true,
+            tags_read: true,
             test: Some(Ok(TestFacts {
                 seconds: 2.5,
                 gpu_share: Some(1.0),
@@ -646,6 +690,18 @@ mod report_tests {
         let (c, v) = checks::evaluate(&f);
         let r = report_text(&f, &c, v, "1.49.0");
         assert!(!r.contains("someone") && !r.contains("evil"), "{r}");
+    }
+
+    #[test]
+    fn model_paths_and_odd_versions_stay_out_of_the_report() {
+        let mut f = leaky();
+        f.model = "hf.co/aroha-smith/clientx-ft:q4".into();
+        f.ollama_version = Some("0.1\nChecks:\n  pass all".into());
+        let (c, v) = checks::evaluate(&f);
+        let r = report_text(&f, &c, v, "1.49.0");
+        assert!(!r.contains("aroha") && r.contains("clientx-ft:q4"), "{r}");
+        assert!(r.contains("Ollama -;"), "{r}");
+        assert_eq!(r.matches("Checks:").count(), 1, "{r}");
     }
 
     #[test]

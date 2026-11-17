@@ -511,6 +511,9 @@ async fn send_sized(
     kind: CallKind,
     stream: bool,
 ) -> Result<Outcome<reqwest::Response>, String> {
+    // Kōrero 1.49: text for Kōrero's own runtime goes only to Kōrero's own
+    // process (started now if it stopped), never to whatever holds the port.
+    crate::local_runtime::ensure_ours_running(&provider.base_url).await?;
     let base = native_base(&provider.base_url);
     let url = format!("{base}/api/chat");
     let mut prompt = estimate_tokens(user) + system.map(estimate_tokens).unwrap_or(0);

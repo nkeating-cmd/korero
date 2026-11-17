@@ -37,20 +37,46 @@ const StatusIcon: React.FC<{ status: CheckResult["status"] }> = ({ status }) => 
 
 export const LocalAiDoctor: React.FC = () => {
   const { settings, updateSetting } = useSettings();
-  const { report, checking, checkError, check, addRuntime, step, doneBytes, totalBytes, cancelRuntime } = useLocalAi();
+  const {
+    report,
+    checking,
+    checkError,
+    check,
+    addRuntime,
+    step,
+    doneBytes,
+    totalBytes,
+    cancelRuntime,
+    runtime,
+    refreshRuntime,
+    followInstall,
+    repairRuntime,
+    stopUsingRuntime,
+    removeRuntime,
+  } = useLocalAi();
   const modelJob = useOllamaJob();
   const [fixing, setFixing] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const prevJobStep = useRef(modelJob.step);
   const fixRef = useRef<HTMLButtonElement>(null);
   const baseUrl =
     settings?.post_process_providers?.find((p) => p.id === "ollama")?.base_url ?? "http://localhost:11434/v1";
 
   useEffect(() => {
     if (!report && !checking) void check(false);
+    // A download started before this page loaded (a reload, another window)
+    // is shown and followed rather than reported as an error.
+    void refreshRuntime().then((s) => {
+      if (s?.installing) void followInstall();
+    });
   }, []);
   // A model download from the card above ends in a full check: "set up"
-  // means checked working, not just downloaded.
+  // means checked working, not just downloaded. Only when it has just
+  // finished: a finished job stays "done", and every visit would otherwise
+  // load the model again (review).
   useEffect(() => {
-    if (modelJob.step === "done") void check(true);
+    if (modelJob.step === "done" && prevJobStep.current !== "done") void check(true);
+    prevJobStep.current = modelJob.step;
   }, [modelJob.step]);
 
   const problem = report ? firstProblem(report.checks) : null;
@@ -97,6 +123,26 @@ export const LocalAiDoctor: React.FC = () => {
       setTimeout(() => fixRef.current?.focus(), 0);
     }
   };
+
+  const manage = async (run: () => Promise<boolean>, failed: string) => {
+    setFixing(true);
+    try {
+      if (!(await run())) {
+        const e = useLocalAi.getState().error;
+        if (e) toast.error(failed, { description: e });
+      }
+      await check(false);
+    } finally {
+      setFixing(false);
+      setConfirmRemove(false);
+    }
+  };
+  const hasRuntime = !!runtime?.supported && (runtime.installed.length > 0 || runtime.update_needed);
+  const diskText = runtime
+    ? runtime.disk_mb >= 1024
+      ? `${(runtime.disk_mb / 1024).toFixed(1)} GB`
+      : `${runtime.disk_mb} MB`
+    : "";
 
   const copyReport = async () => {
     if (!report) return;
@@ -203,6 +249,65 @@ export const LocalAiDoctor: React.FC = () => {
             </li>
           ))}
         </ul>
+      )}
+
+      {hasRuntime && runtime && (
+        <div className="flex flex-wrap gap-2 items-center border-t border-[var(--kx-hairline-soft)] pt-3" aria-label="Kōrero's local AI">
+          <span className="kx-meta flex-1 min-w-[12rem]">
+            Kōrero's local AI (Ollama {runtime.version}) · {diskText} with its models ·{" "}
+            {runtime.in_use ? "clean-up uses it" : "not in use"}
+            {runtime.update_needed ? " · an update is waiting to download" : ""}
+          </span>
+          {!confirmRemove ? (
+            <>
+              <button
+                type="button"
+                className="kx-btn kx-btn-quiet kx-btn-sm"
+                disabled={fixing || downloading}
+                title="Checks every file again and replaces any that is damaged"
+                onClick={() => void manage(repairRuntime, "The repair didn't finish")}
+              >
+                Repair
+              </button>
+              {runtime.in_use && (
+                <button
+                  type="button"
+                  className="kx-btn kx-btn-quiet kx-btn-sm"
+                  disabled={fixing || downloading}
+                  title="Puts clean-up back the way it was before; keeps the files"
+                  onClick={() => void manage(stopUsingRuntime, "Couldn't switch back")}
+                >
+                  Stop using it
+                </button>
+              )}
+              <button
+                type="button"
+                className="kx-btn kx-btn-quiet kx-btn-sm"
+                disabled={fixing || downloading}
+                onClick={() => setConfirmRemove(true)}
+              >
+                Remove…
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="text-[13px] text-[var(--kx-ink-read)]">
+                Remove Kōrero's local AI and its models? This frees {diskText}.
+              </span>
+              <button
+                type="button"
+                className="kx-btn kx-btn-primary kx-btn-sm"
+                disabled={fixing}
+                onClick={() => void manage(removeRuntime, "Couldn't remove it all")}
+              >
+                Remove
+              </button>
+              <button type="button" className="kx-btn kx-btn-quiet kx-btn-sm" onClick={() => setConfirmRemove(false)}>
+                Keep it
+              </button>
+            </>
+          )}
+        </div>
       )}
 
       {report && (

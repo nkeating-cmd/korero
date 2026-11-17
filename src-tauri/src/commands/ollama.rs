@@ -228,12 +228,12 @@ pub struct OllamaTestRun {
     pub gpu_share: Option<f32>,
 }
 
-const TEST_SENTENCE: &str =
+pub(crate) const TEST_SENTENCE: &str =
     "um so the hui is on tuesday no wait wednesday at the marae and aroha will bring the whanau";
 const TEST_SYSTEM: &str = "Clean up this dictation: fix punctuation and capitals, remove filler \
 words, keep te reo Māori words. Reply with the cleaned sentence only.";
 
-fn gpu_share_from(ps_json: &str, model: &str) -> Option<f32> {
+pub(crate) fn gpu_share_from(ps_json: &str, model: &str) -> Option<f32> {
     let v: serde_json::Value = serde_json::from_str(ps_json).ok()?;
     let want = crate::ollama_chat::normalise_model(model);
     v["models"].as_array()?.iter().find_map(|m| {
@@ -529,13 +529,15 @@ pub async fn ollama_status(base_url: String) -> OllamaStatus {
 /// Start Ollama (GUI app preferred, `ollama serve` fallback) and wait up to
 /// ~20 s for the API to come up. Ok(true) = reachable.
 pub async fn start_and_wait(base_url: &str) -> Result<bool, String> {
-    if is_reachable(base_url).await {
-        return Ok(true);
-    }
     // Kōrero 1.49 (D-014): clean-up that points at Kōrero's own runtime
-    // starts that, never a user-installed Ollama.
+    // starts that, never a user-installed Ollama. Asked before "is something
+    // answering": another program on Kōrero's port is not Kōrero's runtime
+    // (review M4).
     if let Some(started) = crate::local_runtime::start_if_ours(base_url).await {
         return started;
+    }
+    if is_reachable(base_url).await {
+        return Ok(true);
     }
     let exe = find_ollama_exe()
         .ok_or_else(|| "Ollama doesn't appear to be installed on this machine.".to_string())?;

@@ -74,6 +74,17 @@ fn build_system_prompt(prompt_template: &str) -> String {
 ///
 /// Kōrero 1.42: lifted out of `post_process_transcription` so the dictation
 /// pill can name the prompt that will actually be used ("Cleaning up · …").
+/// Kōrero 1.49: a clean-up prompt is chosen and has text (the doctor's
+/// check; `post_process_transcription` refuses otherwise).
+pub(crate) fn prompt_ready(settings: &AppSettings) -> bool {
+    resolve_prompt_id(settings).is_some_and(|id| {
+        settings
+            .post_process_prompts
+            .iter()
+            .any(|p| p.id == id && !p.prompt.trim().is_empty())
+    })
+}
+
 fn resolve_prompt_id(settings: &AppSettings) -> Option<String> {
     let routed_prompt_id = if settings.post_process_app_routes.is_empty() {
         None
@@ -108,7 +119,7 @@ fn resolve_prompt_name(settings: &AppSettings) -> Option<String> {
 
 /// Kōrero 1.49: ends in the cleaned text, or in the reason it did not land
 /// (`CleanupFailReason`), which History keeps and the doctor reads.
-async fn post_process_transcription(
+pub(crate) async fn post_process_transcription(
     settings: &AppSettings,
     transcription: &str,
 ) -> Result<String, CleanupFailReason> {
@@ -606,7 +617,9 @@ pub(crate) async fn process_transcription_output(
         final_text = converted_text;
     }
 
-    if post_process {
+    // An empty transcription has nothing to clean up, and is not a failed
+    // clean-up (review, 17 Nov 2026).
+    if post_process && !final_text.trim().is_empty() {
         // D-010: the clean-up runs as its own task, so that giving up waiting
         // at the cursor does not cancel it. Cancelling it made Ollama abort a
         // half-finished model load (probe B, 23 Oct).

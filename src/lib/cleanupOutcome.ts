@@ -59,8 +59,8 @@ export function cleanupOutcome(e: CleanupEntryLike): CleanupOutcome {
     return why === "came_late"
       ? {
           state: "late",
-          short: "cleaned up later (the AI model was loading)",
-          long: "Pasted as spoken, then cleaned up here once the AI model had loaded",
+          short: "cleaned up later (the AI model was slow to answer)",
+          long: "Pasted as spoken, then cleaned up here once the AI model answered",
           suggestCheck: false,
         }
       : { state: "cleaned", short: "cleaned up", long: "Cleaned up", suggestCheck: false };

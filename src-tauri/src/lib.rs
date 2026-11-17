@@ -179,6 +179,13 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     );
     let history_manager =
         Arc::new(HistoryManager::new(app_handle).expect("Failed to initialize history manager"));
+    // Kōrero 1.49: a clean-up still running when Kōrero last closed never
+    // finished (the late window is 15 minutes).
+    match history_manager.retire_stale_still_running(30 * 60) {
+        Ok(0) => {}
+        Ok(n) => log::info!("history: {n} clean-ups left running at the last close marked as not finished"),
+        Err(e) => log::warn!("history: couldn't tidy unfinished clean-ups: {e}"),
+    }
 
     // Apply accelerator preferences before any model loads
     managers::transcription::apply_accelerator_settings(app_handle);
@@ -678,6 +685,7 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
             local_runtime::local_ai_runtime_cancel,
             local_runtime::local_ai_runtime_use,
             local_runtime::local_ai_runtime_stop_using,
+            local_runtime::local_ai_runtime_remove,
             doctor::local_ai_check, // Kōrero 1.49 (B10)
             commands::history_extra::update_post_processed_text,
             helpers::clamshell::is_laptop,

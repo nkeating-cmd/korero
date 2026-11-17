@@ -17,6 +17,9 @@ import { useSettingsStore } from "./settingsStore";
 export type RuntimeStep = "idle" | "downloading" | "starting" | "done" | "error" | "cancelled";
 
 const CANCELLED = "Download cancelled.";
+const ALREADY = "The local AI is already downloading.";
+
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface LocalAiState {
   runtime: RuntimeStatus | null;
@@ -32,6 +35,14 @@ interface LocalAiState {
   addRuntime: () => Promise<boolean>;
   cancelRuntime: () => Promise<void>;
   resetRuntime: () => void;
+  /** Check every file again and replace damaged ones. */
+  repairRuntime: () => Promise<boolean>;
+  /** Go back to what clean-up used before; keep the files. */
+  stopUsingRuntime: () => Promise<boolean>;
+  /** Delete the runtime and its models. */
+  removeRuntime: () => Promise<boolean>;
+  /** After a page reload mid-download: show it, and wait for it to end. */
+  followInstall: () => Promise<void>;
   check: (full: boolean) => Promise<DoctorReport | null>;
 }
 
@@ -62,6 +73,11 @@ export const useLocalAi = create<LocalAiState>((set, get) => ({
     try {
       const got = await commands.localAiRuntimeInstall();
       if (got.status === "error") {
+        if (got.error === ALREADY) {
+          // Started before this page loaded: follow it, not an error.
+          await get().followInstall();
+          return false;
+        }
         set(got.error === CANCELLED ? { step: "cancelled" } : { step: "error", error: got.error });
         return false;
       }
@@ -88,6 +104,68 @@ export const useLocalAi = create<LocalAiState>((set, get) => ({
   },
 
   resetRuntime: () => set({ step: "idle", error: null, doneBytes: 0, totalBytes: 0 }),
+
+  repairRuntime: async () => {
+    if (["downloading", "starting"].includes(get().step)) return false;
+    set({ step: "downloading", doneBytes: 0, totalBytes: 0, error: null });
+    const unlisten = await listen<RuntimeProgress>("local-ai-runtime-progress", (e) =>
+      set({ doneBytes: e.payload.done_bytes, totalBytes: e.payload.total_bytes }),
+    );
+    try {
+      const r = await commands.localAiRuntimeRepair();
+      if (r.status === "error") {
+        set(r.error === CANCELLED ? { step: "cancelled" } : { step: "error", error: r.error });
+        return false;
+      }
+      set({ step: "done" });
+      return true;
+    } finally {
+      unlisten();
+      void get().refreshRuntime();
+    }
+  },
+
+  stopUsingRuntime: async () => {
+    const r = await commands.localAiRuntimeStopUsing();
+    await useSettingsStore.getState().refreshSettings();
+    await get().refreshRuntime();
+    if (r.status === "error") {
+      set({ error: r.error });
+      return false;
+    }
+    return true;
+  },
+
+  removeRuntime: async () => {
+    const r = await commands.localAiRuntimeRemove();
+    await useSettingsStore.getState().refreshSettings();
+    await get().refreshRuntime();
+    if (r.status === "error") {
+      set({ error: r.error });
+      return false;
+    }
+    set({ step: "idle", error: null });
+    return true;
+  },
+
+  followInstall: async () => {
+    if (["downloading", "starting"].includes(get().step) && get().totalBytes > 0) return;
+    set({ step: "downloading", error: null });
+    const unlisten = await listen<RuntimeProgress>("local-ai-runtime-progress", (e) =>
+      set({ doneBytes: e.payload.done_bytes, totalBytes: e.payload.total_bytes }),
+    );
+    try {
+      for (;;) {
+        const s = await get().refreshRuntime();
+        if (!s?.installing) break;
+        await wait(2000);
+      }
+    } finally {
+      unlisten();
+      const s = get().runtime;
+      set({ step: s && s.installed.includes("core") ? "done" : "idle" });
+    }
+  },
 
   check: async (full) => {
     if (get().checking) return get().report;
