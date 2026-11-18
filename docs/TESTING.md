@@ -108,6 +108,23 @@ GitHub); the real Ollama is not. Before a release that changes `local_runtime` o
    message and no path, before the CUDA files download.
 8. **Remove** frees the space it states, and leaves the user's own Ollama alone.
 
+How to run these without touching the installed Kōrero: `scripts/uat-windows/README.md`.
+
+**Run on legion-26, 18 Nov 2026** (build `48c3777`, portable, driven over the webview; the
+installed 1.48.0 and its data unchanged: settings and history hashes equal before and after;
+the user's own Ollama kept its process and its 21 model files):
+
+| Step | Result |
+|---|---|
+| 1 Clean machine (simulated: no Ollama on `PATH` or in the test's `LOCALAPPDATA`) | Pass: "Add local AI (650 MB)" installed core, Vulkan and CUDA 13; qwen3.5:2b downloaded; the check ran by itself and said "Local clean-up is working." (test answer 0.3 s, all on the graphics card). Not yet on a truly clean machine (yoga-26), and no spoken dictation |
+| 2 Broken on purpose | Pass: runtime killed ("isn't running", Start it recovers); another program on 11435 (named, Kōrero won't send to it; Start it moves to 11436 and clean-up follows); dead `HTTP_PROXY` (full check still works); model missing after Remove (download offered with its size). Low memory not tried |
+| 3 Own Ollama left alone | Pass |
+| 4 Nothing left after Kōrero ends | Pass (killed outright: the job object ended the runtime) |
+| 5 Stop frees the graphics card | Pass: 4,578 MiB to 1,479 MiB, `llama-server` runner gone. First run found "Stop using it" left clean-up on with DeepSeek when it had been off: fixed in `611bd37`, re-run passed (DeepSeek, off) |
+| 6 Update path | Pass: the earlier copy ran, the update was offered and downloaded, the earlier folder was removed, check working |
+| 7 Blocked folder (deny-execute ACL, standing in for AppLocker or WDAC) | Pass: stopped after the core (81 MB on disk, no CUDA), plain message, no path; the reason now stays on the card (`48c3777`). AppLocker and WDAC codes themselves not tried |
+| 8 Remove | Pass: asked first, "frees 3.5 GB", folders gone, settings put back |
+
 ## Targets
 
 - Any new pure function that decides what the user keeps or loses (merging, superseding,
