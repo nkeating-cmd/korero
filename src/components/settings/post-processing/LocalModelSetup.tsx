@@ -225,6 +225,12 @@ export const LocalModelSetup: React.FC = () => {
                 : `Add local AI (${runtime.missing_mb} MB)`}
             </button>
           </div>
+          {localAi.step === "error" && localAi.error && (
+            // Kept on the card, not only in a toast that fades (UAT, 18 Nov 2026).
+            <p className="kx-meta text-[var(--kx-warn-ink)] break-words" role="alert">
+              {localAi.error}
+            </p>
+          )}
           {addingRuntime && (
             <div
               className="kx-progress"
