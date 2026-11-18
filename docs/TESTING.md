@@ -123,7 +123,7 @@ the user's own Ollama kept its process and its 21 model files):
 | 5 Stop frees the graphics card | Pass: 4,578 MiB to 1,479 MiB, `llama-server` runner gone. First run found "Stop using it" left clean-up on with DeepSeek when it had been off: fixed in `611bd37`, re-run passed (DeepSeek, off) |
 | 6 Update path | Pass: the earlier copy ran, the update was offered and downloaded, the earlier folder was removed, check working |
 | 7 Blocked folder (deny-execute ACL, standing in for AppLocker or WDAC) | Pass: stopped after the core (81 MB on disk, no CUDA), plain message, no path; the reason now stays on the card (`48c3777`). AppLocker and WDAC codes themselves not tried |
-| 8 Remove | Pass: asked first, "frees 3.5 GB", folders gone, settings put back |
+| 8 Remove | Pass: asked first, "frees 3.5 GB", folders gone. It ran on the build before `611bd37`, so it put clean-up back on with DeepSeek (the step 5 bug, since fixed and re-run through Stop using) |
 
 ## Targets
 
