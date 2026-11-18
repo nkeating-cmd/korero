@@ -1428,10 +1428,22 @@ pub async fn local_ai_runtime_remove(app: AppHandle, window: tauri::Window) -> R
     for dir in [root.join("runtime"), models_dir(&root)] {
         if dir.exists() {
             let d = dir.clone();
-            tauri::async_runtime::spawn_blocking(move || std::fs::remove_dir_all(&d))
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| format!("Couldn't remove all of Kōrero's local AI: {e}"))?;
+            // Windows can hold a file for a moment after its process ends
+            // (red-team, 18 Nov 2026): try a few times before giving up.
+            tauri::async_runtime::spawn_blocking(move || {
+                let mut last = Ok(());
+                for _ in 0..5 {
+                    last = std::fs::remove_dir_all(&d);
+                    if last.is_ok() || !d.exists() {
+                        return Ok(());
+                    }
+                    std::thread::sleep(Duration::from_millis(400));
+                }
+                last
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("Couldn't remove all of Kōrero's local AI (try again in a moment): {e}"))?;
         }
     }
     write_json(&state_path(&root), &State::default())?;

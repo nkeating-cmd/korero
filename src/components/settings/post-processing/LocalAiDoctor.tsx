@@ -179,7 +179,7 @@ export const LocalAiDoctor: React.FC = () => {
             className="kx-btn kx-btn-secondary kx-btn-sm"
             disabled={checking}
             onClick={() => void check(true)}
-            title="Also tests a real clean-up of an invented sentence"
+            title="Also tests a real clean-up of an invented sentence. Up to 3 minutes if the model has to load first."
           >
             {checking ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : null} Full check
           </button>

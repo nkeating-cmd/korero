@@ -165,6 +165,12 @@ pub struct Facts {
 }
 
 const PROBE: Duration = Duration::from_secs(4);
+/// The full check's test clean-up gives up after this long. Above the
+/// slowest cold model load seen (108 s on legion, D-010) plus the answer, and
+/// well below a dictation's own limit (300 s), so the check never sits for minutes
+/// (red-team, 18 Nov 2026). Giving up can stop a load in progress; the next
+/// dictation starts it again.
+const TEST_LIMIT: Duration = Duration::from_secs(180);
 const RECENT: usize = 20;
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
@@ -361,11 +367,15 @@ async fn gather(app: &AppHandle, mode: CheckMode) -> Facts {
         // The same call a dictation makes: the user's prompt, model and
         // provider settings, on an invented sentence (review M3).
         let started = Instant::now();
-        let outcome = crate::actions::post_process_transcription(
-            &settings,
-            crate::commands::ollama::TEST_SENTENCE,
+        let outcome = tokio::time::timeout(
+            TEST_LIMIT,
+            crate::actions::post_process_transcription(
+                &settings,
+                crate::commands::ollama::TEST_SENTENCE,
+            ),
         )
-        .await;
+        .await
+        .unwrap_or(Err(CleanupFailReason::TimedOut));
         let seconds = started.elapsed().as_secs_f32();
         f.test = Some(match outcome {
             Ok(answer) => {
