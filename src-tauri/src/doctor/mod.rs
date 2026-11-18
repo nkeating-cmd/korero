@@ -71,6 +71,8 @@ pub enum Fix {
     StartRuntime,
     StartOllama,
     InstallRuntime { download_mb: u32 },
+    /// An earlier Kōrero's runtime is running; download this version's.
+    UpdateRuntime { download_mb: u32 },
     UseRuntime,
     InstallOllama,
     UpdateOllama,

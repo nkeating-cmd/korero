@@ -214,12 +214,15 @@ export const LocalModelSetup: React.FC = () => {
         <div className="kx-banner kx-banner-info flex flex-col gap-2">
           <div className="flex items-center gap-3">
             <span className="flex-1 text-[13px]">
-              Local clean-up needs an AI runtime. Kōrero can add its own: Ollama, free, from its official release, with
-              every file checked. {runtime.missing_mb} MB download. It runs only on this computer.
+              {runtime.missing_mb === 0 && runtime.installed.includes("core")
+                ? "Kōrero's own local AI is already on this computer. Use it to run clean-up here: nothing to download."
+                : `Local clean-up needs an AI runtime. Kōrero can add its own: Ollama, free, from its official release, with every file checked. ${runtime.missing_mb} MB download. It runs only on this computer.`}
             </span>
             <button type="button" className="kx-btn kx-btn-primary kx-btn-sm" disabled={addingRuntime} onClick={() => void addRuntime()}>
               {addingRuntime ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Download size={14} aria-hidden="true" />}{" "}
-              Add local AI ({runtime.missing_mb} MB)
+              {runtime.missing_mb === 0 && runtime.installed.includes("core")
+                ? "Use Kōrero's local AI"
+                : `Add local AI (${runtime.missing_mb} MB)`}
             </button>
           </div>
           {addingRuntime && (

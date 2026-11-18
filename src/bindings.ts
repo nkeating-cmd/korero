@@ -1435,7 +1435,7 @@ export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
 export type CustomSounds = { start: boolean; stop: boolean }
 export type DoctorReport = { mode: CheckMode; verdict: Verdict; checks: CheckResult[]; report_text: string; took_ms: number }
 export type EngineType = "Whisper" | "Parakeet" | "Moonshine" | "MoonshineStreaming" | "SenseVoice" | "GigaAM" | "Canary" | "Cohere"
-export type Fix = { kind: "turn_on_cleanup" } | { kind: "start_runtime" } | { kind: "start_ollama" } | { kind: "install_runtime"; download_mb: number } | { kind: "use_runtime" } | { kind: "install_ollama" } | { kind: "update_ollama" } | { kind: "download_model"; model: string } | { kind: "choose_model" } | { kind: "choose_prompt" } | { kind: "proxy_help" } | { kind: "port_taken"; port: number } | { kind: "free_memory" }
+export type Fix = { kind: "turn_on_cleanup" } | { kind: "start_runtime" } | { kind: "start_ollama" } | { kind: "install_runtime"; download_mb: number } | { kind: "update_runtime"; download_mb: number } | { kind: "use_runtime" } | { kind: "install_ollama" } | { kind: "update_ollama" } | { kind: "download_model"; model: string } | { kind: "choose_model" } | { kind: "choose_prompt" } | { kind: "proxy_help" } | { kind: "port_taken"; port: number } | { kind: "free_memory" }
 export type GpuDeviceOption = { id: number; name: string; total_vram_mb: number }
 export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean; 
 /**

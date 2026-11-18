@@ -9,6 +9,7 @@ const ALL_FIXES: Fix[] = [
   { kind: "start_runtime" },
   { kind: "start_ollama" },
   { kind: "install_runtime", download_mb: 40 },
+  { kind: "update_runtime", download_mb: 650 },
   { kind: "use_runtime" },
   { kind: "install_ollama" },
   { kind: "update_ollama" },
@@ -46,6 +47,7 @@ describe("fixOffer", () => {
     expect(fixOffer({ kind: "download_model", model: "qwen3.5:4b:latest" }).button).toContain("3.4 GB");
     expect(fixOffer({ kind: "download_model", model: "someone/odd-model" }).button).toContain("size not known");
     expect(fixOffer({ kind: "install_runtime", download_mb: 40 }).safety).toBe("confirm");
+    expect(fixOffer({ kind: "update_runtime", download_mb: 650 }).button).toBe("Update Kōrero's local AI (650 MB)");
   });
 
   test("guides have help and no button; buttons have words", () => {

@@ -166,7 +166,7 @@ pub fn evaluate(f: &Facts) -> (Vec<CheckResult>, Verdict) {
         l.push(
             CheckId::CleanupOn,
             Fail,
-            title_of(CheckId::CleanupOn),
+            "AI clean-up is off",
             detail,
             fix,
         );
@@ -229,9 +229,11 @@ pub fn evaluate(f: &Facts) -> (Vec<CheckResult>, Verdict) {
         } else if !rt.alive && f.answered_http.is_some() {
             // Something answers on Kōrero's port, and it isn't Kōrero's
             // own process (review M4).
+            // Starting Kōrero's runtime moves it to a free port and points
+            // clean-up there (UAT, 18 Nov 2026: this was explain-only).
             l.push(CheckId::Runtime, Fail, "Another program is on Kōrero's port",
-                format!("Kōrero's local AI isn't running, and another program is answering on port {port}. Kōrero won't send text to it."),
-                Some(Fix::PortTaken { port }))
+                format!("Kōrero's local AI isn't running, and another program is answering on port {port}. Kōrero won't send text to it. Starting Kōrero's local AI moves it to a free port."),
+                Some(Fix::StartRuntime))
         } else if !rt.alive || f.answered_http.is_none() {
             l.push(
                 CheckId::Runtime,
@@ -247,7 +249,7 @@ pub fn evaluate(f: &Facts) -> (Vec<CheckResult>, Verdict) {
         } else if rt.update_needed {
             l.push(CheckId::Runtime, Warn, "Kōrero's local AI needs an update",
                 "It is running the version from an earlier Kōrero until this Kōrero's version is downloaded.".into(),
-                Some(Fix::InstallRuntime { download_mb: rt.missing_mb }))
+                Some(Fix::UpdateRuntime { download_mb: rt.missing_mb }))
         } else {
             l.push(
                 CheckId::Runtime,
@@ -1043,10 +1045,8 @@ mod tests {
         let (c, v) = evaluate(&f);
         assert_eq!(v, Verdict::NeedsAttention);
         assert_eq!(status(&c, CheckId::Runtime), CheckStatus::Fail);
-        assert_eq!(
-            fix(&c, CheckId::Runtime),
-            Some(Fix::PortTaken { port: 11435 })
-        );
+        assert_eq!(fix(&c, CheckId::Runtime), Some(Fix::StartRuntime));
+        assert!(c.iter().any(|x| x.detail.contains("another program is answering")));
         f.answered_http = None;
         assert_eq!(
             fix(&evaluate(&f).0, CheckId::Runtime),
@@ -1064,7 +1064,7 @@ mod tests {
         assert_eq!(status(&c, CheckId::Runtime), CheckStatus::Warn);
         assert_eq!(
             fix(&c, CheckId::Runtime),
-            Some(Fix::InstallRuntime { download_mb: 40 })
+            Some(Fix::UpdateRuntime { download_mb: 40 })
         );
         assert_eq!(status(&c, CheckId::TestAnswer), CheckStatus::Pass);
     }

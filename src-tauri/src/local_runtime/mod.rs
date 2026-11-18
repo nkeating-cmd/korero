@@ -182,6 +182,10 @@ struct State {
 struct Previous {
     provider_id: String,
     ollama_base_url: String,
+    /// Whether clean-up was on. Put back too: without it, "Stop using" after
+    /// clean-up had been off left it on with a cloud provider (UAT, 18 Nov
+    /// 2026). Absent in files from before then.
+    cleanup_enabled: Option<bool>,
 }
 
 /// Clean-up uses Kōrero's runtime now: it was pointed at it, the active
@@ -1321,6 +1325,7 @@ pub async fn local_ai_runtime_use(app: AppHandle, window: tauri::Window) -> Resu
         old.previous.clone()
     } else {
         Some(Previous {
+            cleanup_enabled: Some(settings.post_process_enabled),
             provider_id: settings.post_process_provider_id.clone(),
             ollama_base_url: settings
                 .post_process_providers
@@ -1347,8 +1352,20 @@ pub async fn local_ai_runtime_use(app: AppHandle, window: tauri::Window) -> Resu
 /// changed since is left alone.
 fn restore_previous(app: &AppHandle, state: &State) -> Result<(), String> {
     let mut s = crate::settings::get_settings(app);
-    if !in_use_with(state, &s) {
-        return Ok(());
+    if apply_previous(state, &mut s)? {
+        crate::settings::write_settings(app, s);
+    }
+    Ok(())
+}
+
+/// `restore_previous` without the settings store, so it can be tested.
+/// Returns whether anything changed.
+fn apply_previous(
+    state: &State,
+    s: &mut crate::settings::AppSettings,
+) -> Result<bool, String> {
+    if !in_use_with(state, s) {
+        return Ok(false);
     }
     let default = crate::settings::get_default_settings()
         .post_process_providers
@@ -1381,8 +1398,17 @@ fn restore_previous(app: &AppHandle, state: &State) -> Result<(), String> {
     if s.post_process_providers.iter().any(|p| p.id == provider_id) {
         s.post_process_provider_id = provider_id;
     }
-    crate::settings::write_settings(app, s);
-    Ok(())
+    // Clean-up on or off as it was. When that wasn't recorded, it stays on
+    // only if the provider put back runs on this computer: going back must
+    // never start sending text to a cloud provider by itself.
+    let local = s
+        .active_post_process_provider()
+        .is_some_and(|p| crate::commands::history::is_loopback_url(&p.base_url));
+    s.post_process_enabled = match state.previous.as_ref().and_then(|p| p.cleanup_enabled) {
+        Some(on) => on,
+        None => s.post_process_enabled && local,
+    };
+    Ok(true)
 }
 
 /// Kōrero 1.49: go back to what clean-up used before (often an Ollama the
@@ -1623,6 +1649,7 @@ mod runtime_tests {
             managed: true,
             port: Some(11437),
             previous: Some(Previous {
+                cleanup_enabled: Some(false),
                 provider_id: "openai".into(),
                 ollama_base_url: "http://localhost:11500/v1".into(),
             }),
@@ -1662,6 +1689,44 @@ mod runtime_tests {
             ..st
         };
         assert!(!in_use_with(&off, &settings_at("ollama", "http://127.0.0.1:11435/v1")));
+    }
+
+    #[test]
+    fn stopping_puts_back_the_provider_address_and_on_or_off() {
+        let st = |cleanup_enabled| State {
+            managed: true,
+            port: Some(11435),
+            previous: Some(Previous {
+                provider_id: "deepseek".into(),
+                ollama_base_url: "http://localhost:11500/v1".into(),
+                cleanup_enabled,
+            }),
+        };
+        // Clean-up was off with a cloud provider: it comes back off.
+        let mut s = settings_at("ollama", "http://127.0.0.1:11435/v1");
+        s.post_process_enabled = true;
+        assert!(apply_previous(&st(Some(false)), &mut s).unwrap());
+        assert_eq!(s.post_process_provider_id, "deepseek");
+        assert!(!s.post_process_enabled);
+        let base = |s: &crate::settings::AppSettings| {
+            s.post_process_providers.iter().find(|p| p.id == "ollama").unwrap().base_url.clone()
+        };
+        assert_eq!(base(&s), "http://localhost:11500/v1");
+        // Not recorded (an older state file): never left on for the cloud.
+        let mut s = settings_at("ollama", "http://127.0.0.1:11435/v1");
+        s.post_process_enabled = true;
+        apply_previous(&st(None), &mut s).unwrap();
+        assert!(!s.post_process_enabled);
+        // It was on: it stays on, the user's own choice.
+        let mut s = settings_at("ollama", "http://127.0.0.1:11435/v1");
+        s.post_process_enabled = true;
+        apply_previous(&st(Some(true)), &mut s).unwrap();
+        assert!(s.post_process_enabled);
+        // Already moved away by the user: nothing is touched.
+        let mut s = settings_at("openai", "http://localhost:11434/v1");
+        s.post_process_enabled = true;
+        assert!(!apply_previous(&st(Some(false)), &mut s).unwrap());
+        assert!(s.post_process_enabled);
     }
 
     #[test]

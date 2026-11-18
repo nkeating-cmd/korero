@@ -51,6 +51,12 @@ export function fixOffer(f: Fix): FixOffer {
         help:
           "Kōrero downloads Ollama, a free AI runtime, from its official release and checks every file. It runs only on this computer and stays inside Kōrero's own folder.",
       };
+    case "update_runtime":
+      return {
+        safety: "confirm",
+        button: f.download_mb > 0 ? `Update Kōrero's local AI (${size(f.download_mb)})` : "Update Kōrero's local AI",
+        help: "Clean-up keeps working on the earlier version until the update is downloaded and checked; then the earlier one is removed.",
+      };
     case "use_runtime":
       return {
         safety: "confirm",

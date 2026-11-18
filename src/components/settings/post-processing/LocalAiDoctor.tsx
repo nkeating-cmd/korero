@@ -58,6 +58,7 @@ export const LocalAiDoctor: React.FC = () => {
   const [fixing, setFixing] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const prevJobStep = useRef(modelJob.step);
+  const prevRuntimeStep = useRef(step);
   const fixRef = useRef<HTMLButtonElement>(null);
   const baseUrl =
     settings?.post_process_providers?.find((p) => p.id === "ollama")?.base_url ?? "http://localhost:11434/v1";
@@ -75,9 +76,18 @@ export const LocalAiDoctor: React.FC = () => {
   // finished: a finished job stays "done", and every visit would otherwise
   // load the model again (review).
   useEffect(() => {
-    if (modelJob.step === "done" && prevJobStep.current !== "done") void check(true);
+    if (modelJob.step === "done" && prevJobStep.current !== "done") {
+      void check(true);
+      void refreshRuntime(); // the models now take more space
+    }
     prevJobStep.current = modelJob.step;
   }, [modelJob.step]);
+  // Kōrero's local AI added from the setup card: check again, or the page
+  // keeps showing the problem it had before (UAT, 18 Nov 2026).
+  useEffect(() => {
+    if (step === "done" && prevRuntimeStep.current !== "done") void check(false);
+    prevRuntimeStep.current = step;
+  }, [step]);
 
   const problem = report ? firstProblem(report.checks) : null;
   const offer = problem?.fix ? fixOffer(problem.fix) : null;
@@ -100,6 +110,7 @@ export const LocalAiDoctor: React.FC = () => {
           await updateSetting("post_process_enabled", true);
           break;
         case "install_runtime":
+        case "update_runtime":
           if (!(await addRuntime())) {
             const s = useLocalAi.getState();
             if (s.step === "error" && s.error) toast.error("Kōrero's local AI didn't install", { description: s.error });
@@ -195,7 +206,7 @@ export const LocalAiDoctor: React.FC = () => {
           <div className="text-[14px] font-medium text-[var(--kx-ink)]">{problem.title}</div>
           <p className="text-[13px] text-[var(--kx-ink-read)]">{problem.detail}</p>
           {offer?.help && <p className="kx-meta">{offer.help}</p>}
-          {downloading && (
+          {downloading && (problem.fix?.kind === "install_runtime" || problem.fix?.kind === "update_runtime") && (
             <>
               <div
                 className="kx-progress"
@@ -275,7 +286,22 @@ export const LocalAiDoctor: React.FC = () => {
                   className="kx-btn kx-btn-quiet kx-btn-sm"
                   disabled={fixing || downloading}
                   title="Puts clean-up back the way it was before; keeps the files"
-                  onClick={() => void manage(stopUsingRuntime, "Couldn't switch back")}
+                  onClick={() =>
+                    void manage(async () => {
+                      const ok = await stopUsingRuntime();
+                      if (ok) {
+                        // Say where clean-up goes now: it may be a cloud provider again.
+                        const s = useSettingsStore.getState().settings;
+                        const p = s?.post_process_providers?.find((x) => x.id === s?.post_process_provider_id);
+                        toast.success(
+                          s?.post_process_enabled
+                            ? `Clean-up is back to ${p?.label ?? "the provider you used before"}.`
+                            : "Kōrero's local AI is stopped, and clean-up is off as it was before.",
+                        );
+                      }
+                      return ok;
+                    }, "Couldn't switch back")
+                  }
                 >
                   Stop using it
                 </button>
