@@ -91,7 +91,11 @@ def score(fid, text, answer, must, must_not, extra):
     fails = []
     if not a:
         return ["empty"]
-    if PREAMBLE.search(a):
+    # A lead-in the speaker didn't say. "Okay, let's get started" is not a
+    # preamble when the speaker said "okay" (fixed 20 Nov 2026: no_labels
+    # failed every faithful answer).
+    pre = PREAMBLE.search(a)
+    if pre and not fold(text).lstrip().startswith(fold(pre.group(1)).strip(" ,!:")):
         fails.append("preamble")
     for m in must:
         if fold(m) not in low:
@@ -118,7 +122,12 @@ def score(fid, text, answer, must, must_not, extra):
     # kept structure have their own shape). Added 17 Nov 2026 after reading
     # the first run's answers, which the rubric had not checked for this.
     if extra not in ("list3", "keeps_bullets2"):
-        if not (a[0].isupper() or a[0].isdigit() or a[0] == "$") or a.rstrip()[-1] not in ".?!":
+        # Prose turned into a list the speaker didn't make (rule 5c). Counted
+        # on its own (20 Nov 2026), not as missing capitals as before.
+        if "\n" not in text and re.match(r"^\s*(-|\d+\.)\s", a):
+            fails.append("invented_list")
+        body = re.sub(r"^\s*(-|\d+\.)\s+", "", a)
+        if not (body[:1].isupper() or body[:1].isdigit() or body[:1] == "$") or body.rstrip()[-1:] not in (".", "?", "!"):
             fails.append("capitals_or_stop")
     return fails
 
