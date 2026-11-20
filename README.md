@@ -17,7 +17,7 @@ Two things do reach the network, and it is worth naming them rather than roundin
 speech models are downloaded on first use, and the app asks GitHub once at startup whether a newer
 release exists. Neither carries audio, transcripts, or anything about you. No telemetry, ever.
 
-Current version: **v1.48.0** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.48.0)).
+Current version: **v1.49.0** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.49.0)).
 
 ---
 
@@ -46,7 +46,9 @@ Current version: **v1.48.0** ([release notes](https://github.com/nkeating-cmd/ko
 
 ### New surfaces & workflows
 - **Always see what's in use** (v1.43). The foot of the sidebar shows the microphone (the real device, even on "system default"), the speech model and the clean-up model with its prompt, on every page. Click any of them to change it. The clean-up line says where text goes: on this computer, or the cloud service it's sent to.
-- **A local AI model that fits your computer** (v1.43). AI clean-up & notes reads your graphics card, memory and free disk, suggests one model that fits, and downloads, tests and switches to it with one button. Other models are labelled Fits well, Fits, Slower or Won't fit. The suggestions are provisional until they have been tested on Kōrero's prompts.
+- **A local AI model that fits your computer** (v1.43). AI clean-up & notes reads your graphics card, memory and free disk, suggests one model that fits, and downloads, tests and switches to it with one button. Other models are labelled Fits well, Fits, Slower or Won't fit. Since v1.49 the list comes from a test of each model on Kōrero's own clean-up prompt: the gemma4 models changed the fewest words, the qwen3.5 models carry a caution, and qwen3.5:2b is no longer offered.
+- **Check local AI** (v1.49). One page says whether clean-up on this computer will work and, if not, the one thing to do next: start or update the local AI, download the model, or choose a prompt. A full check runs a real clean-up. The report it copies or sends to Kyt holds settings and timings, never what you said.
+- **Kōrero's own local AI** (v1.49). On a computer without Ollama, Kōrero can download and run its own copy (about 650 MB, each file checked against a pinned list) on a port of its own, and stop or remove it again. Turning it off puts back the clean-up settings you had before, including whether clean-up was on.
 - **Today** (v1.42) — the home page: start a meeting, a note or an import, see what's running and what just finished, and a *Ready to go* panel that checks your microphone, NZ English, speech model, notes model and call audio, with a fix button for each.
 - **Search everything with Ctrl K** (v1.42) — meetings (titles, transcripts and notes), notes, dictations and settings in one box. Macrons are optional: "whanau" finds *whānau*. It also runs common actions: record, flag a moment, new note, import.
 - **Activity** (v1.42) — one panel for what's running, what needs a look, and what finished this session.

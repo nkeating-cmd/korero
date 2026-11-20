@@ -125,6 +125,16 @@ the user's own Ollama kept its process and its 21 model files):
 | 7 Blocked folder (deny-execute ACL, standing in for AppLocker or WDAC) | Pass: stopped after the core (81 MB on disk, no CUDA), plain message, no path; the reason now stays on the card (`48c3777`). AppLocker and WDAC codes themselves not tried |
 | 8 Remove | Pass: asked first, "frees 3.5 GB", folders gone. It ran on the build before `611bd37`, so it put clean-up back on with DeepSeek (the step 5 bug, since fixed and re-run through Stop using) |
 
+**Run on yoga-26, 20 Nov 2026** (Intel Arc, no separate graphics card; the user's own Ollama
+0.40.16; test builds `52bf20e`, then `af7fdc5` built on yoga; settings backed up first and kept):
+
+| Step | Result |
+|---|---|
+| Recommendation | Found: qwen3.5:2b, the bake-off's unsafe model, was "Recommended for this computer". 2b dropped from the catalogue in 1.49; the processor pick is now qwen3.5:4b with a caution |
+| Download over a dropping connection | Found: the estimate read "1.2e+24 min left". Fixed in `27f0fdc` ("waiting for the connection") |
+| "Use" on qwen3.5:4b | Pass: downloaded, tested and switched clean-up on by itself; full check all green (4.6 s warm, 8.8 s cold, on the processor) |
+| Spoken dictation with Ctrl+Shift+Space | Found: the shortcut did nothing after "Use" (L-018). Fixed in `af7fdc5`. On the old build, after the switch was turned off and on, a spoken dictation through it came back cleaned in about 6 s (prompt processing on the processor). On a fresh `af7fdc5` build with clean-up off at start-up, "Use" alone registered the shortcut (log) |
+
 ## Targets
 
 - Any new pure function that decides what the user keeps or loses (merging, superseding,
