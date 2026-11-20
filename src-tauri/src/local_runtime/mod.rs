@@ -1352,8 +1352,9 @@ pub async fn local_ai_runtime_use(app: AppHandle, window: tauri::Window) -> Resu
 /// changed since is left alone.
 fn restore_previous(app: &AppHandle, state: &State) -> Result<(), String> {
     let mut s = crate::settings::get_settings(app);
+    let was = s.post_process_enabled;
     if apply_previous(state, &mut s)? {
-        crate::settings::write_settings(app, s);
+        crate::shortcut::write_settings_syncing_post_process(app, was, s);
     }
     Ok(())
 }

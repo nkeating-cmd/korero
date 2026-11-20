@@ -350,6 +350,7 @@ pub fn use_local_ollama_model(
         return Err("That isn't a model name.".to_string());
     }
     let mut settings = crate::settings::get_settings(&app);
+    let was = settings.post_process_enabled;
     let base = settings
         .post_process_providers
         .iter()
@@ -367,7 +368,7 @@ pub fn use_local_ollama_model(
         .post_process_models
         .insert("ollama".to_string(), model);
     settings.post_process_enabled = true;
-    crate::settings::write_settings(&app, settings);
+    crate::shortcut::write_settings_syncing_post_process(&app, was, settings);
     Ok(())
 }
 

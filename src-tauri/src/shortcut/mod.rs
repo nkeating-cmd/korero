@@ -13,7 +13,7 @@ mod handler;
 pub mod handy_keys;
 mod tauri_impl;
 
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use serde::Serialize;
 use specta::Type;
 use tauri::{AppHandle, Emitter, Manager};
@@ -798,21 +798,46 @@ pub fn change_post_process_enabled_setting(app: AppHandle, enabled: bool) -> Res
     let mut settings = settings::get_settings(&app);
     settings.post_process_enabled = enabled;
     settings::write_settings(&app, settings.clone());
+    set_post_process_shortcut(&app, &settings, enabled);
+    Ok(())
+}
 
-    // Register or unregister the post-processing shortcut
-    if let Some(binding) = settings
+/// Register or unregister the clean-up shortcut to match clean-up being on
+/// or off. Every path that turns clean-up on or off must call this, not just
+/// the switch: the shortcut is only registered at start-up when clean-up was
+/// already on (yoga-26, 20 Nov 2026: "Use" on a local model turned clean-up
+/// on, and Ctrl+Shift+Space did nothing until Kōrero was restarted).
+pub fn set_post_process_shortcut(app: &AppHandle, settings: &settings::AppSettings, enabled: bool) {
+    let Some(binding) = settings
         .bindings
         .get("transcribe_with_post_process")
         .cloned()
-    {
-        if enabled {
-            let _ = register_shortcut(&app, binding);
-        } else {
-            let _ = unregister_shortcut(&app, binding);
-        }
+    else {
+        return;
+    };
+    let result = if enabled {
+        register_shortcut(app, binding)
+    } else {
+        unregister_shortcut(app, binding)
+    };
+    // Already registered (or already not) is the usual reason this fails.
+    if let Err(e) = result {
+        debug!("clean-up shortcut (enabled={enabled}): {e}");
     }
+}
 
-    Ok(())
+/// Write settings in which clean-up may have been turned on or off, and
+/// bring the clean-up shortcut into line when it was.
+pub fn write_settings_syncing_post_process(
+    app: &AppHandle,
+    was: bool,
+    settings: settings::AppSettings,
+) {
+    let now = settings.post_process_enabled;
+    settings::write_settings(app, settings.clone());
+    if was != now {
+        set_post_process_shortcut(app, &settings, now);
+    }
 }
 
 #[tauri::command]
