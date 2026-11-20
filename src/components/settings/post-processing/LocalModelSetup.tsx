@@ -7,7 +7,7 @@ import { commands } from "@/bindings";
 import { useSettings } from "../../../hooks/useSettings";
 import { CATALOGUE, type CatalogueEntry } from "../../../lib/modelCatalogue";
 import { fitFor, gpuSummary, recommend, sortByFit, type Fit, type ProfileLike } from "../../../lib/modelFit";
-import { etaSeconds, ok, useOllamaJob, type Step } from "../../../stores/ollamaJobStore";
+import { etaSeconds, ok, stalled, useOllamaJob, type Step } from "../../../stores/ollamaJobStore";
 import { isLocalInUse, isLoopbackUrl } from "../../shell/inUseModel";
 import { useLocalAi } from "../../../stores/localAiStore";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -364,7 +364,7 @@ export const LocalModelSetup: React.FC = () => {
               </div>
               <p className="kx-meta">
                 {job.progress.totalBytes > 0
-                  ? `${bytesGb(job.progress.doneBytes)} of ${bytesGb(job.progress.totalBytes)}${eta !== null ? ` · ${mins(eta)}` : ""} · you can keep working`
+                  ? `${bytesGb(job.progress.doneBytes)} of ${bytesGb(job.progress.totalBytes)}${eta !== null ? ` · ${mins(eta)}` : stalled(job.progress) ? " · waiting for the connection" : ""} · you can keep working`
                   : "Connecting to Ollama…"}
               </p>
             </>
