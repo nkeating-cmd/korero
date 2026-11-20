@@ -34,15 +34,15 @@ describe("recommend", () => {
     expect(fitFor(entry("gemma4:26b"), gpu(24, 64)).fit).toBe("tight");
   });
   test("32 GB graphics card: gemma4:26b", () => expect(recommend(CATALOGUE, gpu(32, 64))?.tag).toBe("gemma4:26b"));
-  test("no graphics card: the smallest model, on the processor", () =>
-    expect(recommend(CATALOGUE, cpuOnly(16))?.tag).toBe("qwen3.5:2b"));
+  test("no graphics card: the smallest model, on the processor (never qwen3.5:2b: bake-off, 20 Nov 2026)", () =>
+    expect(recommend(CATALOGUE, cpuOnly(16))?.tag).toBe("qwen3.5:4b"));
   test("nothing fits: no recommendation", () => expect(recommend(CATALOGUE, cpuOnly(4))).toBeNull());
   test("Apple Silicon 24 GB", () => expect(recommend(CATALOGUE, mac(24))?.tag).toBe("gemma4:12b"));
 });
 
 describe("fitFor", () => {
   test("an integrated GPU never counts as graphics memory", () =>
-    expect(fitFor(entry("qwen3.5:2b"), cpuOnly(16)).fit).toBe("cpu"));
+    expect(fitFor(entry("qwen3.5:4b"), cpuOnly(16)).fit).toBe("cpu"));
   test("too big for GPU plus memory is refused", () => expect(fitFor(entry("gemma4:26b"), gpu(8, 16)).fit).toBe("no"));
   test("not enough disk is refused, whatever the GPU", () => {
     const f = fitFor(entry("qwen3.5:4b"), gpu(24, 64, 4));
@@ -55,7 +55,7 @@ describe("fitFor", () => {
     expect(fitFor(entry("gemma4:12b"), gpu(8, 16)).fit).toBe("cpu"));
   test("an 8 GB Mac is not offered a 9 GB model (RT-A-08)", () => {
     expect(fitFor(entry("qwen3.5:9b"), mac(8)).fit).toBe("no");
-    expect(fitFor(entry("qwen3.5:2b"), mac(8)).fit).toBe("great");
+    expect(fitFor(entry("qwen3.5:4b"), mac(8)).fit).toBe("great");
   });
   test("an AMD APU classed integrated by Rust runs on the processor", () => {
     const apu: ProfileLike = {
@@ -73,13 +73,16 @@ describe("fitFor", () => {
 describe("ordering and summary", () => {
   test("best fit first, then smallest", () => {
     const order = sortByFit(CATALOGUE, gpu(8, 16)).map((e) => e.tag);
-    expect(order[0]).toBe("qwen3.5:2b");
+    expect(order[0]).toBe("qwen3.5:4b");
     expect(order[order.length - 1]).toBe("gemma4:26b");
   });
   test("summary names the best discrete card", () => {
     expect(gpuSummary(gpu(12, 32))).toBe("Discrete GPU · 12 GB");
     expect(gpuSummary(cpuOnly(16))).toContain("processor");
   });
-  test("every entry is marked provisional until the bake-off", () =>
-    expect(CATALOGUE.every((e) => e.provisional)).toBe(true));
+  test("the bake-off's unsafe model is not offered, and the qwen models carry a caution", () => {
+    expect(CATALOGUE.some((e) => e.tag === "qwen3.5:2b")).toBe(false);
+    expect(CATALOGUE.filter((e) => e.tag.startsWith("qwen")).every((e) => !!e.caution)).toBe(true);
+    expect(CATALOGUE.filter((e) => e.tag.startsWith("gemma")).every((e) => !e.caution)).toBe(true);
+  });
 });

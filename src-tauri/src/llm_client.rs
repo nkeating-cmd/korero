@@ -192,9 +192,28 @@ pub(crate) fn build_headers(
 /// for a slow provider, blocking the transcription post-process flow and any
 /// downstream UI state. Defaults are conservative — long enough for reasoning
 /// models on a slow link, short enough to surface real failures.
+/// Kōrero 1.49: a request to this computer never goes through a proxy.
+///
+/// reqwest reads the Windows proxy settings (`ProxyEnable`, `ProxyServer`,
+/// `ProxyOverride` in the user's Internet Settings) and `HTTP(S)_PROXY`, and
+/// nothing in it exempts loopback (hyper-util 0.1.20 `matcher.rs`). On a work
+/// laptop with a fixed proxy, every call to `localhost:11434` went to the
+/// company proxy and failed, looking like Ollama was down or "not Ollama".
+/// Cloud providers keep the proxy: that is how such networks reach them.
+pub(crate) fn direct_to_loopback(
+    builder: reqwest::ClientBuilder,
+    base_url: &str,
+) -> reqwest::ClientBuilder {
+    if crate::commands::history::is_loopback_url(base_url) {
+        builder.no_proxy()
+    } else {
+        builder
+    }
+}
+
 fn create_client(provider: &PostProcessProvider, api_key: &str) -> Result<reqwest::Client, String> {
     let headers = build_headers(provider, api_key)?;
-    reqwest::Client::builder()
+    direct_to_loopback(reqwest::Client::builder(), &provider.base_url)
         .default_headers(headers)
         .timeout(LLM_REQUEST_TIMEOUT)
         .connect_timeout(LLM_CONNECT_TIMEOUT)
@@ -218,6 +237,10 @@ pub fn default_reasoning_effort(provider: &PostProcessProvider) -> Option<String
         _ => None,
     }
 }
+
+/// Kōrero 1.49: something other than Kōrero's own runtime answered on its
+/// port. The text is not sent anywhere else.
+const NOT_OURS: &str = "Another program answered on the port Kōrero's local AI uses, so the text wasn't sent to it. Couldn't reach Ollama.";
 
 /// Send a chat completion request to an OpenAI-compatible API
 /// Returns Ok(Some(content)) on success, Ok(None) if response has no content,
@@ -353,6 +376,9 @@ pub async fn send_chat_completion_with_schema(
         {
             crate::ollama_chat::Outcome::Done(v) => return Ok(v),
             crate::ollama_chat::Outcome::NotOllama => {
+                if crate::local_runtime::could_be_ours(&provider.base_url) {
+                    return Err(NOT_OURS.to_string());
+                }
                 log::info!("Ollama provider is not an Ollama server; using the OpenAI-compatible path")
             }
         }
@@ -476,6 +502,9 @@ pub async fn send_chat_completion_meeting(
         {
             crate::ollama_chat::Outcome::Done(v) => return Ok(v.unwrap_or_default()),
             crate::ollama_chat::Outcome::NotOllama => {
+                if crate::local_runtime::could_be_ours(&provider.base_url) {
+                    return Err(NOT_OURS.to_string());
+                }
                 log::info!("Ollama provider is not an Ollama server; using the OpenAI-compatible path")
             }
         }
@@ -486,7 +515,7 @@ pub async fn send_chat_completion_meeting(
     debug!("Sending NON-STREAMING meeting completion request to: {}", url);
 
     let headers = build_headers(provider, &api_key)?;
-    let client = reqwest::Client::builder()
+    let client = direct_to_loopback(reqwest::Client::builder(), &provider.base_url)
         .default_headers(headers)
         .timeout(LLM_MEETING_FALLBACK_TIMEOUT)
         .connect_timeout(LLM_CONNECT_TIMEOUT)
@@ -590,6 +619,9 @@ pub async fn stream_chat_completion<F: FnMut(&str)>(
         {
             crate::ollama_chat::Outcome::Done(v) => return Ok(v),
             crate::ollama_chat::Outcome::NotOllama => {
+                if crate::local_runtime::could_be_ours(&provider.base_url) {
+                    return Err(NOT_OURS.to_string());
+                }
                 log::info!("Ollama provider is not an Ollama server; using the OpenAI-compatible path")
             }
         }
@@ -605,7 +637,7 @@ pub async fn stream_chat_completion<F: FnMut(&str)>(
     // the read loop below, and the initial `send()` is bounded separately, so a
     // provider that never answers at all still fails fast.
     let headers = build_headers(provider, &api_key)?;
-    let client = reqwest::Client::builder()
+    let client = direct_to_loopback(reqwest::Client::builder(), &provider.base_url)
         .default_headers(headers)
         .connect_timeout(LLM_CONNECT_TIMEOUT)
         // Review follow-up: removing the total timeout must not leave an
@@ -1262,6 +1294,107 @@ mod korero_142_thinking_off_tests {
             {
                 assert_eq!(default_reasoning_effort(&p), None, "{id}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod korero_149_proxy_tests {
+    use super::direct_to_loopback;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Answer every connection on `l` with `reply`, counting connections.
+    fn serve(l: TcpListener, reply: &'static str) -> Arc<AtomicUsize> {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        std::thread::spawn(move || {
+            for s in l.incoming().flatten() {
+                h.fetch_add(1, Ordering::SeqCst);
+                let mut s = s;
+                let mut buf = [0u8; 2048];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(reply.as_bytes());
+            }
+        });
+        hits
+    }
+
+    /// Kōrero 1.49: with a proxy set, a request to this computer goes
+    /// straight to it, and the same request through a plain client reaches
+    /// the proxy (the control, which shows the test can fail).
+    #[test]
+    fn loopback_skips_a_proxy_and_the_control_does_not() {
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_addr = proxy.local_addr().unwrap();
+        let proxy_hits = serve(
+            proxy,
+            "HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let local = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = local.local_addr().unwrap().port();
+        let _local_hits = serve(
+            local,
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+        );
+
+        let keys = [
+            "HTTP_PROXY",
+            "http_proxy",
+            "NO_PROXY",
+            "no_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ];
+        let saved: Vec<_> = keys.iter().map(|k| (*k, std::env::var_os(k))).collect();
+        for k in keys {
+            std::env::remove_var(k);
+        }
+        std::env::set_var("HTTP_PROXY", format!("http://{proxy_addr}"));
+        let url = format!("http://127.0.0.1:{port}/api/tags");
+        let base = format!("http://127.0.0.1:{port}/v1");
+        let direct = direct_to_loopback(reqwest::Client::builder(), &base)
+            .build()
+            .unwrap();
+        let plain = reqwest::Client::builder().build().unwrap();
+        for (k, v) in saved {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+
+        tauri::async_runtime::block_on(async {
+            let d = direct.get(&url).send().await.expect("direct request");
+            assert_eq!(d.status().as_u16(), 200, "loopback must not use the proxy");
+            let p = plain.get(&url).send().await.expect("control request");
+            assert_eq!(p.status().as_u16(), 407, "the control must reach the proxy");
+        });
+        assert_eq!(
+            proxy_hits.load(Ordering::SeqCst),
+            1,
+            "only the control used the proxy"
+        );
+    }
+
+    #[test]
+    fn cloud_addresses_keep_the_proxy() {
+        // The builder is opaque, so check the decision it is built on.
+        for (url, local) in [
+            ("http://localhost:11434/v1", true),
+            ("http://127.0.0.1:11435", true),
+            ("http://[::1]:11434/v1", true),
+            ("https://api.openai.com/v1", false),
+            ("http://localhost:11434@evil.example/v1", false),
+            ("http://192.0.2.20:11434/v1", false),
+        ] {
+            assert_eq!(
+                crate::commands::history::is_loopback_url(url),
+                local,
+                "{url}"
+            );
         }
     }
 }

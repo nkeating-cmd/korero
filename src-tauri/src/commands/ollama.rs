@@ -160,7 +160,7 @@ pub async fn pull_ollama_model(
     let is_cancelled = move || CANCELLED_SEQ.load(Ordering::SeqCst) >= id;
 
     let pull_url = format!("{}/api/pull", native_base);
-    let client = reqwest::Client::builder()
+    let client = crate::llm_client::direct_to_loopback(reqwest::Client::builder(), &native_base)
         .connect_timeout(PULL_CONNECT_TIMEOUT)
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
@@ -228,12 +228,12 @@ pub struct OllamaTestRun {
     pub gpu_share: Option<f32>,
 }
 
-const TEST_SENTENCE: &str =
+pub(crate) const TEST_SENTENCE: &str =
     "um so the hui is on tuesday no wait wednesday at the marae and aroha will bring the whanau";
 const TEST_SYSTEM: &str = "Clean up this dictation: fix punctuation and capitals, remove filler \
 words, keep te reo Māori words. Reply with the cleaned sentence only.";
 
-fn gpu_share_from(ps_json: &str, model: &str) -> Option<f32> {
+pub(crate) fn gpu_share_from(ps_json: &str, model: &str) -> Option<f32> {
     let v: serde_json::Value = serde_json::from_str(ps_json).ok()?;
     let want = crate::ollama_chat::normalise_model(model);
     v["models"].as_array()?.iter().find_map(|m| {
@@ -258,11 +258,18 @@ pub async fn ollama_test_model(
     model: String,
 ) -> Result<OllamaTestRun, String> {
     super::require_main_window(&window)?;
+    test_run(&app, &model).await
+}
+
+/// The test run behind `ollama_test_model`; also the doctor's full check
+/// (Kōrero 1.49).
+pub(crate) async fn test_run(app: &AppHandle, model: &str) -> Result<OllamaTestRun, String> {
+    let model = model.to_string();
     if model.trim().is_empty() || model.len() > 200 || model.chars().any(char::is_whitespace) {
         return Err("That isn't a model name.".to_string());
     }
-    let base = ollama_native_base(&app)?;
-    let client = reqwest::Client::builder()
+    let base = ollama_native_base(app)?;
+    let client = crate::llm_client::direct_to_loopback(reqwest::Client::builder(), &base)
         .connect_timeout(PULL_CONNECT_TIMEOUT)
         .timeout(Duration::from_secs(20))
         .build()
@@ -284,7 +291,7 @@ pub async fn ollama_test_model(
             .unwrap_or(text);
         return Err(format!("Ollama can't use {model} (HTTP {status}): {msg}"));
     }
-    let settings = crate::settings::get_settings(&app);
+    let settings = crate::settings::get_settings(app);
     let provider = settings
         .post_process_providers
         .iter()
@@ -343,6 +350,7 @@ pub fn use_local_ollama_model(
         return Err("That isn't a model name.".to_string());
     }
     let mut settings = crate::settings::get_settings(&app);
+    let was = settings.post_process_enabled;
     let base = settings
         .post_process_providers
         .iter()
@@ -360,7 +368,7 @@ pub fn use_local_ollama_model(
         .post_process_models
         .insert("ollama".to_string(), model);
     settings.post_process_enabled = true;
-    crate::settings::write_settings(&app, settings);
+    crate::shortcut::write_settings_syncing_post_process(&app, was, settings);
     Ok(())
 }
 
@@ -387,13 +395,14 @@ pub async fn check_ollama_connection(base_url: String) -> bool {
 
     let tags_url = format!("{}/api/tags", native_base);
 
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(4))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
+    let client =
+        match crate::llm_client::direct_to_loopback(reqwest::Client::builder(), &native_base)
+            .timeout(std::time::Duration::from_secs(4))
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
 
     client
         .get(&tags_url)
@@ -447,16 +456,17 @@ pub async fn warm_model(base_url: &str, model: &str, keep_alive_secs: u64) {
         "keep_alive": format!("{keep_alive_secs}s"),
         "stream": false
     });
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            log::warn!("warm_model: client build failed: {e}");
-            return;
-        }
-    };
+    let client =
+        match crate::llm_client::direct_to_loopback(reqwest::Client::builder(), &native_base)
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("warm_model: client build failed: {e}");
+                return;
+            }
+        };
     match client.post(&url).json(&body).send().await {
         Ok(r) if r.status().is_success() => {
             log::info!(
@@ -471,7 +481,7 @@ pub async fn warm_model(base_url: &str, model: &str, keep_alive_secs: u64) {
 /// Locate the Ollama executable. Prefers the GUI app ("ollama app.exe" —
 /// starting it brings up the tray AND the server), falls back to the CLI,
 /// then to a PATH probe (catches custom installs; cross-platform).
-fn find_ollama_exe() -> Option<std::path::PathBuf> {
+pub(crate) fn find_ollama_exe() -> Option<std::path::PathBuf> {
     #[cfg(windows)]
     {
         if let Ok(local) = std::env::var("LOCALAPPDATA") {
@@ -510,7 +520,8 @@ fn find_ollama_exe() -> Option<std::path::PathBuf> {
 pub async fn ollama_status(base_url: String) -> OllamaStatus {
     let exe = find_ollama_exe();
     OllamaStatus {
-        installed: exe.is_some(),
+        // Kōrero 1.49: Kōrero's own runtime counts as installed when clean-up uses it.
+        installed: exe.is_some() || crate::local_runtime::in_use_and_installed(),
         running: is_reachable(&base_url).await,
         exe_path: exe.map(|p| p.to_string_lossy().to_string()),
     }
@@ -519,6 +530,13 @@ pub async fn ollama_status(base_url: String) -> OllamaStatus {
 /// Start Ollama (GUI app preferred, `ollama serve` fallback) and wait up to
 /// ~20 s for the API to come up. Ok(true) = reachable.
 pub async fn start_and_wait(base_url: &str) -> Result<bool, String> {
+    // Kōrero 1.49 (D-014): clean-up that points at Kōrero's own runtime
+    // starts that, never a user-installed Ollama. Asked before "is something
+    // answering": another program on Kōrero's port is not Kōrero's runtime
+    // (review M4).
+    if let Some(started) = crate::local_runtime::start_if_ours(base_url).await {
+        return started;
+    }
     if is_reachable(base_url).await {
         return Ok(true);
     }

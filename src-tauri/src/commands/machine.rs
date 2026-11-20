@@ -89,9 +89,19 @@ pub fn classify_gpu(vendor_id: u32, name: &str, vram_mb: u32) -> GpuKind {
 /// `/proc/meminfo` → total MB.
 #[cfg_attr(windows, allow(dead_code))] // used on macOS/Linux and in tests
 pub fn parse_meminfo(text: &str) -> Option<u32> {
-    let line = text.lines().find(|l| l.starts_with("MemTotal:"))?;
+    meminfo_field(text, "MemTotal:")
+}
+
+fn meminfo_field(text: &str, field: &str) -> Option<u32> {
+    let line = text.lines().find(|l| l.starts_with(field))?;
     let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
     Some(to_mb(kb * 1024))
+}
+
+/// Kōrero 1.49: memory free right now, for the doctor's "enough memory to
+/// load the model" check (a cold load took 108 s with 3 GB free).
+pub(crate) fn available_ram_mb() -> Option<u32> {
+    available_ram_now()
 }
 
 /// `nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits`.
@@ -259,7 +269,32 @@ fn ram_mb() -> Option<u32> {
 }
 
 #[cfg(windows)]
-fn free_disk_mb(p: &Path) -> Option<u32> {
+fn available_ram_now() -> Option<u32> {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut m = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: dwLength is set as the API requires.
+    unsafe { GlobalMemoryStatusEx(&mut m) }.ok()?;
+    Some(to_mb(m.ullAvailPhys))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn available_ram_now() -> Option<u32> {
+    meminfo_field(
+        &std::fs::read_to_string("/proc/meminfo").ok()?,
+        "MemAvailable:",
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn available_ram_now() -> Option<u32> {
+    None
+}
+
+#[cfg(windows)]
+pub(crate) fn free_disk_mb(p: &Path) -> Option<u32> {
     use windows::core::HSTRING;
     use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
     let dir = nearest_existing_ancestor(p)?;
@@ -313,7 +348,7 @@ fn gpus() -> Vec<GpuInfo> {
 }
 
 #[cfg(not(windows))]
-fn free_disk_mb(p: &Path) -> Option<u32> {
+pub(crate) fn free_disk_mb(p: &Path) -> Option<u32> {
     let dir = nearest_existing_ancestor(p)?;
     let dir = dir.to_str()?.to_string();
     with_timeout(move || parse_df(&run_tool("/bin/df", &["-Pk", "--", &dir])?))

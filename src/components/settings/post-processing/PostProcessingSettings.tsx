@@ -42,6 +42,7 @@ import { CorrectionsManager } from "../../ui/Corrections";
 import { useSettings } from "../../../hooks/useSettings";
 import { PostProcessingToggle } from "../PostProcessingToggle";
 import { LocalModelSetup } from "./LocalModelSetup";
+import { LocalAiDoctor } from "./LocalAiDoctor";
 import { PostProcessAppRouting } from "./PostProcessAppRouting";
 
 const PostProcessingSettingsApiComponent: React.FC = () => {
@@ -581,6 +582,7 @@ export const PostProcessingSettings: React.FC = () => {
     <div className="max-w-3xl w-full mx-auto space-y-6">
       {/* Kōrero 1.43: a local model that fits this computer, one click away. */}
       <LocalModelSetup />
+      <LocalAiDoctor />
 
       {/* Korero (v1.2.0): enable/disable toggle surfaced here so the user can
           turn off post-processing without hunting through Advanced > Experimental. */}

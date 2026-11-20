@@ -111,9 +111,11 @@ export interface Invocation {
 export async function installTauriMock(
   page: Page,
   meetings: unknown[],
+  /** Kōrero 1.49: extra or replacement answers, by command name. */
+  extra: Record<string, unknown> = {},
 ): Promise<void> {
   await page.addInitScript(
-    ({ settings, stored }) => {
+    ({ settings, stored, extra }) => {
       const w = window as unknown as Record<string, unknown>;
       const calls: { cmd: string; args: unknown }[] = [];
       let nextId = 0;
@@ -158,6 +160,7 @@ export async function installTauriMock(
         meeting_transcribe_merge: [
           { source: "you", text: "Tēnā koe, transcribed again." },
         ],
+        ...extra,
       };
       w.__koreroCalls = calls;
       w.__TAURI_OS_PLUGIN_INTERNALS__ = {
@@ -198,7 +201,7 @@ export async function installTauriMock(
         },
       };
     },
-    { settings: SETTINGS, stored: JSON.stringify(meetings) },
+    { settings: SETTINGS, stored: JSON.stringify(meetings), extra },
   );
 }
 

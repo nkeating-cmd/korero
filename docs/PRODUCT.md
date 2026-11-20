@@ -1,7 +1,7 @@
 ---
 type: product-brief
 app: korero
-reviewed: 2026-10-16
+reviewed: 2026-11-17
 owner: Nic (decides the order); dev-product skill (maintains this file)
 source_of_truth: this file; detail in the Kōrero claude.ai project (KORERO_STATE.md, plans and build notes) and the backlog kept outside the repo
 wip_limit: 3
@@ -16,8 +16,8 @@ What this app is for, who it is for, and the order we build in. Checked by
 ## Customer
 
 - **Who buys:** nobody yet. Kōrero is free and open source (a fork of Handy), released on GitHub.
-- **Who uses:** Nic, on two Windows laptops. Release downloads suggest one or two installs in
-  total (E3), so for now the customer is Nic.
+- **Who uses:** Nic, on two Windows laptops, and since 12 Nov 2026 some of his clients (E14), who install
+  it from the GitHub release on their own (often managed) work laptops.
 - **Job to be done:** when Nic is in a meeting, on a call or in a room, he wants an accurate local record of who
   said what, and notes he can act on, so he can stay in the conversation and follow up without a cloud service
   hearing it. When dictating, he wants New Zealand English and te reo Māori written correctly.
@@ -33,6 +33,7 @@ What this app is for, who it is for, and the order we build in. Checked by
 | O2 | In-room meetings come out with who said what | Speaker error on the AMI far-field test set at or under the bar Nic sets from M0, and Nic rates 3 real room meetings as usable | 2026-12-18 |
 | O3 | New Zealand English and te reo Māori come out right | Te reo term accuracy on Nic's 108-line recording (never measured yet) | 2027-02-26 |
 | O4 | Releases are safe and update themselves | Each release signed and gated; the second laptop offered the update on its own | 2026-11-30 |
+| O5 | Clients get local clean-up working without help, or are told plainly why not | On a clean Windows laptop with no Ollama, a first-time user reaches a passing "Check local AI" from the setup guide with no outside help; every failed clean-up in History names its reason | 2026-12-18 |
 
 ## Evidence
 
@@ -56,6 +57,8 @@ Sources named `KORERO_*` are in the Kōrero claude.ai project.
 | E11 | requirement | Biometric Processing Privacy Code 2025 (Privacy Commissioner), in force 3 Nov 2025 | 2025-11-03 | Any feature that uses a stored voiceprint to recognise people must meet the code's rules; it constrains B7, it does not justify it |
 | E12 | hypothesis | Kōrero project plan, 16 Oct | 2026-10-16 | Speakers can be told apart well enough from one laptop or room microphone to be useful |
 | E13 | hypothesis | Kōrero project plan, 16 Oct | 2026-10-16 | Remote voices picked up by the room microphone from a loudspeaker can be removed in software well enough |
+| E14 | research | Nic in the Kōrero project chat ("I've given this to clients") | 2026-11-12 | Kōrero is installed by people other than Nic |
+| E15 | research | Nic's request in the Kōrero project chat | 2026-11-17 | Nic wants users with little experience to be able to set up the local AI clean-up model and work out what is wrong when it fails. No client has reported a setup failure yet: Kōrero sends nothing home, so there is no channel for one |
 
 ## Bets
 
@@ -67,14 +70,15 @@ A build or enable bet enters Now only on research or a requirement. Keep Now to 
 
 | ID | Bet | Type | Outcome | Evidence | Value | Effort | Status | Since | Link |
 |---|---|---|---|---|---|---|---|---|---|
-| B1 | Release 1.44: long-meeting notes read in parts; audio brief finds its engine | build | O1 | E2, E6 | 4 | 1 | now | 2026-10-08 | branch `fix/1.44`; `KORERO_1.44_BUILD_2026-10-08.md` |
+| B1 | Release 1.44: long-meeting notes read in parts; audio brief finds its engine | build | O1 | E2, E6 | 4 | 1 | done | 2026-10-19 | branch `fix/1.44`; `KORERO_1.44_BUILD_2026-10-08.md` |
 | B2 | M0 probe: can speakers be separated on Kōrero's own runtime, from a room mic? | learn | O2 | E4, E12 | 4 | 1 | done | 2026-10-16 | `KORERO_1.45_IN-ROOM-SPEAKERS-PLAN_2026-10-16.md` |
-| B3 | "In the room" meeting mode: mic only, no false call-audio warning, a speech gate that hears the far end of the table (M1) | build | O2, O1 | E4, E5 | 4 | 2 | now | 2026-10-16 | plan M1 |
-| B4 | Separate speakers after Stop, then name, merge and reassign them; names reach the notes (M2–M3) | build | O2 | E4 | 5 | 4 | now | 2026-10-16 | plan M2–M3; `docs/DECISIONS.md` D-007 |
+| B3 | "In the room" meeting mode: mic only, no false call-audio warning, a speech gate that hears the far end of the table (M1) | build | O2, O1 | E4, E5 | 4 | 2 | done | 2026-10-19 | plan M1 |
+| B4 | Separate speakers after Stop, then name, merge and reassign them; names reach the notes (M2–M3) | build | O2 | E4 | 5 | 4 | next | 2026-11-17 | plan M2–M3; `docs/DECISIONS.md` D-007 |
 | B5 | Imports return timed segments and get speakers separated (M4) | build | O2 | E7 | 3 | 2 | next | 2026-10-16 | plan M4 |
 | B6 | Confirm the second laptop is offered the next release on its own | learn | O4 | E9 | 3 | 1 | next | 2026-10-16 | `KORERO_STATE.md` |
 | B7 | Remember voices across meetings | build | O2 | E10 | 2 | 4 | later | 2026-10-16 | plan D2; must meet E11 if built |
 | B8 | Hybrid meetings (room plus remote people): stop remote speech appearing twice (M5) | learn | O2 | E4, E13 | 2 | 2 | later | 2026-10-16 | plan M5 |
+| B10 | Local AI that sets itself up: Kōrero runs its own Ollama, "Check local AI" explains what is wrong, the setup guide ends checked, and every failed clean-up records why (D-014) | build | O5 | E14, E15 | 4 | 4 | now | 2026-11-17 | `KORERO_LOCAL-AI-BUNDLE_REVIEW_2026-11-17.md` |
 | B9 | Record and score the 108-line te reo take; decide on the lexicon work from the number | learn | O3 | E8 | 3 | 2 | later | 2026-09-25 | `KORERO_PLAN_2026-09-25.md` |
 
 ## Decisions and why
@@ -82,6 +86,7 @@ A build or enable bet enters Now only on research or a requirement. Keep Now to 
 Dated one-liners for every reorder, drop or gate decision, newest first. Larger product decisions go to
 `docs/DECISIONS.md`.
 
+- 2026-11-17: Nic chose B10 for Now ("Add O5 + B10 to Now"), with Kōrero running its own Ollama (D-014), a model bake-off gating 1.49, and a "Send report to Kyt" email the user reviews and sends. B1 and B3 shipped in 1.45.0 and are done; B4's naming shipped in 1.46, and its merge, split and reassign move to Next. Now holds B10 alone (1 of 3).
 - 2026-11-12: Clients now have Kōrero (Nic: "I've given this to clients"), so "external users parked" (20 Sept) no longer holds: fixes that reach other people's installs (lost cloud keys, the updater) rank first. 1.45.1 released for that. Then 1.46 on a call's saved transcript (D-011): rebuilt from the recordings after Stop, callers told apart and nameable, notes written without being asked. Naming speakers (part of B4's M3) shipped with it; merge, split and reassign are still to come. The accuracy set built from corrections (replacing B9's recording) was not built in this round.
 - 2026-10-17: B3 built on `feat/in-room`: "On a call" or "In the room" is chosen before Record; room meetings record the mic only and rebuild the transcript by speaker turn (D-009). Nic's 26 s test meeting (in-person) produced no lines: the recording held no speech the model could recognise, even at nine times the volume.
 - 2026-10-16: B4, first slice built on `feat/diarise`: the engine and a "Separate speakers" action on the Audio tab, with speaker labels reaching copy, export, search, Ask and the notes. Mean error 21.5% on the AMI check (bar 25%). Still to come in B4: naming, merge and split (M3), and splitting lines where the speaker changes mid-sentence.

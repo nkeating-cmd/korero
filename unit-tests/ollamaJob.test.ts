@@ -8,7 +8,7 @@ mock.module("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
 mock.module("@/bindings", () => ({ commands: {} }));
 mock.module("../src/stores/settingsStore", () => ({ useSettingsStore: { getState: () => ({ settings: null }) } }));
 
-const { CANCELLED, emptyProgress, etaSeconds, ok, reduceProgress, runChain } = await import("../src/stores/ollamaJobStore");
+const { CANCELLED, emptyProgress, etaSeconds, ok, reduceProgress, runChain, stalled } = await import("../src/stores/ollamaJobStore");
 type Deps = Parameters<typeof runChain>[1];
 
 describe("reduceProgress (RT-F-10)", () => {
@@ -33,6 +33,16 @@ describe("reduceProgress (RT-F-10)", () => {
     expect(p.rateBps).not.toBeNull();
     expect(p.rateBps!).toBeLessThan(20e6);
     expect(etaSeconds(p)).toBeGreaterThan(50);
+  });
+
+  test("a dropped connection shows as waiting, never a huge estimate (yoga-26, 20 Nov)", () => {
+    let p = emptyProgress(0);
+    p = reduceProgress(p, { status: "pulling", digest: "a", total: 3.3e9, completed: 1e6 }, 1);
+    p = reduceProgress(p, { status: "pulling", digest: "a", total: 3.3e9, completed: 3e9 }, 1001);
+    // Bytes stop: the same count keeps arriving for minutes.
+    for (let t = 2001; t < 200_000; t += 1000) p = reduceProgress(p, { status: "pulling", digest: "a", total: 3.3e9, completed: 3e9 }, t);
+    expect(etaSeconds(p)).toBeNull();
+    expect(stalled(p)).toBe(true);
   });
 
   test("status-only lines keep the bytes", () => {

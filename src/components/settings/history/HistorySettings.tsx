@@ -45,6 +45,7 @@ import { formatDateTime } from "@/utils/dateFormat";
 import { AudioPlayer } from "../../ui/AudioPlayer";
 import { Button } from "../../ui/Button";
 import { AddCorrectionInline, ClickableWords } from "../../ui/Corrections";
+import { cleanupOutcome } from "../../../lib/cleanupOutcome";
 
 // ---------------------------------------------------------------------------
 // Shared UI primitives
@@ -639,7 +640,8 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
               app -- and it is the ONE icon a user sees when something failed. */}
           <AlertTriangle size={12} className="text-pill-warning/70 shrink-0" />
           <span className="text-xs text-pill-warning/70">
-            Post-processing unavailable
+            {/* Kōrero 1.49: the stored reason, in the same words as Today. */}
+            {cleanupOutcome(entry).long}
           </span>
         </div>
       )}

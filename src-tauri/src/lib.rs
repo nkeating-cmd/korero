@@ -4,6 +4,7 @@ mod apple_intelligence;
 mod audio_feedback;
 pub mod audio_toolkit;
 pub mod cli;
+mod cleanup_failure; // Kōrero 1.49: why a clean-up did not land
 mod clipboard;
 mod commands;
 mod crash; // Kōrero (v1.12.0): global panic hook + crash report files
@@ -15,11 +16,13 @@ mod meeting; // Kōrero (v1.13.0): meeting recorder (mic + system loopback)
 mod meeting_capture; // Kōrero (v1.13.2, Phase A): streaming-to-disk meeting capture
 #[cfg(windows)]
 mod meeting_capture_wasapi; // Kōrero (v1.13.6): native WASAPI loopback for "Others"
+mod doctor; // Kōrero 1.49 (B10): "Check local AI"
 mod denoise; // Kōrero (v1.11.0): optional RNNoise mic denoiser (nnnoiseless)
 mod eval; // Kōrero (v1.40.0): --eval-transcribe entry point (accuracy harness)
 mod helpers;
 mod input;
 mod llm_client;
+mod local_runtime; // Kōrero 1.49 (D-014): Kōrero's own Ollama
 mod notes_parts; // Kōrero 1.44: long meetings read in parts
 mod ollama_chat; // Kōrero 1.43: native Ollama chat with a sized context
 mod managers;
@@ -176,6 +179,13 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     );
     let history_manager =
         Arc::new(HistoryManager::new(app_handle).expect("Failed to initialize history manager"));
+    // Kōrero 1.49: a clean-up still running when Kōrero last closed never
+    // finished (the late window is 15 minutes).
+    match history_manager.retire_stale_still_running(30 * 60) {
+        Ok(0) => {}
+        Ok(n) => log::info!("history: {n} clean-ups left running at the last close marked as not finished"),
+        Err(e) => log::warn!("history: couldn't tidy unfinished clean-ups: {e}"),
+    }
 
     // Apply accelerator preferences before any model loads
     managers::transcription::apply_accelerator_settings(app_handle);
@@ -669,6 +679,14 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
             commands::ollama::ollama_test_model,  // Kōrero 1.43
             commands::ollama::use_local_ollama_model, // Kōrero 1.43
             commands::machine::get_machine_profile, // Kōrero 1.43
+            local_runtime::local_ai_runtime_status, // Kōrero 1.49 (D-014)
+            local_runtime::local_ai_runtime_install,
+            local_runtime::local_ai_runtime_repair,
+            local_runtime::local_ai_runtime_cancel,
+            local_runtime::local_ai_runtime_use,
+            local_runtime::local_ai_runtime_stop_using,
+            local_runtime::local_ai_runtime_remove,
+            doctor::local_ai_check, // Kōrero 1.49 (B10)
             commands::history_extra::update_post_processed_text,
             helpers::clamshell::is_laptop,
         ])
@@ -992,6 +1010,9 @@ pub fn run(cli_args: CliArgs) {
             if !cli_args.is_eval() {
                 update_check::spawn_update_check(app.handle().clone());
             }
+            // Kōrero 1.49 (D-014): Kōrero's own Ollama needs the app handle to
+            // find its folders; the startup check below then starts it.
+            local_runtime::init(app.handle());
             // Kōrero (v1.17.0): if post-processing runs on local Ollama,
             // quietly make sure it's actually up (PC optimisers and reboots
             // routinely leave it stopped). Best-effort; never blocks startup.

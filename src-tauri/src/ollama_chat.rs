@@ -418,7 +418,7 @@ pub(crate) async fn read_bounded(resp: reqwest::Response, cap: usize) -> Result<
 /// The context the model is loaded with right now, if any (`/api/ps`).
 /// Never fails: anything unexpected is `None`.
 pub async fn loaded_context(base: &str, model: &str) -> Option<u32> {
-    let client = reqwest::Client::builder()
+    let client = crate::llm_client::direct_to_loopback(reqwest::Client::builder(), base)
         .connect_timeout(Duration::from_secs(2))
         .timeout(Duration::from_secs(2))
         .build()
@@ -470,9 +470,10 @@ fn client(
     limit: Limit,
 ) -> Result<reqwest::Client, String> {
     let headers = crate::llm_client::build_headers(provider, api_key)?;
-    let mut b = reqwest::Client::builder()
-        .default_headers(headers)
-        .connect_timeout(CONNECT_TIMEOUT);
+    let mut b =
+        crate::llm_client::direct_to_loopback(reqwest::Client::builder(), &provider.base_url)
+            .default_headers(headers)
+            .connect_timeout(CONNECT_TIMEOUT);
     b = match limit {
         Limit::Total(t) => b.timeout(t),
         Limit::Read(t) => b.read_timeout(t),
@@ -510,8 +511,13 @@ async fn send_sized(
     kind: CallKind,
     stream: bool,
 ) -> Result<Outcome<reqwest::Response>, String> {
-    let base = native_base(&provider.base_url);
-    let url = format!("{base}/api/chat");
+    // Kōrero 1.49: text for Kōrero's own runtime goes only to Kōrero's own
+    // process (started now if it stopped), never to whatever holds the port.
+    // Send to the address it returns: starting can move the runtime to a
+    // free port, and the provider's address then names the old one.
+    let mut base_url = crate::local_runtime::ensure_ours_running(&provider.base_url).await?;
+    let base = native_base(&base_url);
+    let mut url = format!("{base}/api/chat");
     let mut prompt = estimate_tokens(user) + system.map(estimate_tokens).unwrap_or(0);
     let loaded = loaded_context(&base, model).await;
     let (mut num_ctx, mut num_predict) = choose_num_ctx(prompt, kind.num_predict(), loaded)?;
@@ -547,7 +553,15 @@ async fn send_sized(
             Ok(Err(e)) if e.is_connect() && !restarted && provider.is_local_provider => {
                 restarted = true;
                 log::info!("ollama_chat: Ollama unreachable, starting it and retrying once");
-                if crate::commands::ollama::ensure_running(&provider.base_url).await {
+                let ours = crate::local_runtime::is_ours(&base_url);
+                if crate::commands::ollama::ensure_running(&base_url).await {
+                    // The same rule as above: Kōrero's runtime may now be
+                    // on another port.
+                    if let Some(moved) = ours.then(crate::local_runtime::current_address).flatten()
+                    {
+                        url = format!("{}/api/chat", native_base(&moved));
+                        base_url = moved;
+                    }
                     continue;
                 }
                 return Err(format!("Couldn't reach Ollama: {e}"));
@@ -743,7 +757,7 @@ pub async fn warm(base_url: &str, model: &str, prompt_tokens: u32, num_predict: 
         "stream": false,
         "options": {"num_ctx": num_ctx}
     });
-    let Ok(client) = reqwest::Client::builder()
+    let Ok(client) = crate::llm_client::direct_to_loopback(reqwest::Client::builder(), &base)
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(WARM_LIMIT)
         .build()

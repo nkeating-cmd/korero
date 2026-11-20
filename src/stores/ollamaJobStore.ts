@@ -80,9 +80,22 @@ export function reduceProgress(p: Progress, ev: PullEvent, now: number): Progres
   return { status: ev.status || p.status, layers, doneBytes, totalBytes, resumedBytes, rateBps, sampleAt, sampleBytes };
 }
 
+/** Under this rate the download is treated as stalled, not slow. */
+const STALL_BPS = 1024;
+/** No estimate is shown past a day: it means the rate has collapsed. */
+const MAX_ETA_S = 24 * 3600;
+
 export function etaSeconds(p: Progress): number | null {
-  if (!p.rateBps || p.rateBps <= 0 || p.totalBytes <= 0) return null;
-  return Math.max(0, Math.round((p.totalBytes - p.doneBytes) / p.rateBps));
+  if (!p.rateBps || p.rateBps < STALL_BPS || p.totalBytes <= 0) return null;
+  const s = Math.max(0, Math.round((p.totalBytes - p.doneBytes) / p.rateBps));
+  // A dropped connection decays the rate towards zero: on yoga-26 (20 Nov
+  // 2026) the page said "about 1.2e+24 min left".
+  return s > MAX_ETA_S ? null : s;
+}
+
+/** Bytes stopped arriving (a dropped connection): say so rather than guess. */
+export function stalled(p: Progress): boolean {
+  return p.rateBps !== null && p.rateBps < STALL_BPS && p.doneBytes < p.totalBytes;
 }
 
 // ---------------------------------------------------------------- chain
