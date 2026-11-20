@@ -72,6 +72,38 @@ pub const DICTATION_LIMIT: Duration = Duration::from_secs(300);
 /// Ollama aborts the load it started (probe B). Was 120 s, under the 108 s
 /// measured cold load plus GPU discovery.
 const WARM_LIMIT: Duration = Duration::from_secs(300);
+
+/// Kōrero 1.49.1: the model and context of a warm-up still loading. A
+/// dictation that starts before the warm-up finishes sees no loaded model,
+/// so it asked for its own, smaller context, and Ollama loaded the model a
+/// second time (legion-26, 20 Nov 2026: two loads of 17 s each for one
+/// dictation). Such a call now asks for the warm-up's context and waits for
+/// that load instead.
+static WARMING: std::sync::Mutex<Option<(String, u32)>> = std::sync::Mutex::new(None);
+
+fn warming_ctx(model: &str) -> Option<u32> {
+    let g = WARMING.lock().unwrap_or_else(|p| p.into_inner());
+    g.as_ref().filter(|(m, _)| m == model).map(|(_, c)| *c)
+}
+
+/// Marks a warm-up in flight for as long as it lives.
+struct Warming(String);
+
+impl Warming {
+    fn start(model: &str, num_ctx: u32) -> Self {
+        *WARMING.lock().unwrap_or_else(|p| p.into_inner()) = Some((model.to_string(), num_ctx));
+        Warming(model.to_string())
+    }
+}
+
+impl Drop for Warming {
+    fn drop(&mut self) {
+        let mut g = WARMING.lock().unwrap_or_else(|p| p.into_inner());
+        if g.as_ref().is_some_and(|(m, _)| *m == self.0) {
+            *g = None;
+        }
+    }
+}
 const IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const TOTAL_CEILING: Duration = Duration::from_secs(3_600);
 /// A non-streamed reply arrives only when it is complete, so its limit must
@@ -519,7 +551,11 @@ async fn send_sized(
     let base = native_base(&base_url);
     let mut url = format!("{base}/api/chat");
     let mut prompt = estimate_tokens(user) + system.map(estimate_tokens).unwrap_or(0);
-    let loaded = loaded_context(&base, model).await;
+    // A warm-up still loading counts as loaded at its context (1.49.1).
+    let loaded = match loaded_context(&base, model).await {
+        Some(c) => Some(c),
+        None => warming_ctx(model),
+    };
     let (mut num_ctx, mut num_predict) = choose_num_ctx(prompt, kind.num_predict(), loaded)?;
     let mut restarted = false;
     let mut resized = false;
@@ -750,6 +786,7 @@ pub async fn warm(base_url: &str, model: &str, prompt_tokens: u32, num_predict: 
         log::info!("ollama_chat: '{model}' already loaded at num_ctx={num_ctx}");
         return;
     }
+    let _warming = Warming::start(model, num_ctx);
     let body = json!({
         "model": model,
         "prompt": "",
@@ -781,6 +818,100 @@ pub async fn warm(base_url: &str, model: &str, prompt_tokens: u32, num_predict: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 1.49.1 (legion-26, 20 Nov 2026): a dictation that starts while the
+    /// pre-warm is still loading asks for the warm-up's context, so Ollama
+    /// loads the model once, not twice. Runs the real call against a fake
+    /// Ollama that has nothing loaded and records the num_ctx it is sent.
+    #[test]
+    fn a_call_during_a_warm_up_asks_for_its_context() {
+        use std::io::{Read, Write};
+        use std::sync::{Arc, Mutex};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let seen: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let s2 = seen.clone();
+        std::thread::spawn(move || {
+            for mut c in l.incoming().flatten() {
+                let mut req = Vec::new();
+                let mut buf = [0u8; 8192];
+                loop {
+                    let n = c.read(&mut buf).unwrap_or(0);
+                    req.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&req).to_string();
+                    let Some(h) = text.find("\r\n\r\n") else {
+                        if n == 0 {
+                            break;
+                        } else {
+                            continue;
+                        }
+                    };
+                    let len = text[..h]
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    if req.len() >= h + 4 + len || n == 0 {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&req).to_string();
+                let body = if text.starts_with("GET /api/ps") {
+                    r#"{"models":[]}"#.to_string()
+                } else {
+                    let j: Value =
+                        serde_json::from_str(&text[text.find("\r\n\r\n").unwrap() + 4..])
+                            .unwrap_or(Value::Null);
+                    if let Some(n) = j["options"]["num_ctx"].as_u64() {
+                        s2.lock().unwrap().push(n);
+                    }
+                    r#"{"message":{"content":"Test, test, one, two, three."},"done":true}"#
+                        .to_string()
+                };
+                let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+            }
+        });
+        let mut p = crate::settings::get_default_settings()
+            .post_process_providers
+            .into_iter()
+            .find(|p| p.id == "ollama")
+            .expect("built-in ollama provider");
+        p.base_url = format!("http://127.0.0.1:{port}/v1");
+        let ask = |p: PostProcessProvider| {
+            tauri::async_runtime::block_on(async move {
+                chat(
+                    &p,
+                    "",
+                    "warm-test:12b",
+                    Some("Clean this up."),
+                    "test test one two three",
+                    CallKind::Dictation,
+                )
+                .await
+            })
+        };
+        // Nothing loaded and no warm-up: the call sizes its own context.
+        assert!(ask(p.clone()).is_ok());
+        let alone = seen.lock().unwrap()[0] as u32;
+        // A warm-up in flight at a larger context: the call asks for that one.
+        {
+            let _w = Warming::start("warm-test:12b", alone * 2);
+            assert!(ask(p.clone()).is_ok());
+        }
+        assert_eq!(
+            seen.lock().unwrap()[1] as u32,
+            alone * 2,
+            "the call would reload the model"
+        );
+        assert_eq!(
+            warming_ctx("warm-test:12b"),
+            None,
+            "cleared when the warm-up ends"
+        );
+    }
 
     fn collect(chunks: &[&[u8]]) -> (Ndjson, Vec<String>) {
         let mut p = Ndjson::default();
