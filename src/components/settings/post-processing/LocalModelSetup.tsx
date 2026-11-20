@@ -306,6 +306,7 @@ export const LocalModelSetup: React.FC = () => {
               <p className="kx-meta mt-1">
                 {rec.blurb} {gb(rec.downloadMb)} download.
               </p>
+              {rec.caution && <p className="kx-meta mt-1 text-[var(--kx-warn-ink)]">{rec.caution}</p>}
             </div>
             {action(rec, true)}
           </div>
@@ -416,6 +417,7 @@ export const LocalModelSetup: React.FC = () => {
                       {e.blurb}
                       {f.fit !== "great" && <span className="text-[var(--kx-ink-2)]"> · {f.reason}</span>}
                     </p>
+                    {e.caution && <p className="kx-meta mt-0.5 text-[var(--kx-warn-ink)]">{e.caution}</p>}
                   </div>
                   <span className="kx-meta shrink-0 w-[60px] text-right">{gb(e.downloadMb)}</span>
                   {action(e, false)}
@@ -425,7 +427,7 @@ export const LocalModelSetup: React.FC = () => {
           </ul>
         )}
         <p className="kx-meta mt-2 text-[11.5px]">
-          Suggestions are provisional: they haven't yet been tested on Kōrero's clean-up prompts.
+          Tested on Kōrero's clean-up prompts on 20 November 2026. The gemma4 models changed the fewest words.
         </p>
       </div>
     </div>
