@@ -20,3 +20,7 @@ release-staging/
 KORERO_PATCHES_APPLIED.txt
 test-results/
 playwright-report/
+
+# Python bytecode (scripts/cleanup-bakeoff.py)
+__pycache__/
+*.pyc
