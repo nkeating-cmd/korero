@@ -1046,14 +1046,18 @@ pub async fn ensure_ours_running(base_url: &str) -> Result<String, String> {
     if !could_be_ours(base_url) {
         return Ok(base_url.to_string());
     }
+    // Decide under the start lock: a start under way registers its child
+    // before it answers and writes its port only once it does, and a start
+    // can fail or a Stop using land while this call waits (re-review,
+    // 20 Nov 2026). Look again once the lock is held.
+    let _guard = START_LOCK.lock().await;
+    if !could_be_ours(base_url) {
+        return Ok(base_url.to_string());
+    }
     if child_alive() {
-        // A start may be under way: the child is registered before it
-        // answers, and its port is written only once it does. Wait for it,
-        // so the port read next is the one it runs on (re-review, 20 Nov).
-        drop(START_LOCK.lock().await);
         return Ok(current_address().unwrap_or_else(|| base_url.to_string()));
     }
-    let port = start().await?;
+    let port = start_locked().await?;
     Ok(address(port))
 }
 
