@@ -1047,6 +1047,10 @@ pub async fn ensure_ours_running(base_url: &str) -> Result<String, String> {
         return Ok(base_url.to_string());
     }
     if child_alive() {
+        // A start may be under way: the child is registered before it
+        // answers, and its port is written only once it does. Wait for it,
+        // so the port read next is the one it runs on (re-review, 20 Nov).
+        drop(START_LOCK.lock().await);
         return Ok(current_address().unwrap_or_else(|| base_url.to_string()));
     }
     let port = start().await?;
