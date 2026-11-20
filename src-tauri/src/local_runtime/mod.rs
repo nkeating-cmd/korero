@@ -1038,9 +1038,16 @@ async fn start_locked() -> Result<u16, String> {
 /// port when its own is taken, and the caller's address then points at the
 /// program on the old port (code review, 20 Nov 2026), so callers must send
 /// to the address returned, not the one they passed in.
+///
+/// A caller can hold an address from before a move (meeting notes take the
+/// provider once and send several parts; re-review, 20 Nov 2026), so an old
+/// address of the runtime counts as the runtime while clean-up still uses it.
 pub async fn ensure_ours_running(base_url: &str) -> Result<String, String> {
-    if !is_ours(base_url) || child_alive() {
+    if !could_be_ours(base_url) {
         return Ok(base_url.to_string());
+    }
+    if child_alive() {
+        return Ok(current_address().unwrap_or_else(|| base_url.to_string()));
     }
     let port = start().await?;
     Ok(address(port))
@@ -1061,17 +1068,18 @@ fn address(port: u16) -> String {
     format!("http://127.0.0.1:{port}/v1")
 }
 
-/// `base_url` is, or was before a start moved it, an address of Kōrero's
-/// runtime: Kōrero runs its runtime and the address is a port in its range
-/// on this computer. Used to refuse sending text elsewhere when the answer
-/// on that port isn't Ollama's, even if the runtime has just moved.
+/// `base_url` is Kōrero's runtime's address, or was before a start moved it
+/// while clean-up still uses the runtime. Used to send to the runtime's
+/// current port, and to refuse sending text elsewhere when the answer on
+/// the port isn't Ollama's. An address the user pointed at their own server
+/// in the same port range isn't caught: clean-up then no longer uses the
+/// runtime.
 pub fn could_be_ours(base_url: &str) -> bool {
-    root().is_some_and(|root| {
-        read_state(&root).managed
-            && crate::commands::history::is_loopback_url(base_url)
+    is_ours(base_url)
+        || (crate::commands::history::is_loopback_url(base_url)
             && port_of(base_url)
                 .is_some_and(|p| (PREFERRED_PORT..PREFERRED_PORT + PORT_SPAN).contains(&p))
-    })
+            && root().is_some_and(|root| in_use_now(&root)))
 }
 
 /// `base_url` is Kōrero's runtime: clean-up was pointed at it and the
