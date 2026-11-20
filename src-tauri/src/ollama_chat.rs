@@ -513,9 +513,11 @@ async fn send_sized(
 ) -> Result<Outcome<reqwest::Response>, String> {
     // Kōrero 1.49: text for Kōrero's own runtime goes only to Kōrero's own
     // process (started now if it stopped), never to whatever holds the port.
-    crate::local_runtime::ensure_ours_running(&provider.base_url).await?;
-    let base = native_base(&provider.base_url);
-    let url = format!("{base}/api/chat");
+    // Send to the address it returns: starting can move the runtime to a
+    // free port, and the provider's address then names the old one.
+    let mut base_url = crate::local_runtime::ensure_ours_running(&provider.base_url).await?;
+    let base = native_base(&base_url);
+    let mut url = format!("{base}/api/chat");
     let mut prompt = estimate_tokens(user) + system.map(estimate_tokens).unwrap_or(0);
     let loaded = loaded_context(&base, model).await;
     let (mut num_ctx, mut num_predict) = choose_num_ctx(prompt, kind.num_predict(), loaded)?;
@@ -551,7 +553,15 @@ async fn send_sized(
             Ok(Err(e)) if e.is_connect() && !restarted && provider.is_local_provider => {
                 restarted = true;
                 log::info!("ollama_chat: Ollama unreachable, starting it and retrying once");
-                if crate::commands::ollama::ensure_running(&provider.base_url).await {
+                let ours = crate::local_runtime::is_ours(&base_url);
+                if crate::commands::ollama::ensure_running(&base_url).await {
+                    // The same rule as above: Kōrero's runtime may now be
+                    // on another port.
+                    if let Some(moved) = ours.then(crate::local_runtime::current_address).flatten()
+                    {
+                        url = format!("{}/api/chat", native_base(&moved));
+                        base_url = moved;
+                    }
                     continue;
                 }
                 return Err(format!("Couldn't reach Ollama: {e}"));

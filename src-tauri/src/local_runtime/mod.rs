@@ -1033,11 +1033,45 @@ async fn start_locked() -> Result<u16, String> {
 /// Before a clean-up is sent to Kōrero's runtime: if it isn't Kōrero's own
 /// process that would answer (it stopped, or never started this session),
 /// start it, so text never goes to another program holding the port.
-pub async fn ensure_ours_running(base_url: &str) -> Result<(), String> {
+///
+/// Returns the address to send to. Starting can move the runtime to another
+/// port when its own is taken, and the caller's address then points at the
+/// program on the old port (code review, 20 Nov 2026), so callers must send
+/// to the address returned, not the one they passed in.
+pub async fn ensure_ours_running(base_url: &str) -> Result<String, String> {
     if !is_ours(base_url) || child_alive() {
-        return Ok(());
+        return Ok(base_url.to_string());
     }
-    start().await.map(|_| ())
+    let port = start().await?;
+    Ok(address(port))
+}
+
+/// Kōrero's runtime's address while clean-up uses it, read after a start
+/// that may have moved it.
+pub fn current_address() -> Option<String> {
+    let state = read_state(&root()?);
+    state
+        .managed
+        .then(|| address(state.port.unwrap_or(PREFERRED_PORT)))
+}
+
+/// The OpenAI-compatible address clean-up uses for a port (the same form
+/// `point_cleanup_at` writes).
+fn address(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/v1")
+}
+
+/// `base_url` is, or was before a start moved it, an address of Kōrero's
+/// runtime: Kōrero runs its runtime and the address is a port in its range
+/// on this computer. Used to refuse sending text elsewhere when the answer
+/// on that port isn't Ollama's, even if the runtime has just moved.
+pub fn could_be_ours(base_url: &str) -> bool {
+    root().is_some_and(|root| {
+        read_state(&root).managed
+            && crate::commands::history::is_loopback_url(base_url)
+            && port_of(base_url)
+                .is_some_and(|p| (PREFERRED_PORT..PREFERRED_PORT + PORT_SPAN).contains(&p))
+    })
 }
 
 /// `base_url` is Kōrero's runtime: clean-up was pointed at it and the
@@ -1080,7 +1114,7 @@ fn point_cleanup_at(port: u16, switch: bool) -> Result<(), String> {
         .iter_mut()
         .find(|p| p.id == "ollama")
         .ok_or("The Ollama provider is missing from settings.")?;
-    p.base_url = format!("http://127.0.0.1:{port}/v1");
+    p.base_url = address(port);
     if switch {
         s.post_process_provider_id = "ollama".to_string();
     }
@@ -1399,16 +1433,21 @@ fn apply_previous(
     if s.post_process_providers.iter().any(|p| p.id == provider_id) {
         s.post_process_provider_id = provider_id;
     }
-    // Clean-up on or off as it was. When that wasn't recorded, it stays on
-    // only if the provider put back runs on this computer: going back must
-    // never start sending text to a cloud provider by itself.
+    // Clean-up on or off as it was, but going back only ever turns it off:
+    // if the user has turned it off since, it stays off (code review, 20 Nov
+    // 2026: "on with OpenAI" was saved, the user turned clean-up off, and
+    // Stop using turned it back on with OpenAI). When the earlier value
+    // wasn't recorded, it stays on only if the provider put back runs on
+    // this computer. Going back never starts sending text to a cloud
+    // provider by itself.
     let local = s
         .active_post_process_provider()
         .is_some_and(|p| crate::commands::history::is_loopback_url(&p.base_url));
-    s.post_process_enabled = match state.previous.as_ref().and_then(|p| p.cleanup_enabled) {
-        Some(on) => on,
-        None => s.post_process_enabled && local,
-    };
+    s.post_process_enabled = s.post_process_enabled
+        && match state.previous.as_ref().and_then(|p| p.cleanup_enabled) {
+            Some(on) => on,
+            None => local,
+        };
     Ok(true)
 }
 
@@ -1723,6 +1762,13 @@ mod runtime_tests {
         s.post_process_enabled = true;
         apply_previous(&st(Some(true)), &mut s).unwrap();
         assert!(s.post_process_enabled);
+        // It was on, but the user has turned it off since: it stays off,
+        // never back on with the cloud provider (code review, 20 Nov 2026).
+        let mut s = settings_at("ollama", "http://127.0.0.1:11435/v1");
+        s.post_process_enabled = false;
+        apply_previous(&st(Some(true)), &mut s).unwrap();
+        assert_eq!(s.post_process_provider_id, "deepseek");
+        assert!(!s.post_process_enabled);
         // Already moved away by the user: nothing is touched.
         let mut s = settings_at("openai", "http://localhost:11434/v1");
         s.post_process_enabled = true;

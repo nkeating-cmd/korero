@@ -376,7 +376,7 @@ pub async fn send_chat_completion_with_schema(
         {
             crate::ollama_chat::Outcome::Done(v) => return Ok(v),
             crate::ollama_chat::Outcome::NotOllama => {
-                if crate::local_runtime::is_ours(&provider.base_url) {
+                if crate::local_runtime::could_be_ours(&provider.base_url) {
                     return Err(NOT_OURS.to_string());
                 }
                 log::info!("Ollama provider is not an Ollama server; using the OpenAI-compatible path")
@@ -502,7 +502,7 @@ pub async fn send_chat_completion_meeting(
         {
             crate::ollama_chat::Outcome::Done(v) => return Ok(v.unwrap_or_default()),
             crate::ollama_chat::Outcome::NotOllama => {
-                if crate::local_runtime::is_ours(&provider.base_url) {
+                if crate::local_runtime::could_be_ours(&provider.base_url) {
                     return Err(NOT_OURS.to_string());
                 }
                 log::info!("Ollama provider is not an Ollama server; using the OpenAI-compatible path")
@@ -619,7 +619,7 @@ pub async fn stream_chat_completion<F: FnMut(&str)>(
         {
             crate::ollama_chat::Outcome::Done(v) => return Ok(v),
             crate::ollama_chat::Outcome::NotOllama => {
-                if crate::local_runtime::is_ours(&provider.base_url) {
+                if crate::local_runtime::could_be_ours(&provider.base_url) {
                     return Err(NOT_OURS.to_string());
                 }
                 log::info!("Ollama provider is not an Ollama server; using the OpenAI-compatible path")
