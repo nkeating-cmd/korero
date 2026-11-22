@@ -679,6 +679,10 @@ pub struct AppSettings {
     pub mute_while_recording: bool,
     #[serde(default)]
     pub append_trailing_space: bool,
+    /// Kōrero 1.50: write spoken numbers, money, dates and times as figures
+    /// (`audio_toolkit/written_forms.rs`). On by default; English only.
+    #[serde(default = "default_written_forms_enabled")]
+    pub written_forms_enabled: bool,
     #[serde(default = "default_app_language")]
     pub app_language: String,
     #[serde(default)]
@@ -735,6 +739,10 @@ fn default_reo_lexicon_enabled() -> bool {
 }
 
 fn default_nz_english_pass_enabled() -> bool {
+    true
+}
+
+fn default_written_forms_enabled() -> bool {
     true
 }
 
@@ -1609,6 +1617,7 @@ pub fn get_default_settings() -> AppSettings {
         tts_engine_dir: None,
         mute_while_recording: false,
         append_trailing_space: true,  // Kōrero: smoother inline dictation
+        written_forms_enabled: default_written_forms_enabled(),
         app_language: default_app_language(),
         experimental_enabled: false,
         lazy_stream_close: false,
@@ -1934,6 +1943,20 @@ mod eval_knob_tests {
         // Korero (v1.40.0, R1.1): the NZ pass is a separate knob and defaults on,
         // so an older settings_store.json keeps exactly the shipped behaviour.
         assert!(s.nz_english_pass_enabled);
+    }
+
+    /// Kōrero 1.50: figures are on for an older store and for a new install,
+    /// and the switch round-trips.
+    #[test]
+    fn written_forms_default_on_and_round_trips() {
+        let s: AppSettings = serde_json::from_str(MINIMAL).unwrap();
+        assert!(s.written_forms_enabled);
+        assert!(get_default_settings().written_forms_enabled);
+        let s: AppSettings = serde_json::from_str(
+            r#"{"bindings":{},"push_to_talk":false,"audio_feedback":false,"written_forms_enabled":false}"#,
+        )
+        .unwrap();
+        assert!(!s.written_forms_enabled);
     }
 
     /// R1.1: the two knobs must be independently settable -- that is the whole

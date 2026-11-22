@@ -495,6 +495,10 @@
         "label": "Append trailing space",
         "description": "Add a space after pasted transcription"
       },
+      "writtenForms": {
+        "label": "Write numbers as figures",
+        "description": "Writes spoken numbers, money, percentages, dates, times and measurements as figures: \"one thousand two hundred dollars\" becomes $1,200. English only. Your custom words and corrections are never changed."
+      },
       "keyboardImplementation": {
         "title": "Keyboard implementation",
         "description": "Choose the keyboard shortcut backend.",

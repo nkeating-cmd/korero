@@ -974,6 +974,39 @@ impl TranscriptionManager {
         // the lists that were not cued; this is the floor, not the ceiling.
         let filtered_result = crate::audio_toolkit::apply_dictation_format(&filtered_result);
 
+        // Kōrero 1.50: spoken numbers, money, dates and times written as figures
+        // ("one thousand two hundred" -> "1,200"). Deterministic and offline, so it
+        // runs on both shortcuts. After the list formatter (which reads "First,"
+        // cues as words) and before the user's corrections, which always win. The
+        // user's own words and corrections are never touched. "Translate to
+        // English" output is English whatever was spoken. A panic in the pass
+        // keeps the text as it was rather than losing the dictation.
+        let filtered_result = if settings.written_forms_enabled
+            && (settings.translate_to_english
+                || crate::audio_toolkit::is_english_writing(&settings.selected_language))
+        {
+            let mut protected = settings.custom_words.clone();
+            for c in &settings.transcript_corrections {
+                protected.push(c.wrong.clone());
+                protected.push(c.right.clone());
+            }
+            let opts = crate::audio_toolkit::WrittenFormsOptions {
+                us_dates: settings.selected_language == "en-US",
+                protected,
+            };
+            match std::panic::catch_unwind(|| {
+                crate::audio_toolkit::apply_written_forms(&filtered_result, &opts)
+            }) {
+                Ok(text) => text,
+                Err(_) => {
+                    error!("written forms pass panicked; dictation kept as transcribed");
+                    filtered_result
+                }
+            }
+        } else {
+            filtered_result
+        };
+
         // Korero (v1.15.0): deterministic user-taught corrections (wrong -> right),
         // applied last so they win over fuzzy matching and filtering.
         let filtered_result = crate::corrections::apply_corrections(

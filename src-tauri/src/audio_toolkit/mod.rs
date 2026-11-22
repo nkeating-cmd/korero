@@ -6,6 +6,7 @@ pub mod reo_lexicon;
 pub mod text;
 pub mod utils;
 pub mod vad;
+pub mod written_forms;
 
 pub use audio::{
     is_microphone_access_denied, is_no_input_device_error, list_input_devices, list_output_devices,
@@ -19,3 +20,4 @@ pub use nz_english::{
 pub use text::{apply_custom_words, filter_transcription_output};
 pub use utils::get_cpal_host;
 pub use vad::{SileroVad, VoiceActivityDetector};
+pub use written_forms::{apply_written_forms, is_english_writing, WrittenFormsOptions};

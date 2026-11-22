@@ -59,6 +59,7 @@ Sources named `KORERO_*` are in the Kōrero claude.ai project.
 | E13 | hypothesis | Kōrero project plan, 16 Oct | 2026-10-16 | Remote voices picked up by the room microphone from a loudspeaker can be removed in software well enough |
 | E14 | research | Nic in the Kōrero project chat ("I've given this to clients") | 2026-11-12 | Kōrero is installed by people other than Nic |
 | E15 | research | Nic's request in the Kōrero project chat | 2026-11-17 | Nic wants users with little experience to be able to set up the local AI clean-up model and work out what is wrong when it fails. No client has reported a setup failure yet: Kōrero sends nothing home, so there is no channel for one |
+| E16 | research | Nic's screenshot and request in the Kōrero project chat | 2026-11-22 | "one thousand two hundred" was pasted as words; Nic wants numbers formatted by context the way Wispr Flow does it, without waiting for the AI clean-up |
 
 ## Bets
 
@@ -79,6 +80,8 @@ A build or enable bet enters Now only on research or a requirement. Keep Now to 
 | B7 | Remember voices across meetings | build | O2 | E10 | 2 | 4 | later | 2026-10-16 | plan D2; must meet E11 if built |
 | B8 | Hybrid meetings (room plus remote people): stop remote speech appearing twice (M5) | learn | O2 | E4, E13 | 2 | 2 | later | 2026-10-16 | plan M5 |
 | B10 | Local AI that sets itself up: Kōrero runs its own Ollama, "Check local AI" explains what is wrong, the setup guide ends checked, and every failed clean-up records why (D-014) | build | O5 | E14, E15 | 4 | 4 | now | 2026-11-17 | `KORERO_LOCAL-AI-BUNDLE_REVIEW_2026-11-17.md` |
+| B11 | Numbers, money, percentages, dates, times and measures written as figures on every dictation, rule-based and offline (`audio_toolkit/written_forms.rs`) | build | O3 | E16 | 4 | 3 | now | 2026-11-22 | `KORERO_1.50_NUMBERS-PLAN_2026-11-22.md` |
+| B12 | Compare `text-processing-rs` (a Rust port of NVIDIA NeMo's formatting grammars) against B11's tests: replace, borrow grammars, or drop | learn | O3 | E16 | 2 | 2 | later | 2026-11-22 | same |
 | B9 | Record and score the 108-line te reo take; decide on the lexicon work from the number | learn | O3 | E8 | 3 | 2 | later | 2026-09-25 | `KORERO_PLAN_2026-09-25.md` |
 
 ## Decisions and why
@@ -86,6 +89,7 @@ A build or enable bet enters Now only on research or a requirement. Keep Now to 
 Dated one-liners for every reorder, drop or gate decision, newest first. Larger product decisions go to
 `docs/DECISIONS.md`.
 
+- 2026-11-22: Nic chose B11 ("I like option A … please execute this"): numbers written as figures by fixed rules on every dictation, both shortcuts, no AI. B12 (the NeMo grammar port) goes to Later at his request. B11 is built without the `text2num` crate the plan named: measured on 22 Nov, the crate handled only plain numbers, and every other rule (money, dates, times, phones, the guards) had to be Kōrero's own, so a client-installed dependency bought little. Defaults until Nic says otherwise: `3:30 pm`, a comma from 1,000, one to nine as words in prose. Now holds B10 and B11 (2 of 3).
 - 2026-11-17: Nic chose B10 for Now ("Add O5 + B10 to Now"), with Kōrero running its own Ollama (D-014), a model bake-off gating 1.49, and a "Send report to Kyt" email the user reviews and sends. B1 and B3 shipped in 1.45.0 and are done; B4's naming shipped in 1.46, and its merge, split and reassign move to Next. Now holds B10 alone (1 of 3).
 - 2026-11-12: Clients now have Kōrero (Nic: "I've given this to clients"), so "external users parked" (20 Sept) no longer holds: fixes that reach other people's installs (lost cloud keys, the updater) rank first. 1.45.1 released for that. Then 1.46 on a call's saved transcript (D-011): rebuilt from the recordings after Stop, callers told apart and nameable, notes written without being asked. Naming speakers (part of B4's M3) shipped with it; merge, split and reassign are still to come. The accuracy set built from corrections (replacing B9's recording) was not built in this round.
 - 2026-10-17: B3 built on `feat/in-room`: "On a call" or "In the room" is chosen before Record; room meetings record the mic only and rebuild the transcript by speaker turn (D-009). Nic's 26 s test meeting (in-person) produced no lines: the recording held no speech the model could recognise, even at nine times the volume.

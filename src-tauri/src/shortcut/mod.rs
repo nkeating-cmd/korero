@@ -1095,6 +1095,16 @@ pub fn change_append_trailing_space_setting(app: AppHandle, enabled: bool) -> Re
     Ok(())
 }
 
+/// Kōrero 1.50: the "Write numbers as figures" switch.
+#[tauri::command]
+#[specta::specta]
+pub fn change_written_forms_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.written_forms_enabled = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn change_lazy_stream_close_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
