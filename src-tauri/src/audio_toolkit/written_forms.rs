@@ -296,6 +296,119 @@ const EMAIL_CUES: &[&str] = &[
     "email", "emailed", "emailing", "e-mail", "address", "cc", "mail",
 ];
 
+/// Words that come before "at" in ordinary prose, so are never read as the start of an email
+/// address without an email cue word: "look at kyt.nz", "we met at kyt.nz".
+const EMAIL_STOP: &[&str] = &[
+    "look",
+    "looking",
+    "looked",
+    "looks",
+    "see",
+    "seen",
+    "arrive",
+    "arrived",
+    "arriving",
+    "aim",
+    "aimed",
+    "stare",
+    "staring",
+    "meet",
+    "met",
+    "meeting",
+    "be",
+    "is",
+    "are",
+    "was",
+    "were",
+    "am",
+    "i'm",
+    "we're",
+    "they're",
+    "you're",
+    "he's",
+    "she's",
+    "it's",
+    "laugh",
+    "point",
+    "work",
+    "works",
+    "worked",
+    "working",
+    "stay",
+    "stayed",
+    "staying",
+    "live",
+    "lives",
+    "lived",
+    "good",
+    "bad",
+    "great",
+    "here",
+    "there",
+    "me",
+    "us",
+    "them",
+    "him",
+    "her",
+    "you",
+    "we",
+    "they",
+    "i",
+    "everyone",
+    "people",
+    "once",
+    "back",
+    "start",
+    "started",
+    "starts",
+    "end",
+    "ended",
+    "available",
+    "home",
+    "office",
+    "least",
+    "most",
+    "best",
+    "all",
+    "right",
+    "left",
+    "up",
+    "down",
+    "out",
+    "held",
+    "based",
+    "located",
+    "sit",
+    "sat",
+    "stop",
+    "stopped",
+    "call",
+    "find",
+    "found",
+    "hosted",
+    "listed",
+    "online",
+    "posted",
+    "shared",
+    "published",
+    "read",
+    "visit",
+    "visited",
+    "check",
+    "checked",
+    "go",
+    "went",
+    "him",
+    "it",
+    "help",
+    "anyone",
+    "someone",
+    "nobody",
+    "team",
+    "staff",
+    "us",
+];
+
 const AT_WORDS: &[&str] = &["at", "by", "from", "until", "till", "before", "after"];
 
 const DAY_PARTS: &[&str] = &["morning", "afternoon", "evening"];
@@ -1035,13 +1148,17 @@ impl<'a> Pass<'a> {
 
     fn web_address(&self, i: usize) -> Option<Step> {
         let lo = self.low(i);
-        // Email: <local> at <label> (dot <label>)+, only after an email cue word.
-        if self.joins(i) && self.low(i + 1) == "at" && is_label(lo) && !in_list(URL_STOP, lo) {
+        // Email: <local> at <domain>. The speech model writes these in mixed forms: "nic at kyt
+        // dot nz", "Nick at KYT.nz", "sam.smith at gmail.com", "sam dot smith at gmail dot com".
+        // Without an email cue word, the word before "at" must not be ordinary prose ("look at
+        // kyt.nz", "we met at kyt.nz").
+        if let Some((local, at)) = self.local_part(i) {
             let cue = (1..=3).any(|k| i >= k && in_list(EMAIL_CUES, self.low(i - k)));
-            if cue {
-                if let Some((domain, end)) = self.domain(i + 2) {
+            let prose = in_list(EMAIL_STOP, &local) || in_list(URL_STOP, &local);
+            if (cue || !prose) && self.joins(at) {
+                if let Some((domain, end)) = self.domain(at + 1, true) {
                     return Some(Step::Replace {
-                        text: format!("{lo}@{domain}"),
+                        text: format!("{local}@{domain}"),
                         end,
                         drop_prev: None,
                     });
@@ -1052,7 +1169,7 @@ impl<'a> Pass<'a> {
         if lo == "www" || (lo == "w" && self.matches_seq(i, &["w", "w", "w"])) {
             let start = if lo == "www" { i } else { i + 2 };
             if self.joins(start) && self.low(start + 1) == "dot" {
-                if let Some((domain, end)) = self.domain(start + 2) {
+                if let Some((domain, end)) = self.domain(start + 2, false) {
                     return Some(Step::Replace {
                         text: format!("www.{domain}"),
                         end,
@@ -1062,22 +1179,55 @@ impl<'a> Pass<'a> {
             }
         }
         if !in_list(URL_STOP, lo) {
-            if let Some((domain, end)) = self.domain(i) {
-                return Some(Step::Replace {
-                    text: domain,
-                    end,
-                    drop_prev: None,
-                });
+            if let Some((domain, end)) = self.domain(i, false) {
+                // A domain the model already wrote ("kyt.nz") is left as it is unless something
+                // spoken was joined to it ("kyt.nz slash insights").
+                if end > i {
+                    return Some(Step::Replace {
+                        text: domain,
+                        end,
+                        drop_prev: None,
+                    });
+                }
             }
         }
         None
     }
 
-    /// `kyt dot co dot nz slash insights` → `kyt.co.nz/insights`.
-    fn domain(&self, i: usize) -> Option<(String, usize)> {
+    /// The local part of an email address starting at token `i` ("nic", "sam.smith",
+    /// "sam dot smith"), lower-cased, and the index of the "at" token after it.
+    fn local_part(&self, i: usize) -> Option<(String, usize)> {
         let first = self.low(i);
+        if !is_local(first) || is_card_word(first) || !self.clean(i) {
+            return None;
+        }
+        let mut local = first.to_string();
+        let mut k = i;
+        loop {
+            if !self.joins(k) {
+                return None;
+            }
+            match self.low(k + 1) {
+                "at" => return Some((local, k + 1)),
+                "dot" if self.joins(k + 1) && is_local(self.low(k + 2)) => {
+                    local.push('.');
+                    local.push_str(self.low(k + 2));
+                    k += 2;
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// A domain starting at token `i`: spoken ("kyt dot co dot nz"), already written ("KYT.nz",
+    /// "gmail.com") or mixed ("KYT dot N Z"), with a known last label, plus any spoken path
+    /// ("slash insights"). Lower-cased. In an email, a lone "n" after "dot" is read as "nz"
+    /// (the model writes "dot N" for a spoken "dot NZ").
+    fn domain(&self, i: usize, email: bool) -> Option<(String, usize)> {
+        let first = self.low(i);
+        let first_labels: Vec<&str> = first.split('.').collect();
         // The first label starts with a letter: "21c dot nz" is not an address.
-        if !is_label(first)
+        if first_labels.iter().any(|l| !is_label(l))
             || !first
                 .chars()
                 .next()
@@ -1088,15 +1238,29 @@ impl<'a> Pass<'a> {
         {
             return None;
         }
-        let mut labels = vec![first.to_string()];
+        let mut labels: Vec<String> = first_labels.iter().map(|l| l.to_string()).collect();
         let mut k = i;
-        while self.joins(k)
-            && self.low(k + 1) == "dot"
-            && self.joins(k + 1)
-            && is_label(self.low(k + 2))
-        {
-            labels.push(self.low(k + 2).to_string());
+        while self.joins(k) && self.low(k + 1) == "dot" && self.joins(k + 1) {
+            let next = self.low(k + 2);
+            let parts: Vec<&str> = next.split('.').collect();
+            if next.is_empty() || parts.iter().any(|l| !is_label(l)) {
+                break;
+            }
+            let mut label = next.to_string();
             k += 2;
+            // Spelled letters: "N Z" → "nz".
+            while label.len() == 1
+                && self.joins(k)
+                && self.low(k + 1).len() == 1
+                && is_label(self.low(k + 1))
+            {
+                label.push_str(self.low(k + 1));
+                k += 1;
+            }
+            labels.extend(label.split('.').map(|l| l.to_string()));
+        }
+        if email && labels.len() >= 2 && labels.last().map(|l| l == "n").unwrap_or(false) {
+            *labels.last_mut().unwrap() = "nz".into();
         }
         if labels.len() < 2 || !in_list(TLDS, labels.last().unwrap()) {
             return None;
@@ -2200,6 +2364,16 @@ fn prev_static(w: &str) -> &'static str {
     }
 }
 
+/// An email local part: letters, digits and `.`, `_`, `-`, `+`, not starting or ending with a dot.
+fn is_local(w: &str) -> bool {
+    !w.is_empty()
+        && !w.starts_with('.')
+        && !w.ends_with('.')
+        && w.chars().any(|c| c.is_ascii_alphabetic())
+        && w.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'))
+}
+
 fn is_label(w: &str) -> bool {
     !w.is_empty()
         && w.chars()
@@ -2764,6 +2938,59 @@ mod tests {
             apply_written_forms("I like Nine Inch Nails a lot", &opts),
             "I like Nine Inch Nails a lot"
         );
+    }
+
+    /// Email and web addresses in every form the speech model was seen to write them (23 Nov
+    /// 2026, installed 1.50.1, Parakeet V3) plus the fully spoken forms.
+    #[test]
+    fn email_and_web_forms() {
+        check(&[
+            // Nic's test dictation, as the model wrote it.
+            (
+                "Test $2,300. 30 June 2026. Nick at KYT dot N. Okay,",
+                "Test $2,300. 30 June 2026. nick@kyt.nz. Okay,",
+            ),
+            ("Test Nick at KYT.nz Okay", "Test nick@kyt.nz Okay"),
+            ("Nick at KYT dot N Z.", "nick@kyt.nz."),
+            ("nic at kyt dot nz", "nic@kyt.nz"),
+            (
+                "Send it to sam.smith at gmail.com please",
+                "Send it to sam.smith@gmail.com please",
+            ),
+            (
+                "Send it to sam dot smith at gmail dot com please",
+                "Send it to sam.smith@gmail.com please",
+            ),
+            (
+                "My address is info at acme dot org dot nz.",
+                "My address is info@acme.org.nz.",
+            ),
+            (
+                "Email me at jane at example dot co dot nz.",
+                "Email me at jane@example.co.nz.",
+            ),
+            (
+                "The website is kyt.nz slash insights",
+                "The website is kyt.nz/insights",
+            ),
+            (
+                "The website is kyt dot nz slash insights",
+                "The website is kyt.nz/insights",
+            ),
+            (
+                "Contact Jane at Example.co.nz today",
+                "Contact jane@example.co.nz today",
+            ),
+        ]);
+        unchanged(&[
+            "Look at kyt.nz for details.",
+            "We met at kyt.nz on Friday.",
+            "I'm at kyt.nz all day.",
+            "Have a look at KYT dot N later.",
+            "Nick at the office",
+            "the website kyt.nz",
+            "janexexample.co.nz",
+        ]);
     }
 
     /// Found in real use on 22-23 Nov 2026 (Nic's test dictation; Parakeet's own output).
