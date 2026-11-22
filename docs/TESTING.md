@@ -38,6 +38,7 @@ Every meeting, name and setting in that file is invented.
 | 1.49 a working check shows no problem card; only the quick check runs by itself; the report is emailed only when asked | Negative |
 | 1.49 Kōrero's own local AI shows its size and can be repaired, switched off and removed; "Remove" asks first and calls nothing until confirmed | Guard rail |
 | 1.49 a runtime download already running when the page opens is shown as progress, not as an error, and no second download starts | Negative |
+| 1.50 "Write numbers as figures" is on for a settings store from before 1.50, and switching it off calls `change_written_forms_setting` | Positive |
 
 Seen failing (12 November 2026):
 
@@ -78,6 +79,11 @@ Running it where Playwright's pinned Chromium is not installed:
 6. **Settings, Notes, Dictation history, Ask and onboarding screens** have no browser
    check yet. Add one spec per screen when it next changes, reusing `tauriMock.ts`.
 7. **Accessibility.** No automated check. Add axe to the browser check, one page per screen.
+8. **Written forms (1.50) on real speech.** The rules are tested on invented sentences
+   only. Before releasing 1.50: on the build laptop, run the pass offline over the raw
+   text of the dictations in `history.db` that contain number words, and report only
+   counts (changed, unchanged); Nic reads the changed ones on his own machine. Then one
+   spoken dictation with an amount, a date and a time.
 
 ## Local AI (1.49): by hand on Windows
 

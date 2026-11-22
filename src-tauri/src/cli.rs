@@ -68,6 +68,11 @@ pub struct CliArgs {
     #[arg(long, value_enum, requires = "eval_transcribe")]
     pub nz_pass: Option<EvalToggle>,
 
+    /// Kōrero 1.50: numbers, money, dates and times written as figures, on/off
+    /// for the run. Off reproduces pre-1.50 text for comparison with old runs.
+    #[arg(long, value_enum, requires = "eval_transcribe")]
+    pub written_forms: Option<EvalToggle>,
+
     /// Directory holding the downloaded models. Required because an eval run
     /// sandboxes its data dir (nothing it does can touch the live install).
     #[arg(long, value_name = "DIR", requires = "eval_transcribe")]

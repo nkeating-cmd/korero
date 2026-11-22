@@ -147,6 +147,8 @@ const settingUpdaters: {
     commands.changeDenoiseEnabledSetting(value as boolean),
   append_trailing_space: (value) =>
     commands.changeAppendTrailingSpaceSetting(value as boolean),
+  written_forms_enabled: (value) =>
+    commands.changeWrittenFormsSetting(value as boolean),
   log_level: (value) => commands.setLogLevel(value as any),
   app_language: (value) => commands.changeAppLanguageSetting(value as string),
   experimental_enabled: (value) =>

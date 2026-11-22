@@ -67,6 +67,9 @@ pub fn apply_overrides(settings: &mut AppSettings, args: &CliArgs) {
     if let Some(nz) = args.nz_pass {
         settings.nz_english_pass_enabled = matches!(nz, EvalToggle::On);
     }
+    if let Some(wf) = args.written_forms {
+        settings.written_forms_enabled = matches!(wf, EvalToggle::On);
+    }
     // Never touch the network or the LLM in an eval run.
     settings.update_checks_enabled = false;
     settings.post_process_enabled = false;
@@ -91,6 +94,8 @@ pub struct EvalResult {
     pub matcher: String,
     pub lexicon: bool,
     pub nz_pass: bool,
+    /// Kōrero 1.50: whether the written-forms pass ran (`--written-forms`).
+    pub written_forms: bool,
     pub wav: String,
     pub audio_seconds: f64,
     pub load_ms: u128,
@@ -229,6 +234,7 @@ pub async fn run(app: AppHandle, args: CliArgs) -> i32 {
         matcher: format!("{:?}", settings.whisper_custom_word_matching).to_lowercase(),
         lexicon: settings.reo_lexicon_enabled,
         nz_pass: settings.nz_english_pass_enabled,
+        written_forms: settings.written_forms_enabled,
         wav: wav.display().to_string(),
         ..Default::default()
     };
@@ -359,6 +365,18 @@ mod eval_tests {
         assert_eq!(s.whisper_custom_word_matching, WordMatching::Fuzzy);
         assert!(!s.reo_lexicon_enabled);
         assert_eq!(s.selected_language, "mi");
+    }
+
+    /// Kōrero 1.50: an eval run can switch the written-forms pass off, so new
+    /// runs stay comparable with runs scored before 1.50.
+    #[test]
+    fn eval_written_forms_flag() {
+        let mut s = crate::settings::get_default_settings();
+        assert!(s.written_forms_enabled);
+        apply_overrides(&mut s, &args(&["--written-forms", "off"]));
+        assert!(!s.written_forms_enabled);
+        apply_overrides(&mut s, &args(&["--written-forms", "on"]));
+        assert!(s.written_forms_enabled);
     }
 
     #[test]
