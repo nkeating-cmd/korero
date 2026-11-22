@@ -292,12 +292,8 @@ const URL_STOP: &[&str] = &[
     "that", "this", "dot",
 ];
 
-const EMAIL_CUES: &[&str] = &[
-    "email", "emailed", "emailing", "e-mail", "address", "cc", "mail",
-];
-
 /// Words that come before "at" in ordinary prose, so are never read as the start of an email
-/// address without an email cue word: "look at kyt.nz", "we met at kyt.nz".
+/// address: "look at kyt.nz", "we met at kyt.nz", "email me at kyt.nz".
 const EMAIL_STOP: &[&str] = &[
     "look",
     "looking",
@@ -1150,12 +1146,11 @@ impl<'a> Pass<'a> {
         let lo = self.low(i);
         // Email: <local> at <domain>. The speech model writes these in mixed forms: "nic at kyt
         // dot nz", "Nick at KYT.nz", "sam.smith at gmail.com", "sam dot smith at gmail dot com".
-        // Without an email cue word, the word before "at" must not be ordinary prose ("look at
-        // kyt.nz", "we met at kyt.nz").
+        // The word before "at" must not be ordinary prose ("look at kyt.nz", "we met at kyt.nz"),
+        // even after "email": "Email me at kyt.nz" is not me@kyt.nz.
         if let Some((local, at)) = self.local_part(i) {
-            let cue = (1..=3).any(|k| i >= k && in_list(EMAIL_CUES, self.low(i - k)));
             let prose = in_list(EMAIL_STOP, &local) || in_list(URL_STOP, &local);
-            if (cue || !prose) && self.joins(at) {
+            if !prose && self.joins(at) {
                 if let Some((domain, end)) = self.domain(at + 1, true) {
                     return Some(Step::Replace {
                         text: format!("{local}@{domain}"),
@@ -2990,6 +2985,9 @@ mod tests {
             "Nick at the office",
             "the website kyt.nz",
             "janexexample.co.nz",
+            // Seen on the 1.50.2 candidate build, 23 Nov: never "me@…".
+            "Email me at janexexample.co.nz",
+            "Send it to us at kyt.nz",
         ]);
     }
 
