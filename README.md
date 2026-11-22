@@ -17,7 +17,7 @@ Two things do reach the network, and it is worth naming them rather than roundin
 speech models are downloaded on first use, and the app asks GitHub once at startup whether a newer
 release exists. Neither carries audio, transcripts, or anything about you. No telemetry, ever.
 
-Current version: **v1.49.0** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.49.0)).
+Current version: **v1.50.0** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.50.0)).
 
 ---
 
@@ -88,6 +88,7 @@ Current version: **v1.49.0** ([release notes](https://github.com/nkeating-cmd/ko
 - **Curated default prompts** — clean transcript, client email, Slack/WhatsApp, meeting note, red-team, and **NZ English + te reo Māori** (restores macrons, never translates te reo, fixes common mis-hearings like "far no" → *whānau*).
 
 ### Localisation & defaults
+- **Numbers written as figures** (v1.50). Say "one thousand two hundred dollars on the twenty first of March at three thirty pm" and Kōrero writes *$1,200 on 21 March at 3:30 pm*, on every dictation, without the AI clean-up. It covers amounts, percentages, measurements, dates, years, times, NZ phone numbers, versions and email addresses. One to nine stay as words in a sentence, a dollar sign appears only when you say a currency, and te reo Māori, your custom words and your corrections are never changed. English only; turn it off in Advanced → *Write numbers as figures*.
 - **New Zealand English on by default** (v1.41; Handy defaults to auto-detect). Macrons, NZ place names and NZ spelling apply out of the box. An existing plain "English" setting switches over once; turn it off in Dictation & sound and it stays off.
 - **NZ + te reo Māori custom dictionary** seeded by default, with **macron-aware matching** so words like *whānau* / *hapū* resolve correctly.
 - **Teachable corrections** (v1.15) — select a mis-transcribed word anywhere and teach the right one. Fixed deterministically in every future transcription, fed to the AI clean-up as a glossary, and the Notes clean-up even **suggests corrections** it noticed itself.
