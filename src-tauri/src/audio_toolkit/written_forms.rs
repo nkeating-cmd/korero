@@ -780,7 +780,11 @@ pub fn apply_written_forms(text: &str, opts: &WrittenFormsOptions) -> String {
     if text.trim().is_empty() {
         return text.to_string();
     }
-    // Quick exit: no English number word, month or "dot"/"at" at all.
+    // The speech model sometimes drops the space before a dollar amount ("about$1,200",
+    // "to$4.5 million"). Put it back after a lower-case word; "US$50" and "NZ$30" keep theirs.
+    let spaced = space_before_dollar(text);
+    let text_in = text;
+    let text = spaced.as_str();
     let toks = tokenize(text);
     let protected = protect(&toks, &opts.protected);
     let pass = Pass {
@@ -833,11 +837,32 @@ pub fn apply_written_forms(text: &str, opts: &WrittenFormsOptions) -> String {
         }
     }
     let result: String = out.iter().map(|p| format!("{}{}", p.text, p.sep)).collect();
-    if result == text {
-        text.to_string()
+    if result == text_in {
+        text_in.to_string()
     } else {
         result
     }
+}
+
+/// "about$1,200" → "about $1,200". Only after a lower-case letter, so currency prefixes
+/// ("US$50", "NZ$30", "A$20") are left alone.
+fn space_before_dollar(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len() + 4);
+    for (k, &c) in chars.iter().enumerate() {
+        if c == '$'
+            && k > 0
+            && chars[k - 1].is_lowercase()
+            && chars
+                .get(k + 1)
+                .map(|d| d.is_ascii_digit())
+                .unwrap_or(false)
+        {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn raw_piece(t: &Tok) -> Piece {
@@ -1902,7 +1927,18 @@ impl<'a> Pass<'a> {
             let numberish = |w: &str| {
                 num_parts(w).is_some() || (!w.is_empty() && w.chars().all(|c| c.is_ascii_digit()))
             };
-            let num_before_comma = p.trail == "," && numberish(&p.low);
+            // Only neighbouring numbers ("five, six hundred", "two, three thousand"): a repeat
+            // ("one, two, three, three thousand dollars") is a new amount, not a range.
+            let value_of = |w: &str| -> Option<u64> {
+                w.parse::<u64>()
+                    .ok()
+                    .or_else(|| parse_card(&[w.to_string()]).map(|(v, _)| v))
+            };
+            let neighbours = match (value_of(&p.low), value_of(&ws[0])) {
+                (Some(a), Some(b)) => b == a + 1,
+                _ => false,
+            };
+            let num_before_comma = p.trail == "," && numberish(&p.low) && neighbours;
             let num_before_or = matches!(prev, "or" | "and")
                 && i >= 2
                 && self.toks[i - 2].trail.is_empty()
@@ -2728,6 +2764,31 @@ mod tests {
             apply_written_forms("I like Nine Inch Nails a lot", &opts),
             "I like Nine Inch Nails a lot"
         );
+    }
+
+    /// Found in real use on 22-23 Nov 2026 (Nic's test dictation; Parakeet's own output).
+    #[test]
+    fn real_use_findings() {
+        check(&[
+            (
+                "Testing, testing, one, two, three, three thousand dollars. 30 June 2026.",
+                "Testing, testing, one, two, three, $3,000. 30 June 2026.",
+            ),
+            (
+                "You can spend about$1,200 and end up with a mess.",
+                "You can spend about $1,200 and end up with a mess.",
+            ),
+            (
+                "Revenue grew by 12% to$4.5 million.",
+                "Revenue grew by 12% to $4.5 million.",
+            ),
+        ]);
+        unchanged(&[
+            "It was five, six hundred dollars.",
+            "about two, three thousand dollars",
+            "paid US$50 and NZ$30",
+            "price:$5",
+        ]);
     }
 
     /// Every defect the independent review reproduced on 22 Nov 2026, kept as a regression set.
