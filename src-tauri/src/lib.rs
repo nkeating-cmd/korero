@@ -548,6 +548,7 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
             shortcut::change_denoise_enabled_setting,
             shortcut::change_append_trailing_space_setting,
             shortcut::change_written_forms_setting,
+            shortcut::update_known_addresses,
             shortcut::change_lazy_stream_close_setting,
             shortcut::change_app_language_setting,
             shortcut::change_update_checks_setting,

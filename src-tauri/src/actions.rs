@@ -14,7 +14,7 @@ use crate::utils::{
 };
 use crate::TranscriptionCoordinator;
 use ferrous_opencc::{config::BuiltinConfig, OpenCC};
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -883,6 +883,9 @@ impl ShortcutAction for TranscribeAction {
                                 transcription.chars().count()
                             );
 
+                            // Kōrero 1.51: known addresses (dictation only).
+                            let (transcription, heard) = snap_dictation(&ah, transcription);
+
                             if post_process {
                                 let prompt_name = resolve_prompt_name(&get_settings(&ah));
                                 show_processing_overlay(&ah, prompt_name);
@@ -898,12 +901,18 @@ impl ShortcutAction for TranscribeAction {
                             // Save to history if WAV was saved
                             let mut entry_id: Option<i64> = None;
                             let spoken = transcription.clone();
+                            let (history_text, history_processed) = history_texts(
+                                heard,
+                                transcription,
+                                processed.post_processed_text.clone(),
+                                post_process,
+                            );
                             if wav_saved {
                                 match hm.save_entry(
                                     file_name,
-                                    transcription,
+                                    history_text,
                                     post_process,
-                                    processed.post_processed_text.clone(),
+                                    history_processed,
                                     processed.post_process_prompt.clone(),
                                     processed.post_process_failure,
                                 ) {
@@ -1204,5 +1213,79 @@ mod cleanup_wait_tests {
     fn the_cursor_wait_is_unchanged() {
         assert_eq!(CURSOR_WAIT, Duration::from_secs(30));
         assert!(crate::ollama_chat::DICTATION_LIMIT > CURSOR_WAIT * 5);
+    }
+}
+
+/// Kōrero 1.51: a misheard email address in a dictation becomes the user's own known one
+/// ("nick@kite.co.nz" → their address). Dictation only: meetings, notes and imports are other
+/// people's words, so they never reach this. The address corrections the user taught in History
+/// apply here too, and only here (`corrections::apply_corrections` skips them). Returns the text
+/// to use and, when anything was replaced, the words as heard.
+pub(crate) fn snap_dictation(app: &AppHandle, text: String) -> (String, Option<String>) {
+    let s = get_settings(app);
+    let taught: Vec<(String, String)> = s
+        .transcript_corrections
+        .iter()
+        .filter(|c| crate::corrections::is_address_correction(c))
+        .map(|c| (c.wrong.clone(), c.right.clone()))
+        .collect();
+    let known: &[String] = if s.written_forms_enabled {
+        &s.known_addresses
+    } else {
+        &[]
+    };
+    let (snapped, n) = crate::audio_toolkit::snap_addresses(&text, known, &taught);
+    if n == 0 {
+        return (text, None);
+    }
+    info!("known addresses: replaced {n} misheard address(es)");
+    (snapped, Some(text))
+}
+
+/// What History stores for a dictation: (`transcription_text`, `post_processed_text`). When an
+/// address was replaced, the words as heard are the original and the replaced text (or the
+/// clean-up made from it) is shown, so "Show original" reveals the change. A clean-up that was
+/// asked for and failed leaves the replaced text as the original, as it was pasted (D-010).
+pub(crate) fn history_texts(
+    heard: Option<String>,
+    text: String,
+    post_processed: Option<String>,
+    post_process: bool,
+) -> (String, Option<String>) {
+    match (heard, post_processed) {
+        (Some(h), Some(p)) => (h, Some(p)),
+        (Some(h), None) if !post_process => (h, Some(text)),
+        (_, p) => (text, p),
+    }
+}
+
+#[cfg(test)]
+mod history_texts_tests {
+    use super::history_texts;
+
+    #[test]
+    fn heard_words_are_kept_as_the_original() {
+        let s = |x: &str| x.to_string();
+        // Nothing replaced: unchanged behaviour.
+        assert_eq!(history_texts(None, s("a"), None, false), (s("a"), None));
+        assert_eq!(
+            history_texts(None, s("a"), Some(s("A.")), true),
+            (s("a"), Some(s("A.")))
+        );
+        // Replaced, no clean-up: heard is the original, the replaced text is shown.
+        assert_eq!(
+            history_texts(Some(s("h")), s("a"), None, false),
+            (s("h"), Some(s("a")))
+        );
+        // Replaced, clean-up worked: heard is still the original (independent review, 1.51).
+        assert_eq!(
+            history_texts(Some(s("h")), s("a"), Some(s("A.")), true),
+            (s("h"), Some(s("A.")))
+        );
+        // Replaced, clean-up failed: what was pasted stays the original.
+        assert_eq!(
+            history_texts(Some(s("h")), s("a"), None, true),
+            (s("a"), None)
+        );
     }
 }

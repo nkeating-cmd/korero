@@ -44,6 +44,22 @@ export const useCorrections = () => {
     return true;
   };
 
+  /** Adds several at once from one read of the list (repeated `add` calls would each overwrite
+   * the last, because `list` is the same snapshot). Pairs whose wrong side is taken are skipped. */
+  const addMany = (pairs: { wrong: string; right: string }[]): number => {
+    const next = [...list];
+    for (const p of pairs) {
+      const w = p.wrong.trim();
+      const r = p.right.trim();
+      if (!w || !r || w === r) continue;
+      if (next.some((c) => c.wrong.toLowerCase() === w.toLowerCase())) continue;
+      next.push({ wrong: w, right: r });
+    }
+    const added = next.length - list.length;
+    if (added > 0) updateSetting("transcript_corrections", next);
+    return added;
+  };
+
   const remove = (index: number) => {
     updateSetting(
       "transcript_corrections",
@@ -70,7 +86,7 @@ export const useCorrections = () => {
     return true;
   };
 
-  return { list, add, update, remove };
+  return { list, add, addMany, update, remove };
 };
 
 /** Compact two-field teach form. Used inline by Meetings, Notes, and the manager. */

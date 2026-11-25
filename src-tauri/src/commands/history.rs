@@ -92,6 +92,9 @@ pub async fn retry_history_entry_transcription(
     if transcription.is_empty() {
         return Err("Recording contains no speech".to_string());
     }
+    // Kōrero 1.51: a History entry is a dictation, so known addresses apply as they did when it
+    // was first dictated, and the words as heard stay the original.
+    let (transcription, heard) = crate::actions::snap_dictation(&app, transcription);
 
     let processed = process_transcription_output(
         &app,
@@ -100,11 +103,17 @@ pub async fn retry_history_entry_transcription(
         crate::actions::CleanupWait::UntilDone,
     )
     .await;
+    let (transcription, post_processed_text) = crate::actions::history_texts(
+        heard,
+        transcription,
+        processed.post_processed_text,
+        entry.post_process_requested,
+    );
     history_manager
         .update_transcription(
             id,
             transcription,
-            processed.post_processed_text,
+            post_processed_text,
             processed.post_process_prompt,
             processed.post_process_failure,
         )
@@ -251,10 +260,15 @@ pub async fn tidy_history_entry_reo(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("History entry {id} not found"))?;
 
-    // Always from the ORIGINAL transcription, never from an earlier post-process.
-    let processed_prompt = prompt
-        .prompt
-        .replace("${output}", &entry.transcription_text);
+    // From the ORIGINAL transcription, never from an earlier AI clean-up. Kōrero 1.51: an entry
+    // that was never cleaned up but holds a corrected text (a known address, or the user's own
+    // edit in History) is tidied from that text, so the correction is not lost.
+    // A cleaned-up entry keeps the words as heard, so its known addresses are put back first.
+    let source = match (&entry.post_processed_text, entry.post_process_requested) {
+        (Some(corrected), false) => corrected.clone(),
+        _ => crate::actions::snap_dictation(&app, entry.transcription_text.clone()).0,
+    };
+    let processed_prompt = prompt.prompt.replace("${output}", &source);
     let api_key = settings
         .post_process_api_keys
         .get("ollama")

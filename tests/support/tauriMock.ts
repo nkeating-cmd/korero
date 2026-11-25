@@ -79,7 +79,7 @@ export const importedMeeting = () => ({
   ],
 });
 
-const SETTINGS = {
+export const SETTINGS = {
   bindings: {},
   post_process_providers: [
     {

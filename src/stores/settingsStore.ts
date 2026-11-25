@@ -149,6 +149,8 @@ const settingUpdaters: {
     commands.changeAppendTrailingSpaceSetting(value as boolean),
   written_forms_enabled: (value) =>
     commands.changeWrittenFormsSetting(value as boolean),
+  known_addresses: (value) =>
+    commands.updateKnownAddresses(value as string[]),
   log_level: (value) => commands.setLogLevel(value as any),
   app_language: (value) => commands.changeAppLanguageSetting(value as string),
   experimental_enabled: (value) =>

@@ -15,7 +15,7 @@ export interface CleanupEntryLike {
   post_process_failure?: CleanupFailReason | null;
 }
 
-export type CleanupState = "none" | "cleaned" | "late" | "running" | "failed";
+export type CleanupState = "none" | "cleaned" | "corrected" | "late" | "running" | "failed";
 
 export interface CleanupOutcome {
   state: CleanupState;
@@ -50,8 +50,15 @@ const hasText = (t: string | null) => t !== null && t.trim().length > 0;
 
 export function cleanupOutcome(e: CleanupEntryLike): CleanupOutcome {
   if (!e.post_process_requested) {
+    // Kōrero 1.51: no clean-up was asked for, so a second text is a correction:
+    // the user's own in History, or a known address Kōrero put in.
     return hasText(e.post_processed_text)
-      ? { state: "cleaned", short: "cleaned up", long: "Cleaned up", suggestCheck: false }
+      ? {
+          state: "corrected",
+          short: "corrected",
+          long: "Corrected (the words as heard are kept below)",
+          suggestCheck: false,
+        }
       : { state: "none", short: "", long: "", suggestCheck: false };
   }
   const why = e.post_process_failure ?? null;

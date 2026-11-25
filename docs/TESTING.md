@@ -39,6 +39,9 @@ Every meeting, name and setting in that file is invented.
 | 1.49 Kōrero's own local AI shows its size and can be repaired, switched off and removed; "Remove" asks first and calls nothing until confirmed | Guard rail |
 | 1.49 a runtime download already running when the page opens is shown as progress, not as an error, and no second download starts | Negative |
 | 1.50 "Write numbers as figures" is on for a settings store from before 1.50, and switching it off calls `change_written_forms_setting` | Positive |
+| 1.51 an address added under "Your email addresses" is saved in lower case, and text that is not an address is refused | Positive and negative |
+| 1.51 correcting an address in Dictation history offers "Remember this address?"; Remember saves the address and a correction from the heard form | Positive |
+| 1.51 an edit in History that changes no address offers nothing | Negative |
 
 Seen failing (12 November 2026):
 
@@ -84,6 +87,10 @@ Running it where Playwright's pinned Chromium is not installed:
    text of the dictations in `history.db` that contain number words, and report only
    counts (changed, unchanged); Nic reads the changed ones on his own machine. Then one
    spoken dictation with an amount, a date and a time.
+9. **Known addresses (1.51) on real speech.** `--eval-transcribe` runs with default settings and the
+   snap happens only on the dictation path, so the installed check is by hand: add your own address
+   under Advanced, dictate it once as you would say it, and see it pasted right, with "Corrected" and
+   the words as heard under "Show original" in Dictation history.
 
 ## Local AI (1.49): by hand on Windows
 

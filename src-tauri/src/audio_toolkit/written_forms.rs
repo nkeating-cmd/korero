@@ -858,6 +858,9 @@ pub struct WrittenFormsOptions {
     pub us_dates: bool,
     /// The user's own words and corrections: any token they cover is never changed.
     pub protected: Vec<String>,
+    /// Kōrero 1.51: the names before "@" in the user's own addresses ("nic" for nic@kyt.nz),
+    /// lower case. A protected word starts an email address only when it is one of these.
+    pub address_names: Vec<String>,
 }
 
 enum Step {
@@ -882,6 +885,9 @@ struct Pass<'a> {
     toks: &'a [Tok],
     protected: Vec<bool>,
     us: bool,
+    /// Set while reading an email or web address, which may contain protected words.
+    address_mode: std::cell::Cell<bool>,
+    address_names: &'a [String],
 }
 
 /// Applies the written-forms pass. Returns the input unchanged when nothing matched.
@@ -900,12 +906,16 @@ pub fn apply_written_forms(text: &str, opts: &WrittenFormsOptions) -> String {
         toks: &toks,
         protected,
         us: opts.us_dates,
+        address_mode: std::cell::Cell::new(false),
+        address_names: &opts.address_names,
     };
     let mut out: Vec<Piece> = Vec::with_capacity(toks.len());
     let mut i = 0;
     while i < toks.len() {
+        // Kōrero 1.51: a custom word or correction ("Nic", "Kyt") never stops an address
+        // being written: only the address step may read a protected word.
         let step = if pass.protected[i] {
-            None
+            pass.web_address(i)
         } else {
             pass.try_at(i)
         };
@@ -1040,7 +1050,7 @@ impl<'a> Pass<'a> {
     fn clean(&self, i: usize) -> bool {
         self.toks
             .get(i)
-            .map(|t| t.lead.is_empty() && !self.protected[i])
+            .map(|t| t.lead.is_empty() && (self.address_mode.get() || !self.protected[i]))
             .unwrap_or(false)
     }
 
@@ -1143,6 +1153,13 @@ impl<'a> Pass<'a> {
     // ------------------------------------------------------------------ email and web
 
     fn web_address(&self, i: usize) -> Option<Step> {
+        self.address_mode.set(true);
+        let step = self.web_address_inner(i);
+        self.address_mode.set(false);
+        step
+    }
+
+    fn web_address_inner(&self, i: usize) -> Option<Step> {
         let lo = self.low(i);
         // Email: <local> at <domain>. The speech model writes these in mixed forms: "nic at kyt
         // dot nz", "Nick at KYT.nz", "sam.smith at gmail.com", "sam dot smith at gmail dot com".
@@ -1152,6 +1169,16 @@ impl<'a> Pass<'a> {
             let prose = in_list(EMAIL_STOP, &local) || in_list(URL_STOP, &local);
             if !prose && self.joins(at) {
                 if let Some((domain, end)) = self.domain(at + 1, true) {
+                    // A protected word ("Nic", "MBIE", "Xero") starts an address only when it
+                    // is the name in one of the user's own addresses; otherwise it is a name
+                    // in prose ("apply to MBIE at business dot govt dot nz", "Te Whatu Ora at
+                    // health dot govt dot nz"), and custom words are never changed.
+                    let named = self.protected[i]
+                        && ((i > 0 && self.protected[i - 1])
+                            || !self.address_names.iter().any(|n| *n == local));
+                    if named {
+                        return None;
+                    }
                     return Some(Step::Replace {
                         text: format!("{local}@{domain}"),
                         end,
@@ -2937,6 +2964,62 @@ mod tests {
 
     /// Email and web addresses in every form the speech model was seen to write them (23 Nov
     /// 2026, installed 1.50.1, Parakeet V3) plus the fully spoken forms.
+    /// Red team 26 Nov (C1): a custom word or correction for a piece of the address ("Nic",
+    /// "Kyt", "kite") must not stop the address being written.
+    #[test]
+    fn protected_words_inside_addresses() {
+        for prot in [
+            vec!["Kyt"],
+            vec!["Nic"],
+            vec!["kite", "Kyt"],
+            vec!["Nic", "Kyt", "nz"],
+        ] {
+            let opts = WrittenFormsOptions {
+                protected: prot.iter().map(|s| s.to_string()).collect(),
+                address_names: vec!["nic".into()],
+                ..Default::default()
+            };
+            assert_eq!(
+                apply_written_forms("email nic at kyt dot nz", &opts),
+                "email nic@kyt.nz",
+                "{prot:?}"
+            );
+            assert_eq!(
+                apply_written_forms("Nick at kite dot co dot nz", &opts),
+                "nick@kite.co.nz",
+                "{prot:?}"
+            );
+        }
+        // Protected names before "at" stay names (independent review, 1.51).
+        for (prot, said) in [
+            (
+                vec!["Te Whatu Ora"],
+                "contact Te Whatu Ora at health dot govt dot nz",
+            ),
+            (vec!["Xero"], "log in to Xero at xero dot com"),
+            (vec!["Kyt Services"], "talk to Kyt Services at kyt dot nz"),
+            (vec!["MBIE"], "apply to MBIE at business dot govt dot nz"),
+            // Not one of the user's addresses: "Nic" stays a name.
+            (vec!["Nic"], "email Nic at kyt dot nz"),
+        ] {
+            let opts = WrittenFormsOptions {
+                protected: prot.iter().map(|s| s.to_string()).collect(),
+                ..Default::default()
+            };
+            let out = apply_written_forms(said, &opts);
+            assert!(!out.contains('@'), "{said} -> {out}");
+        }
+        // A protected word outside an address is still left alone.
+        let opts = WrittenFormsOptions {
+            protected: vec!["Nine Inch Nails".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            apply_written_forms("Nine Inch Nails at nine", &opts),
+            "Nine Inch Nails at nine"
+        );
+    }
+
     #[test]
     fn email_and_web_forms() {
         check(&[

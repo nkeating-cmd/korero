@@ -683,6 +683,11 @@ pub struct AppSettings {
     /// (`audio_toolkit/written_forms.rs`). On by default; English only.
     #[serde(default = "default_written_forms_enabled")]
     pub written_forms_enabled: bool,
+    /// Kōrero 1.51: the user's own email addresses. A dictated address that
+    /// sounds like one of them ("nick@kite.co.nz") is written as it
+    /// (`audio_toolkit/known_addresses.rs`). Dictation only. Lower case, valid.
+    #[serde(default)]
+    pub known_addresses: Vec<String>,
     #[serde(default = "default_app_language")]
     pub app_language: String,
     #[serde(default)]
@@ -1618,6 +1623,7 @@ pub fn get_default_settings() -> AppSettings {
         mute_while_recording: false,
         append_trailing_space: true,  // Kōrero: smoother inline dictation
         written_forms_enabled: default_written_forms_enabled(),
+        known_addresses: Vec::new(),
         app_language: default_app_language(),
         experimental_enabled: false,
         lazy_stream_close: false,
@@ -1957,6 +1963,18 @@ mod eval_knob_tests {
         )
         .unwrap();
         assert!(!s.written_forms_enabled);
+    }
+
+    /// Kōrero 1.51: an older store has no known addresses, and a list round-trips.
+    #[test]
+    fn known_addresses_default_empty_and_round_trip() {
+        let s: AppSettings = serde_json::from_str(MINIMAL).unwrap();
+        assert!(s.known_addresses.is_empty());
+        let s: AppSettings = serde_json::from_str(
+            r#"{"bindings":{},"push_to_talk":false,"audio_feedback":false,"known_addresses":["nic@kyt.nz"]}"#,
+        )
+        .unwrap();
+        assert_eq!(s.known_addresses, vec!["nic@kyt.nz".to_string()]);
     }
 
     /// R1.1: the two knobs must be independently settable -- that is the whole
