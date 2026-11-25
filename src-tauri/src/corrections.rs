@@ -95,11 +95,26 @@ pub fn apply_corrections(text: &str, corrections: &[TranscriptCorrection]) -> St
                 // replacement. Without it, a `$` in the user's correction
                 // (a price, a $variable) is interpreted as a capture-group
                 // reference and silently mangles or empties the output.
-                if let std::borrow::Cow::Owned(replaced) =
-                    re.replace_all(&out, regex::NoExpand(right))
-                {
-                    out = replaced;
-                    lower = out.to_lowercase();
+                // Kōrero 1.51 (red team C1): a one-word correction ("kite" →
+                // "Kyt", "Nick" → "Nic") never edits inside an email or web
+                // address ("nick@kite.co.nz"): that is the address step's job,
+                // and half-correcting it gives "nick@Kyt.co.nz". A correction
+                // that is itself an address replaces whole addresses only.
+                let wrong_is_address = wrong.contains('@') || wrong.contains('.');
+                let haystack = out.clone();
+                let replaced = re.replace_all(&haystack, |caps: &regex::Captures| {
+                    let m = caps.get(0).expect("whole match");
+                    if !wrong_is_address && inside_address(&haystack, m.start(), m.end()) {
+                        m.as_str().to_string()
+                    } else {
+                        right.to_string()
+                    }
+                });
+                if let std::borrow::Cow::Owned(replaced) = replaced {
+                    if replaced != out {
+                        out = replaced;
+                        lower = out.to_lowercase();
+                    }
                 }
             }
             Err(e) => {
@@ -108,6 +123,32 @@ pub fn apply_corrections(text: &str, corrections: &[TranscriptCorrection]) -> St
         }
     }
     out
+}
+
+/// True when the match `start..end` sits inside an email or web address: the
+/// whitespace-separated word around it holds an "@", or the match touches a "."
+/// that joins it to another label ("kite.co.nz").
+fn inside_address(text: &str, start: usize, end: usize) -> bool {
+    // A space can be more than one byte (U+00A0, U+3000): step past the whole character.
+    let word_start = text[..start]
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map(|(p, c)| p + c.len_utf8())
+        .unwrap_or(0);
+    let word_end = text[end..]
+        .find(char::is_whitespace)
+        .map(|p| end + p)
+        .unwrap_or(text.len());
+    let word = text[word_start..word_end].trim_end_matches(|c: char| !c.is_alphanumeric());
+    if word.contains('@') {
+        return true;
+    }
+    let before = text[..start].chars().next_back();
+    let after = text[end..].chars().next();
+    let after2 = text[end..].chars().nth(1);
+    before == Some('.')
+        || (after == Some('.') && after2.map(|c| c.is_alphanumeric()).unwrap_or(false))
 }
 
 /// v1.19.2 BUG FIX: persist the taught-corrections list to the backend.
@@ -340,6 +381,42 @@ mod tests {
             wrong: wrong.to_string(),
             right: right.to_string(),
         }
+    }
+
+    /// Kōrero 1.51 (red team C1): one-word corrections never edit inside an
+    /// address; an address correction replaces the whole address; ordinary
+    /// text is corrected as before.
+    #[test]
+    fn corrections_leave_addresses_whole() {
+        let words = vec![corr("kite", "Kyt"), corr("Nick", "Nic")];
+        assert_eq!(
+            apply_corrections("nick@kite.co.nz", &words),
+            "nick@kite.co.nz"
+        );
+        assert_eq!(
+            apply_corrections("see kite.co.nz today", &words),
+            "see kite.co.nz today"
+        );
+        assert_eq!(
+            apply_corrections("Nick flew a kite. Email nick@kite.nz.", &words),
+            "Nic flew a Kyt. Email nick@kite.nz."
+        );
+        let alias = vec![corr("nick@kite.co.nz", "nic@kyt.nz")];
+        assert_eq!(
+            apply_corrections("Write to nick@kite.co.nz, thanks", &alias),
+            "Write to nic@kyt.nz, thanks"
+        );
+        // A "$" in the right side is still literal (v1.19.2).
+        assert_eq!(apply_corrections("price", &[corr("price", "$5")]), "$5");
+        // Spaces of more than one byte do not panic (independent review, 1.51).
+        assert_eq!(
+            apply_corrections("こんにちは\u{3000}kite です", &words),
+            "こんにちは\u{3000}Kyt です"
+        );
+        assert_eq!(
+            apply_corrections("le\u{a0}kite\u{a0}nick@kite.nz", &words),
+            "le\u{a0}Kyt\u{a0}nick@kite.nz"
+        );
     }
 
     #[test]

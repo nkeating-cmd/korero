@@ -1095,6 +1095,28 @@ pub fn change_append_trailing_space_setting(app: AppHandle, enabled: bool) -> Re
     Ok(())
 }
 
+/// Kōrero 1.51: the user's own email addresses. Each is trimmed, lower-cased and
+/// checked; invalid entries and duplicates are dropped. Returns the list as stored.
+#[tauri::command]
+#[specta::specta]
+pub fn update_known_addresses(
+    app: AppHandle,
+    addresses: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let mut clean: Vec<String> = Vec::new();
+    for a in &addresses {
+        if let Some(n) = crate::audio_toolkit::normalise_address(a) {
+            if !clean.contains(&n) {
+                clean.push(n);
+            }
+        }
+    }
+    let mut settings = settings::get_settings(&app);
+    settings.known_addresses = clean.clone();
+    settings::write_settings(&app, settings);
+    Ok(clean)
+}
+
 /// Kōrero 1.50: the "Write numbers as figures" switch.
 #[tauri::command]
 #[specta::specta]

@@ -46,6 +46,11 @@ import { AudioPlayer } from "../../ui/AudioPlayer";
 import { Button } from "../../ui/Button";
 import { AddCorrectionInline, ClickableWords } from "../../ui/Corrections";
 import { cleanupOutcome } from "../../../lib/cleanupOutcome";
+import {
+  addressChanges,
+  type AddressChange,
+} from "../../../lib/addressLearning";
+import { useCorrections } from "../../ui/Corrections";
 
 // ---------------------------------------------------------------------------
 // Shared UI primitives
@@ -75,10 +80,10 @@ const IconButton: React.FC<{
 
 const PAGE_SIZE = 30;
 
-const OpenRecordingsButton: React.FC<{ onClick: () => void; label: string }> = ({
-  onClick,
-  label,
-}) => (
+const OpenRecordingsButton: React.FC<{
+  onClick: () => void;
+  label: string;
+}> = ({ onClick, label }) => (
   <Button
     onClick={onClick}
     variant="secondary"
@@ -98,8 +103,15 @@ const OpenRecordingsButton: React.FC<{ onClick: () => void; label: string }> = (
 /** SEC-02: loopback means localhost / 127.0.0.1 / ::1 — nothing else is "local". */
 const isLoopbackUrl = (url: string): boolean => {
   try {
-    const host = new URL(url.includes("://") ? url : `http://${url}`).hostname.toLowerCase();
-    return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1";
+    const host = new URL(
+      url.includes("://") ? url : `http://${url}`,
+    ).hostname.toLowerCase();
+    return (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "[::1]" ||
+      host === "::1"
+    );
   } catch {
     return false;
   }
@@ -126,10 +138,15 @@ export const HistorySettings: React.FC = () => {
     if (isFirstPage) setLoading(true);
 
     try {
-      const result = await commands.getHistoryEntries(cursor ?? null, PAGE_SIZE);
+      const result = await commands.getHistoryEntries(
+        cursor ?? null,
+        PAGE_SIZE,
+      );
       if (result.status === "ok") {
         const { entries: newEntries, has_more } = result.data;
-        setEntries((prev) => (isFirstPage ? newEntries : [...prev, ...newEntries]));
+        setEntries((prev) =>
+          isFirstPage ? newEntries : [...prev, ...newEntries],
+        );
         setHasMore(has_more);
       }
     } catch (error) {
@@ -177,7 +194,9 @@ export const HistorySettings: React.FC = () => {
         );
       }
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, []);
 
   // ---------------------------------------------------------------------------
@@ -186,14 +205,20 @@ export const HistorySettings: React.FC = () => {
 
   const toggleSaved = async (id: number) => {
     // Optimistic
-    setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, saved: !e.saved } : e)));
+    setEntries((prev) =>
+      prev.map((e) => (e.id === id ? { ...e, saved: !e.saved } : e)),
+    );
     try {
       const result = await commands.toggleHistoryEntrySaved(id);
       if (result.status !== "ok") {
-        setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, saved: !e.saved } : e)));
+        setEntries((prev) =>
+          prev.map((e) => (e.id === id ? { ...e, saved: !e.saved } : e)),
+        );
       }
     } catch {
-      setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, saved: !e.saved } : e)));
+      setEntries((prev) =>
+        prev.map((e) => (e.id === id ? { ...e, saved: !e.saved } : e)),
+      );
     }
   };
 
@@ -390,6 +415,10 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
   // v1.16.0: click any word in the transcript to teach a correction —
   // History is where mistakes get noticed, so it's a teaching surface.
   const [teachWord, setTeachWord] = useState<string | null>(null);
+  // Kōrero 1.51: address swaps found in the user's last edit, offered to learn.
+  const [learn, setLearn] = useState<AddressChange[]>([]);
+  const corrections = useCorrections();
+  const { getSetting, updateSetting } = useSettings();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Derived state
@@ -403,9 +432,18 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
     (entry.post_processed_text === null ||
       entry.post_processed_text === undefined ||
       entry.post_processed_text.trim().length === 0);
-  const effectiveText = hasPostProcessed
-    ? (entry.post_processed_text as string)
-    : entry.transcription_text;
+  // Kōrero 1.51: a dictation corrected here, or an address Kōrero replaced,
+  // keeps the words as heard in transcription_text and the text to use in
+  // post_processed_text, even when no clean-up was asked for.
+  const hasCorrected =
+    !entry.post_process_requested &&
+    entry.post_processed_text !== null &&
+    entry.post_processed_text !== undefined &&
+    entry.post_processed_text.trim().length > 0;
+  const effectiveText =
+    hasPostProcessed || hasCorrected
+      ? (entry.post_processed_text as string)
+      : entry.transcription_text;
   const hasTranscription = effectiveText.trim().length > 0;
 
   // Auto-focus + position cursor at end when entering edit mode
@@ -430,7 +468,8 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
   };
 
   const handleStartEdit = () => {
-    setEditText(entry.post_processed_text ?? "");
+    setEditText(effectiveText);
+    setLearn([]);
     setEditing(true);
     setShowOriginal(false); // collapse original when entering edit
   };
@@ -442,12 +481,27 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
 
   const handleSaveEdit = async () => {
     if (saving) return;
+    if (editText === effectiveText) {
+      // Nothing changed: an unchanged plain dictation is not "Corrected".
+      setEditing(false);
+      setEditText("");
+      return;
+    }
     setSaving(true);
     try {
       const result = await commands.updatePostProcessedText(entry.id, editText);
       if (result.status === "ok") {
         // Optimistic update before the Rust event arrives
         onEntryUpdated({ ...entry, post_processed_text: editText });
+        // Kōrero 1.51: an address swapped for another is offered to learn.
+        setLearn(
+          addressChanges(
+            effectiveText,
+            editText,
+            corrections.list,
+            getSetting("known_addresses") || [],
+          ),
+        );
         setEditing(false);
         setEditText("");
       } else {
@@ -461,7 +515,9 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
     }
   };
 
-  const handleTextareaKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleTextareaKeyDown = (
+    e: React.KeyboardEvent<HTMLTextAreaElement>,
+  ) => {
     if (e.key === "Escape") {
       handleCancelEdit();
     } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -515,7 +571,6 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
 
   return (
     <div className="px-4 py-2 pb-5 flex flex-col gap-3">
-
       {/* Header row -------------------------------------------------------- */}
       <div className="flex justify-between items-center">
         <p className="text-sm font-medium">{formattedDate}</p>
@@ -523,7 +578,9 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
           {editing ? (
             <>
               <IconButton
-                onClick={() => { void handleSaveEdit(); }}
+                onClick={() => {
+                  void handleSaveEdit();
+                }}
                 disabled={saving}
                 title="Save correction (⌘↵)"
               >
@@ -554,11 +611,11 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
                   <Copy width={16} height={16} />
                 )}
               </IconButton>
-              {hasPostProcessed && (
+              {hasTranscription && (
                 <IconButton
                   onClick={handleStartEdit}
                   disabled={retrying}
-                  title="Edit post-processed text"
+                  title="Correct this text"
                 >
                   <Pencil width={16} height={16} />
                 </IconButton>
@@ -629,6 +686,14 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
           <Sparkles className="h-3 w-3 text-cyan-400/70 flex-shrink-0" />
           <span className="text-xs text-cyan-400/70 font-medium">
             Post-processed
+          </span>
+        </div>
+      )}
+      {hasCorrected && !editing && (
+        <div className="flex items-center gap-1.5">
+          <Pencil className="h-3 w-3 text-cyan-400/70 flex-shrink-0" />
+          <span className="text-xs text-cyan-400/70 font-medium">
+            {t("settings.debug.rememberAddress.corrected")}
           </span>
         </div>
       )}
@@ -705,8 +770,65 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
             />
           )}
 
+          {/* Kōrero 1.51: learn an address the user just corrected. */}
+          {learn.length > 0 && (
+            <div
+              className="flex flex-col gap-1.5 rounded-md border border-cyan-400/30 bg-cyan-400/5 px-3 py-2"
+              role="group"
+              aria-label={t("settings.debug.rememberAddress.title")}
+            >
+              <span className="text-xs font-medium text-text/90">
+                {t("settings.debug.rememberAddress.title")}
+              </span>
+              {learn.map((c) => (
+                <span key={c.heard} className="text-xs text-text/70">
+                  {t("settings.debug.rememberAddress.body", {
+                    heard: c.heard,
+                    means: c.means,
+                  })}
+                </span>
+              ))}
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={() => {
+                    const known = getSetting("known_addresses") || [];
+                    const add = learn
+                      .map((c) => c.means)
+                      .filter(
+                        (m, i, all) =>
+                          !known.includes(m) && all.indexOf(m) === i,
+                      );
+                    if (add.length)
+                      updateSetting("known_addresses", [...known, ...add]);
+                    corrections.addMany(
+                      learn.map((c) => ({ wrong: c.heard, right: c.means })),
+                    );
+                    for (const c of learn)
+                      toast.success(
+                        t("settings.debug.rememberAddress.done", {
+                          means: c.means,
+                        }),
+                      );
+                    setLearn([]);
+                  }}
+                >
+                  {t("settings.debug.rememberAddress.remember")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => setLearn([])}
+                >
+                  {t("settings.debug.rememberAddress.notNow")}
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* Show / hide original raw transcription ---------------------- */}
-          {hasPostProcessed && !retrying && (
+          {(hasPostProcessed || hasCorrected) && !retrying && (
             <div className="flex flex-col gap-1">
               <button
                 onClick={() => setShowOriginal((v) => !v)}
@@ -717,9 +839,7 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
                 ) : (
                   <ChevronDown width={12} height={12} />
                 )}
-                {showOriginal
-                  ? "Hide original"
-                  : "Show original transcription"}
+                {showOriginal ? "Hide original" : "Show original transcription"}
               </button>
               {showOriginal && (
                 <p className="text-xs text-mid-gray/60 italic select-text cursor-text whitespace-pre-wrap break-words bg-mid-gray/10 rounded-md px-3 py-2 mt-0.5">

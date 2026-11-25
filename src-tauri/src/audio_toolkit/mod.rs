@@ -6,6 +6,7 @@ pub mod reo_lexicon;
 pub mod text;
 pub mod utils;
 pub mod vad;
+pub mod known_addresses;
 pub mod written_forms;
 
 pub use audio::{
@@ -20,4 +21,5 @@ pub use nz_english::{
 pub use text::{apply_custom_words, filter_transcription_output};
 pub use utils::get_cpal_host;
 pub use vad::{SileroVad, VoiceActivityDetector};
+pub use known_addresses::{normalise_address, snap_known_addresses};
 pub use written_forms::{apply_written_forms, is_english_writing, WrittenFormsOptions};

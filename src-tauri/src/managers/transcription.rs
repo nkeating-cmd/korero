@@ -1031,7 +1031,8 @@ impl TranscriptionManager {
         if final_result.is_empty() {
             info!("Transcription result is empty");
         } else {
-            info!("Transcription result: {}", final_result);
+            // SEC-143-06: never the text itself (independent review, 1.51).
+            info!("Transcription result: {} chars", final_result.chars().count());
         }
 
         self.maybe_unload_immediately("transcription");

@@ -495,6 +495,23 @@
         "label": "Append trailing space",
         "description": "Add a space after pasted transcription"
       },
+      "knownAddresses": {
+        "title": "Your email addresses",
+        "description": "When you dictate an address that sounds like one of these (\"nick at kite dot co dot nz\"), Kōrero writes yours (nic@kyt.nz). Dictation only: meetings and imports are never changed. Correct an address in History and Kōrero offers to add it here.",
+        "placeholder": "you@example.co.nz",
+        "add": "Add",
+        "invalid": "That isn't an email address.",
+        "duplicate": "{{address}} is already in the list.",
+        "remove": "Remove {{address}}"
+      },
+      "rememberAddress": {
+        "title": "Remember this address?",
+        "body": "When Kōrero writes {{heard}}, write {{means}} instead, and fix anything that sounds like it.",
+        "remember": "Remember",
+        "notNow": "Not now",
+        "done": "Kōrero will write {{means}} from now on.",
+        "corrected": "Corrected"
+      },
       "writtenForms": {
         "label": "Write numbers as figures",
         "description": "Writes spoken numbers, money, percentages, dates, times and measurements as figures: \"one thousand two hundred dollars\" becomes $1,200. English only. Your custom words and corrections are never changed."

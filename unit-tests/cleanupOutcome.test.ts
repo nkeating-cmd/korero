@@ -32,6 +32,13 @@ describe("cleanupOutcome", () => {
     expect(cleanupOutcome(entry(false, null)).state).toBe("none");
   });
 
+  test("no clean-up asked for, but a second text: corrected (1.51)", () => {
+    expect(cleanupOutcome(entry(false, "nic@kyt.nz"))).toMatchObject({
+      state: "corrected",
+      suggestCheck: false,
+    });
+  });
+
   test("cleaned", () => {
     expect(cleanupOutcome(entry(true, "Tidy."))).toMatchObject({ state: "cleaned", suggestCheck: false });
   });
