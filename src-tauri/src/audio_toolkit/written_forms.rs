@@ -858,6 +858,9 @@ pub struct WrittenFormsOptions {
     pub us_dates: bool,
     /// The user's own words and corrections: any token they cover is never changed.
     pub protected: Vec<String>,
+    /// Kōrero 1.51: the names before "@" in the user's own addresses ("nic" for nic@kyt.nz),
+    /// lower case. A protected word starts an email address only when it is one of these.
+    pub address_names: Vec<String>,
 }
 
 enum Step {
@@ -884,6 +887,7 @@ struct Pass<'a> {
     us: bool,
     /// Set while reading an email or web address, which may contain protected words.
     address_mode: std::cell::Cell<bool>,
+    address_names: &'a [String],
 }
 
 /// Applies the written-forms pass. Returns the input unchanged when nothing matched.
@@ -903,6 +907,7 @@ pub fn apply_written_forms(text: &str, opts: &WrittenFormsOptions) -> String {
         protected,
         us: opts.us_dates,
         address_mode: std::cell::Cell::new(false),
+        address_names: &opts.address_names,
     };
     let mut out: Vec<Piece> = Vec::with_capacity(toks.len());
     let mut i = 0;
@@ -1164,13 +1169,13 @@ impl<'a> Pass<'a> {
             let prose = in_list(EMAIL_STOP, &local) || in_list(URL_STOP, &local);
             if !prose && self.joins(at) {
                 if let Some((domain, end)) = self.domain(at + 1, true) {
-                    // A protected word may start an address only as a word of its own ("Nic"),
-                    // never as the end of a protected name ("Te Whatu Ora at health dot govt
-                    // dot nz", "Kyt Services at kyt dot nz") or a name followed by its own
-                    // site ("Xero at xero dot com").
+                    // A protected word ("Nic", "MBIE", "Xero") starts an address only when it
+                    // is the name in one of the user's own addresses; otherwise it is a name
+                    // in prose ("apply to MBIE at business dot govt dot nz", "Te Whatu Ora at
+                    // health dot govt dot nz"), and custom words are never changed.
                     let named = self.protected[i]
                         && ((i > 0 && self.protected[i - 1])
-                            || domain.split('.').next() == Some(local.as_str()));
+                            || !self.address_names.iter().any(|n| *n == local));
                     if named {
                         return None;
                     }
@@ -2971,6 +2976,7 @@ mod tests {
         ] {
             let opts = WrittenFormsOptions {
                 protected: prot.iter().map(|s| s.to_string()).collect(),
+                address_names: vec!["nic".into()],
                 ..Default::default()
             };
             assert_eq!(
@@ -2992,6 +2998,9 @@ mod tests {
             ),
             (vec!["Xero"], "log in to Xero at xero dot com"),
             (vec!["Kyt Services"], "talk to Kyt Services at kyt dot nz"),
+            (vec!["MBIE"], "apply to MBIE at business dot govt dot nz"),
+            // Not one of the user's addresses: "Nic" stays a name.
+            (vec!["Nic"], "email Nic at kyt dot nz"),
         ] {
             let opts = WrittenFormsOptions {
                 protected: prot.iter().map(|s| s.to_string()).collect(),

@@ -263,11 +263,12 @@ pub async fn tidy_history_entry_reo(
     // From the ORIGINAL transcription, never from an earlier AI clean-up. Kōrero 1.51: an entry
     // that was never cleaned up but holds a corrected text (a known address, or the user's own
     // edit in History) is tidied from that text, so the correction is not lost.
+    // A cleaned-up entry keeps the words as heard, so its known addresses are put back first.
     let source = match (&entry.post_processed_text, entry.post_process_requested) {
-        (Some(corrected), false) => corrected.as_str(),
-        _ => entry.transcription_text.as_str(),
+        (Some(corrected), false) => corrected.clone(),
+        _ => crate::actions::snap_dictation(&app, entry.transcription_text.clone()).0,
     };
-    let processed_prompt = prompt.prompt.replace("${output}", source);
+    let processed_prompt = prompt.prompt.replace("${output}", &source);
     let api_key = settings
         .post_process_api_keys
         .get("ollama")

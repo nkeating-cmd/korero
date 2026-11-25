@@ -993,6 +993,11 @@ impl TranscriptionManager {
             let opts = crate::audio_toolkit::WrittenFormsOptions {
                 us_dates: settings.selected_language == "en-US",
                 protected,
+                address_names: settings
+                    .known_addresses
+                    .iter()
+                    .filter_map(|a| a.split_once('@').map(|(n, _)| n.to_lowercase()))
+                    .collect(),
             };
             match std::panic::catch_unwind(|| {
                 crate::audio_toolkit::apply_written_forms(&filtered_result, &opts)

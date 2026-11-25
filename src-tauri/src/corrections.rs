@@ -80,6 +80,12 @@ pub fn apply_corrections(text: &str, corrections: &[TranscriptCorrection]) -> St
         if wrong.is_empty() || right.is_empty() || wrong.eq_ignore_ascii_case(right) {
             continue;
         }
+        // Kōrero 1.51: an email-address correction ("nick@kite.co.nz" → "nic@kyt.nz") is the
+        // user's own address, so it applies to dictation only (`known_addresses.rs`, from
+        // `actions::snap_dictation`): in a meeting or a note it could be a client's real one.
+        if wrong.contains('@') {
+            continue;
+        }
         // Efficiency (v1.19.2): skip the (relatively expensive) regex compile
         // entirely when the term isn't even present, case-insensitively. On a
         // meeting with many live segments and a long corrections list this
@@ -401,10 +407,11 @@ mod tests {
             apply_corrections("Nick flew a kite. Email nick@kite.nz.", &words),
             "Nic flew a Kyt. Email nick@kite.nz."
         );
+        // An address correction is dictation-only, applied by the known-address step.
         let alias = vec![corr("nick@kite.co.nz", "nic@kyt.nz")];
         assert_eq!(
             apply_corrections("Write to nick@kite.co.nz, thanks", &alias),
-            "Write to nic@kyt.nz, thanks"
+            "Write to nick@kite.co.nz, thanks"
         );
         // A "$" in the right side is still literal (v1.19.2).
         assert_eq!(apply_corrections("price", &[corr("price", "$5")]), "$5");

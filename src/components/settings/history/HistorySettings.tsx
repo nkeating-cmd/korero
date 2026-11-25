@@ -543,6 +543,23 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
   };
 
   const handleRetranscribe = async () => {
+    // Kōrero 1.51: every dictation can now be corrected; re-transcribing replaces the correction.
+    if (
+      hasCorrected &&
+      entry.post_processed_text !== entry.transcription_text
+    ) {
+      confirmDestructive(
+        t("settings.history.retranscribeLosesEdit"),
+        undefined,
+        t("settings.history.retranscribe"),
+        retranscribeNow,
+      );
+      return;
+    }
+    await retranscribeNow();
+  };
+
+  const retranscribeNow = async () => {
     try {
       setRetrying(true);
       await retryTranscription(entry.id);
@@ -802,15 +819,16 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
                       );
                     if (add.length)
                       updateSetting("known_addresses", [...known, ...add]);
-                    corrections.addMany(
+                    const taught = corrections.addMany(
                       learn.map((c) => ({ wrong: c.heard, right: c.means })),
                     );
-                    for (const c of learn)
-                      toast.success(
-                        t("settings.debug.rememberAddress.done", {
-                          means: c.means,
-                        }),
-                      );
+                    if (taught > 0 || add.length > 0)
+                      for (const c of learn)
+                        toast.success(
+                          t("settings.debug.rememberAddress.done", {
+                            means: c.means,
+                          }),
+                        );
                     setLearn([]);
                   }}
                 >

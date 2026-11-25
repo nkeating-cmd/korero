@@ -1218,14 +1218,23 @@ mod cleanup_wait_tests {
 
 /// Kōrero 1.51: a misheard email address in a dictation becomes the user's own known one
 /// ("nick@kite.co.nz" → their address). Dictation only: meetings, notes and imports are other
-/// people's words, so they never reach this. Returns the text to use and, when anything was
-/// replaced, the words as heard.
+/// people's words, so they never reach this. The address corrections the user taught in History
+/// apply here too, and only here (`corrections::apply_corrections` skips them). Returns the text
+/// to use and, when anything was replaced, the words as heard.
 pub(crate) fn snap_dictation(app: &AppHandle, text: String) -> (String, Option<String>) {
     let s = get_settings(app);
-    if !s.written_forms_enabled || s.known_addresses.is_empty() {
-        return (text, None);
-    }
-    let (snapped, n) = crate::audio_toolkit::snap_known_addresses(&text, &s.known_addresses);
+    let taught: Vec<(String, String)> = s
+        .transcript_corrections
+        .iter()
+        .filter(|c| c.wrong.contains('@'))
+        .map(|c| (c.wrong.clone(), c.right.clone()))
+        .collect();
+    let known: &[String] = if s.written_forms_enabled {
+        &s.known_addresses
+    } else {
+        &[]
+    };
+    let (snapped, n) = crate::audio_toolkit::snap_addresses(&text, known, &taught);
     if n == 0 {
         return (text, None);
     }

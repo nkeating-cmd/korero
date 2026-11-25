@@ -188,7 +188,17 @@ fn sounds_like(
     if c.1 == k.1 && c.2 == k.2 {
         return false;
     }
-    // Speech mishears letters, not numbers: "1nic@kyt.nz" is someone else.
+    // Speech mishears letters, not numbers or marks: "1nic@kyt.nz", "nic_k@kite.nz" and
+    // "_nick@kite.nz" are someone else.
+    let marks = |p: &(String, String, String)| -> String {
+        p.0.chars()
+            .filter(|c| !c.is_ascii_alphabetic())
+            .chain(p.1.chars().filter(char::is_ascii_digit))
+            .collect()
+    };
+    if marks(c) != marks(k) {
+        return false;
+    }
     let digits = |p: &(String, String, String)| -> String {
         p.0.chars()
             .chain(p.1.chars())
@@ -233,7 +243,24 @@ pub fn match_known(candidate: &str, known: &[String]) -> Option<String> {
 /// Replaces every misheard email address in `text` with the known one it sounds like. Returns the
 /// text and how many were replaced. Text without an "@" is returned untouched.
 pub fn snap_known_addresses(text: &str, known: &[String]) -> (String, usize) {
-    if known.is_empty() || !text.contains('@') {
+    snap_addresses(text, known, &[])
+}
+
+/// As [`snap_known_addresses`], plus the exact address corrections the user taught (`taught`:
+/// heard → means, from History's "Remember this address?"). A taught pair wins over sound and
+/// applies even to a same-domain mishearing, which sound never fixes. Dictation only, like the
+/// rest of this module.
+pub fn snap_addresses(
+    text: &str,
+    known: &[String],
+    taught: &[(String, String)],
+) -> (String, usize) {
+    let taught: Vec<(String, String)> = taught
+        .iter()
+        .filter_map(|(w, r)| Some((normalise_address(w)?, r.trim().to_string())))
+        .filter(|(_, r)| !r.is_empty())
+        .collect();
+    if (known.is_empty() && taught.is_empty()) || !text.contains('@') {
         return (text.to_string(), 0);
     }
     let mut out = String::with_capacity(text.len());
@@ -246,7 +273,7 @@ pub fn snap_known_addresses(text: &str, known: &[String]) -> (String, usize) {
         let chars: Vec<char> = word.chars().collect();
         let start = chars
             .iter()
-            .position(|c| c.is_ascii_alphanumeric())
+            .position(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-'))
             .unwrap_or(chars.len());
         let end = chars
             .iter()
@@ -260,7 +287,12 @@ pub fn snap_known_addresses(text: &str, known: &[String]) -> (String, usize) {
         let touching = glued(start.checked_sub(1).and_then(|p| chars.get(p))) == Some(true)
             || glued(chars.get(end)) == Some(true);
         if core.contains('@') && !touching {
-            if let Some(real) = match_known(&core, known) {
+            let lower = core.to_lowercase();
+            let exact = taught
+                .iter()
+                .find(|(w, _)| *w == lower)
+                .map(|(_, r)| r.clone());
+            if let Some(real) = exact.or_else(|| match_known(&core, known)) {
                 let lead: String = chars[..start].iter().collect();
                 let trail: String = chars[end..].iter().collect();
                 out.push_str(&lead);
@@ -347,6 +379,15 @@ mod tests {
         // Japanese punctuation around an address (independent review, 1.51).
         assert_eq!(snap("宛先はnick@kite.co.nz、次"), "宛先はnic@kyt.nz、次");
         assert_eq!(snap("ānick@kite.co.nz"), "ānick@kite.co.nz");
+        // Marks are not misheard (independent review, second pass).
+        for heard in [
+            "_nick@kite.co.nz",
+            "nic_k@kite.nz",
+            "n.i.c@kite.nz",
+            "nick+x@kite.nz",
+        ] {
+            assert_eq!(snap(heard), heard, "{heard}");
+        }
     }
 
     /// The red team's false snaps (26 Nov) must stay as heard.
@@ -373,6 +414,27 @@ mod tests {
         ] {
             assert_eq!(snap(heard), heard, "{heard}");
         }
+    }
+
+    #[test]
+    fn taught_corrections_apply_exactly() {
+        let taught = vec![("Nick@kyt.nz".to_string(), "nic@kyt.nz".to_string())];
+        // Same domain: sound never snaps it, a taught pair does.
+        assert_eq!(snap("Mail nick@kyt.nz."), "Mail nick@kyt.nz.");
+        assert_eq!(
+            snap_addresses("Mail nick@kyt.nz.", &known(), &taught),
+            ("Mail nic@kyt.nz.".to_string(), 1)
+        );
+        // With no known addresses at all.
+        assert_eq!(
+            snap_addresses("to NICK@KYT.NZ", &[], &taught).0,
+            "to nic@kyt.nz"
+        );
+        // Only that exact address.
+        assert_eq!(
+            snap_addresses("to nick@kyt.co.nz", &[], &taught).0,
+            "to nick@kyt.co.nz"
+        );
     }
 
     /// The independent review's false snaps (26 Nov): other people, not mishearings.
