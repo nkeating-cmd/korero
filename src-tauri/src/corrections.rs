@@ -83,7 +83,8 @@ pub fn apply_corrections(text: &str, corrections: &[TranscriptCorrection]) -> St
         // Kōrero 1.51: an email-address correction ("nick@kite.co.nz" → "nic@kyt.nz") is the
         // user's own address, so it applies to dictation only (`known_addresses.rs`, from
         // `actions::snap_dictation`): in a meeting or a note it could be a client's real one.
-        if wrong.contains('@') {
+        // Other corrections with an "@" ("@nick" → "@nic") apply as before.
+        if is_address_correction(c) {
             continue;
         }
         // Efficiency (v1.19.2): skip the (relatively expensive) regex compile
@@ -179,12 +180,22 @@ pub fn update_transcript_corrections(
     Ok(())
 }
 
+/// True when the wrong side of a correction is a whole email address: those apply to dictation
+/// only (Kōrero 1.51).
+pub fn is_address_correction(c: &TranscriptCorrection) -> bool {
+    crate::audio_toolkit::normalise_address(&c.wrong).is_some()
+}
+
 /// A prompt-ready glossary of the corrections, for injection into
 /// post-processing system prompts. None when there's nothing to add.
 pub fn glossary_block(corrections: &[TranscriptCorrection]) -> Option<String> {
     let pairs: Vec<String> = corrections
         .iter()
         .filter(|c| !c.wrong.trim().is_empty() && !c.right.trim().is_empty())
+        // Kōrero 1.51: address corrections are dictation-only and already applied before any
+        // clean-up; told to an AI clean-up of a meeting or note they could rewrite a client's
+        // real address ("including close variants").
+        .filter(|c| !is_address_correction(c))
         .take(GLOSSARY_MAX)
         .map(|c| format!("- \"{}\" should be \"{}\"", c.wrong.trim(), c.right.trim()))
         .collect();
@@ -407,11 +418,18 @@ mod tests {
             apply_corrections("Nick flew a kite. Email nick@kite.nz.", &words),
             "Nic flew a Kyt. Email nick@kite.nz."
         );
-        // An address correction is dictation-only, applied by the known-address step.
+        // An address correction is dictation-only, applied by the known-address step, and is
+        // not told to an AI clean-up; other corrections with an "@" still apply.
         let alias = vec![corr("nick@kite.co.nz", "nic@kyt.nz")];
         assert_eq!(
             apply_corrections("Write to nick@kite.co.nz, thanks", &alias),
             "Write to nick@kite.co.nz, thanks"
+        );
+        assert_eq!(glossary_block(&alias), None);
+        let handle = vec![corr("nic@kyt", "nic@kyt.nz")];
+        assert_eq!(
+            apply_corrections("to nic@kyt now", &handle),
+            "to nic@kyt.nz now"
         );
         // A "$" in the right side is still literal (v1.19.2).
         assert_eq!(apply_corrections("price", &[corr("price", "$5")]), "$5");

@@ -1226,7 +1226,7 @@ pub(crate) fn snap_dictation(app: &AppHandle, text: String) -> (String, Option<S
     let taught: Vec<(String, String)> = s
         .transcript_corrections
         .iter()
-        .filter(|c| c.wrong.contains('@'))
+        .filter(|c| crate::corrections::is_address_correction(c))
         .map(|c| (c.wrong.clone(), c.right.clone()))
         .collect();
     let known: &[String] = if s.written_forms_enabled {
