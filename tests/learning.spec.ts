@@ -35,7 +35,7 @@ const pair = {
 const watched = {
   heard: "fens",
   meant: "FENZ",
-  seen: 1,
+  seen: 2,
   off: false,
   last_seen: "2026-11-26",
 };
@@ -75,7 +75,7 @@ test.describe("Learning from corrections", () => {
         after: fixed,
       });
     await expect(
-      page.getByText("Make the same correction once more", { exact: false }),
+      page.getByText("If you keep making this correction", { exact: false }),
     ).toBeVisible();
   });
 
@@ -138,6 +138,8 @@ test.describe("Learning from corrections", () => {
     await expect
       .poll(() => invoked(page))
       .toContain("update_post_processed_text");
+    // Long enough for a late call to have been made.
+    await page.waitForTimeout(700);
     expect(await invoked(page)).not.toContain("learn_from_edit");
   });
 
@@ -179,18 +181,19 @@ test.describe("Learning from corrections", () => {
     await expect(rows).toHaveCount(3);
     await expect(rows.nth(0)).toContainText("foreign emergency");
     await expect(rows.nth(0)).toContainText("Fire and Emergency");
-    await expect(rows.nth(0)).toContainText("In use");
-    await expect(rows.nth(1)).toContainText("Seen once");
+    await expect(rows.nth(0)).toContainText("In use · corrected 2 times");
+    // A single word needs three: twice is still only watched.
+    await expect(rows.nth(1)).toContainText("Watching · corrected 2 times");
     await expect(rows.nth(2)).toContainText("Off");
     // Only a pair in use can be promoted.
     await expect(
-      rows.nth(0).getByRole("button", { name: "Use everywhere" }),
+      rows.nth(0).getByRole("button", { name: /everywhere/ }),
     ).toBeVisible();
     await expect(
-      rows.nth(1).getByRole("button", { name: "Use everywhere" }),
+      rows.nth(1).getByRole("button", { name: /everywhere/ }),
     ).toHaveCount(0);
     await expect(
-      rows.nth(2).getByRole("button", { name: "Use everywhere" }),
+      rows.nth(2).getByRole("button", { name: /everywhere/ }),
     ).toHaveCount(0);
   });
 
@@ -208,7 +211,9 @@ test.describe("Learning from corrections", () => {
     const card = page.getByRole("group", {
       name: "Learnt from your corrections",
     });
-    await card.getByRole("button", { name: "Use everywhere" }).click();
+    await card
+      .getByRole("button", { name: "Use Fire and Emergency everywhere" })
+      .click();
     await expect
       .poll(() => argsOf(page, "update_transcript_corrections"))
       .toEqual({
@@ -236,7 +241,9 @@ test.describe("Learning from corrections", () => {
       name: "Learnt from your corrections",
     });
     await card
-      .getByRole("checkbox", { name: "Switch off foreign emergency" })
+      .getByRole("checkbox", {
+        name: "Write foreign emergency as Fire and Emergency",
+      })
       .click();
     await expect
       .poll(() => argsOf(page, "update_learned_pairs"))

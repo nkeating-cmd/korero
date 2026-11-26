@@ -7,8 +7,12 @@ import { useSettings } from "../../hooks/useSettings";
 import { useCorrections } from "./Corrections";
 import { ToggleSwitch } from "./ToggleSwitch";
 
-/** A pair is a rule once it has been corrected this many times (`learning.rs`). */
-const ACTIVATE_AT = 2;
+/**
+ * How many times a replacement must be made before it is a rule: twice for a
+ * phrase, three times for a single word (`LearnedPair::needed` in `learning.rs`).
+ */
+export const timesNeeded = (heard: string): number =>
+  heard.includes(" ") ? 2 : 3;
 
 /**
  * Kōrero 1.52 (B14): what Kōrero has learnt from the corrections made in
@@ -29,9 +33,14 @@ export const LearntCorrections: React.FC = () => {
   const forget = (heard: string) =>
     save(pairs.filter((p) => p.heard !== heard));
   const promote = (p: LearnedPair) => {
-    corrections.addMany([{ wrong: p.heard, right: p.meant }]);
+    const added = corrections.addMany([{ wrong: p.heard, right: p.meant }]);
     forget(p.heard);
-    toast.success(t("settings.debug.learning.promoted", { meant: p.meant }));
+    if (added > 0)
+      toast.success(t("settings.debug.learning.promoted", { meant: p.meant }));
+    else
+      toast.message(
+        t("settings.debug.learning.alreadyTaught", { heard: p.heard }),
+      );
   };
 
   return (
@@ -66,7 +75,7 @@ export const LearntCorrections: React.FC = () => {
         <ul className="space-y-1">
           {pairs.map((p) => {
             const seen = p.seen ?? 0;
-            const active = !p.off && seen >= ACTIVATE_AT;
+            const active = !p.off && seen >= timesNeeded(p.heard);
             const state = p.off
               ? t("settings.debug.learning.off")
               : active
@@ -84,16 +93,18 @@ export const LearntCorrections: React.FC = () => {
                 <span className={p.off ? "text-text-muted" : "text-text"}>
                   {p.meant}
                 </span>
-                <span
-                  className="flex-1 text-xs text-text-subtle"
-                  title={t("settings.debug.learning.seen", { count: seen })}
-                >
+                <span className="flex-1 text-xs text-text-subtle">
                   {state}
+                  {" · "}
+                  {t("settings.debug.learning.seen", { count: seen })}
                 </span>
                 {active && (
                   <button
                     type="button"
                     title={t("settings.debug.learning.useEverywhereTitle")}
+                    aria-label={t("settings.debug.learning.useEverywhereFor", {
+                      meant: p.meant,
+                    })}
                     onClick={() => promote(p)}
                     className="text-xs text-aurora-cyan hover:underline"
                   >
@@ -104,15 +115,10 @@ export const LearntCorrections: React.FC = () => {
                   type="checkbox"
                   checked={!p.off}
                   onChange={(e) => setOff(p.heard, !e.target.checked)}
-                  aria-label={
-                    p.off
-                      ? t("settings.debug.learning.switchOn", {
-                          heard: p.heard,
-                        })
-                      : t("settings.debug.learning.switchOff", {
-                          heard: p.heard,
-                        })
-                  }
+                  aria-label={t("settings.debug.learning.use", {
+                    heard: p.heard,
+                    meant: p.meant,
+                  })}
                 />
                 <button
                   type="button"
