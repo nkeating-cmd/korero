@@ -17,7 +17,7 @@ Two things do reach the network, and it is worth naming them rather than roundin
 speech models are downloaded on first use, and the app asks GitHub once at startup whether a newer
 release exists. Neither carries audio, transcripts, or anything about you. No telemetry, ever.
 
-Current version: **v1.52.0** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.52.0)).
+Current version: **v1.53.0** ([release notes](https://github.com/nkeating-cmd/korero/releases/tag/v1.53.0)).
 
 ---
 
@@ -89,6 +89,7 @@ Current version: **v1.52.0** ([release notes](https://github.com/nkeating-cmd/ko
 
 ### Localisation & defaults
 - **Learns the names you correct** (v1.52). Correct a misheard name in Dictation history ("foreign emergency" to *Fire and Emergency*) and Kōrero notes it. Make the same correction a second time and Kōrero makes it for you from then on, when you dictate. A single word is never changed everywhere without asking: after three corrections Kōrero offers to always write it. It only learns names, never rewording or ordinary words; it switches a rule off if you change it back; and what it learns stays on your computer and out of meetings and notes until you choose *Use everywhere*. See it, or turn it off, under AI clean-up & notes → *Learnt from your corrections*.
+- **A lit edge on the speech model in use** (v1.53). On Settings, Models, the model you are using now has a slow travelling light around its edge, and the others light up when you point at them, in place of the old shimmer. If Windows animation effects are off, the edge stays lit and does not move.
 - **Numbers written as figures** (v1.50). The speech model writes many numbers as figures by itself, but sometimes leaves them as words ("about one thousand two hundred"). Kōrero now writes those the way people write them (*about 1,200*), on every dictation, without the AI clean-up. Numbers the model already wrote as figures are not changed. It covers amounts, percentages, measurements, dates, years, times, NZ phone numbers, versions and email addresses. One to nine stay as words in a sentence, a dollar sign appears only when you say a currency, and te reo Māori, your custom words and your corrections are never changed. English only; turn it off in Advanced → *Write numbers as figures*.
 - **New Zealand English on by default** (v1.41; Handy defaults to auto-detect). Macrons, NZ place names and NZ spelling apply out of the box. An existing plain "English" setting switches over once; turn it off in Dictation & sound and it stays off.
 - **NZ + te reo Māori custom dictionary** seeded by default, with **macron-aware matching** so words like *whānau* / *hapū* resolve correctly.

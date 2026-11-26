@@ -394,23 +394,13 @@ body {
   }
 
   .glass-card-interactive {
-    transition: background-color 220ms cubic-bezier(0.22,1,0.36,1), border-color 220ms cubic-bezier(0.22,1,0.36,1), box-shadow 320ms cubic-bezier(0.22,1,0.36,1), transform 200ms cubic-bezier(0.22,1,0.36,1);
+    transition: background-color 220ms cubic-bezier(0.22,1,0.36,1), border-color 220ms cubic-bezier(0.22,1,0.36,1), box-shadow 320ms cubic-bezier(0.22,1,0.36,1);
     cursor: pointer;
-    will-change: transform, box-shadow;
+    will-change: box-shadow;
   }
   .glass-card-interactive:hover {
     background-color: var(--color-glass-surface-hover);
     border-color: var(--color-glass-border-strong);
-    /* Kōrero (v1.10.0): hovered glass lifts AND gains a faint aurora-cyan ambient
-       glow, so it reads as "lit from within" rather than merely shadowed. */
-    box-shadow:
-      inset 0  1px 0 0 rgba(255,255,255,0.20),
-      inset  1px 0 0 0 rgba(255,255,255,0.06),
-      inset -1px 0 0 0 rgba(255,255,255,0.06),
-      inset 0 -1px 0 0 rgba(255,255,255,0.06),
-      0 16px 48px 0 rgba(0,0,0,0.32),
-      0 0 24px 0 rgba(93, 216, 255, 0.10);
-    transform: translateY(-2px);
   }
   .glass-card-interactive:active {
     transform: translateY(0);
@@ -630,36 +620,85 @@ body::before {
   );
 }
 
-/* Light-sweep hover effect on interactive glass — a thin diagonal highlight
-   sweeps across the surface on hover, mimicking light catching real glass. */
+/* Kōrero (1.53): NEON RIM, replacing the v1.10 light-sweep ("shimmer").
+   Adapted from the KYT Services glow button (kyt-services-web glow-button.tsx,
+   layer 2 "the lit rim"): a conic gradient, mostly dark with one hot arc,
+   masked to a thin ring so light travels AROUND the border, not across the
+   face. Two tiers, as on the website: hover gets a still rim; only the ACTIVE
+   model's rim moves, so there is never more than one moving thing on screen.
+   The angle is a registered custom property, so the ring itself rotates its
+   gradient (no oversized spinning disc, nothing to clip). Kōrero blue, from
+   the kx.css accent tokens. Reverses the 1.42 "selected, not glowing" rule on
+   Nic's request (26 Nov 2026); the "Active" pill still carries the state. */
+@property --kx-rim-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 200deg;
+}
+
 .glass-card-interactive {
   position: relative;
   overflow: hidden;
   isolation: isolate;
 }
 
-.glass-card-interactive::after {
+.glass-card-interactive::before {
   content: "";
   position: absolute;
   inset: 0;
-  pointer-events: none;
-  /* Kōrero (v1.10.0): tighter, brighter specular band with a faint aurora-cyan
-     core — light catching the glass picks up the brand hue as it sweeps. */
-  background: linear-gradient(
-    115deg,
-    transparent 38%,
-    rgba(255, 255, 255, 0.08) 47%,
-    rgba(180, 240, 255, 0.22) 50%,
-    rgba(255, 255, 255, 0.08) 53%,
-    transparent 62%
-  );
-  transform: translateX(-120%);
-  transition: transform 760ms cubic-bezier(0.22, 1, 0.36, 1);
   z-index: 1;
+  border-radius: inherit;
+  padding: 1.5px;
+  box-sizing: border-box;
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--kx-rim-angle),
+    rgba(11, 99, 206, 0.22) 0deg,
+    rgba(11, 99, 206, 0.22) 30deg,
+    rgba(90, 176, 255, 0.95) 75deg,
+    rgba(214, 236, 255, 1) 90deg,
+    rgba(90, 176, 255, 0.85) 105deg,
+    rgba(11, 99, 206, 0.22) 160deg,
+    rgba(11, 99, 206, 0.18) 230deg,
+    rgba(90, 176, 255, 0.55) 275deg,
+    rgba(11, 99, 206, 0.22) 320deg,
+    rgba(11, 99, 206, 0.22) 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.glass-card-interactive:hover::after {
-  transform: translateX(120%);
+/* Hover, any card that is not the active one: a still rim and a soft bloom. */
+.glass-card-interactive:hover::before {
+  opacity: 0.7;
+}
+.glass-card-interactive:not(.glass-card-selected):hover {
+  box-shadow: 0 0 18px 0 rgba(90, 176, 255, 0.14);
+}
+
+/* The active model: the rim is always lit and its arc travels round. The ring
+   replaces the flat accent border, and a faint bloom sits outside it. */
+.glass-card-interactive.glass-card-selected {
+  border-color: transparent;
+  box-shadow:
+    0 0 22px 0 rgba(90, 176, 255, 0.22),
+    inset 0 0 18px 0 rgba(90, 176, 255, 0.06);
+}
+.glass-card-interactive.glass-card-selected::before {
+  opacity: 1;
+  animation: kx-rim-spin 4.2s linear infinite;
+}
+@keyframes kx-rim-spin {
+  from { --kx-rim-angle: 0deg; }
+  to { --kx-rim-angle: 360deg; }
 }
 
 /* v1.31.0: the box-shadow focus ring that used to live here has been REMOVED.
@@ -671,15 +710,15 @@ body::before {
    outlines are not part of the box model, so they cannot be clipped and cannot
    displace a shadow. See the rule below. */
 
-/* Kōrero (v1.11.0): honour reduced-motion for the interactive-glass effects.
-   Motion is removed (no lift, no light-sweep, instant transitions); the static
-   surface/colour/glow hover states are kept — they convey state without moving. */
+/* Kōrero (1.53): reduced motion keeps the rim but never moves it: a fixed
+   arc on the active card, and instant fades. */
 @media (prefers-reduced-motion: reduce) {
   .glass-card-interactive { transition: none; }
-  .glass-card-interactive:hover { transform: none; }
-  .glass-card-interactive::after { transition: none; }
-  /* Keep the sweep band parked off-screen so it never travels across the card. */
-  .glass-card-interactive:hover::after { transform: translateX(-120%); }
+  .glass-card-interactive::before { transition: none; }
+  .glass-card-interactive.glass-card-selected::before {
+    animation: none;
+    --kx-rim-angle: 200deg;
+  }
 }
 
 /* Kōrero (v1.12.0): page-section transition — a brief fade + rise when the
