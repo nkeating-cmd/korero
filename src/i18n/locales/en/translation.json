@@ -515,7 +515,7 @@
       },
       "learning": {
         "title": "Learnt from your corrections",
-        "description": "When you correct a misheard name in Dictation history, Kōrero notes what it wrote and what you changed it to. Once you have made the same correction twice (three times for a single word), Kōrero makes it for you whenever you dictate. It learns names, not rewording, and switches a correction off if you change it back. What it learns is stored on this computer only, and is not used in meetings or notes until you choose Use everywhere.",
+        "description": "When you correct a misheard name in Dictation history, Kōrero notes what it wrote and what you changed it to. Once you have made the same correction twice, Kōrero makes it for you whenever you dictate. A single word is learnt together with the word beside it. It learns names, not rewording, and switches a correction off if you change it back. What it learns is stored on this computer only, and is not used in meetings or notes until you choose Use everywhere.",
         "switch": "Learn from my corrections",
         "switchDescription": "Off: nothing new is learnt and nothing learnt is applied. The list is kept.",
         "empty": "Nothing learnt yet. Correct a misheard name in Dictation history to start.",

@@ -57,16 +57,16 @@ pub fn learn_from_edit(
     Ok(outcome)
 }
 
-/// The Settings page's edits to the list (switch off, switch back on, forget). Returns the
-/// list as stored.
+/// The Settings page's edits to the list (switch off, switch back on, forget). The page
+/// cannot add a pair or change one (`learning::page_edit`). Returns the list as stored.
 #[tauri::command]
 #[specta::specta]
 pub fn update_learned_pairs(
     app: AppHandle,
     pairs: Vec<LearnedPair>,
 ) -> Result<Vec<LearnedPair>, String> {
-    let clean = learning::sanitise(pairs);
     let mut settings = get_settings(&app);
+    let clean = learning::page_edit(&settings.learned_pairs, &pairs);
     settings.learned_pairs = clean.clone();
     write_settings(&app, settings);
     Ok(clean)
@@ -102,12 +102,26 @@ mod tests {
             one("foreign emergency", "Fire and Emergency")
         );
         assert_eq!(pairs_of("we met the fens crew", "we met the FENZ crew"), one("fens", "FENZ"));
+        // A real word, or another person's name, is never a rule by itself.
+        for (b, a) in [
+            ("ask may about it", "ask Mae about it"),
+            ("call Tim tomorrow", "call Tom tomorrow"),
+            ("see the minister said no", "see the Ministry said no"),
+            ("with the police today", "with the Policy today"),
+            ("te marama hou", "te mārama hou"),
+            ("an urgent matter", "an Urgent matter"),
+        ] {
+            for (h, _) in pairs_of(b, a) {
+                assert!(h.contains(' '), "{b:?} -> {a:?} learnt the bare word {h:?}");
+            }
+        }
         for (b, a) in [
             ("who is on call", "WHO is on call"),
             ("tell us about it", "tell US about it"),
             ("ask it for help", "ask IT for help"),
             ("we met at the bank", "we met at the Bank"),
-            ("we may go with may", "we may go with Mae"),
+            ("we may go with may", "we may go with MAE"),
+            ("ask Chris view", "ask Chris's view"),
             ("he tangata pai", "he tāngata pai"),
             ("te wahine nei", "te wāhine nei"),
             ("nga matua katoa", "nga mātua katoa"),
