@@ -98,6 +98,9 @@ Running it where Playwright's pinned Chromium is not installed:
     history, and see "Noted". Do the same once more and see "Learnt" (a single word is instead offered
     after three corrections: "Always write it"). Dictate the phrase once more: it is pasted right, with "Corrected" and the words as heard under "Show original". Then check AI
     clean-up & notes → *Learnt from your corrections* lists it as "In use".
+    Learning, the offer and switch-off (not the dictation itself) are also checked on the real build
+    by `scripts/uat-windows/learning.mjs`, against a portable copy holding invented history rows:
+    10 of 10 claims on legion-26 on 26 Nov 2026.
 
 ## Local AI (1.49): by hand on Windows
 
