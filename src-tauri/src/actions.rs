@@ -1235,11 +1235,24 @@ pub(crate) fn snap_dictation(app: &AppHandle, text: String) -> (String, Option<S
         &[]
     };
     let (snapped, n) = crate::audio_toolkit::snap_addresses(&text, known, &taught);
-    if n == 0 {
+    if n > 0 {
+        info!("known addresses: replaced {n} misheard address(es)");
+    }
+    // Kōrero 1.52 (B14): mishearings learnt from the user's own corrections in History
+    // (`learning.rs`). Dictation only, like the addresses above, and never inside an address.
+    let rules = if s.learning_enabled {
+        crate::learning::active_rules(&s.learned_pairs)
+    } else {
+        Vec::new()
+    };
+    let out = crate::learning::apply(&snapped, &rules);
+    if out != snapped {
+        info!("learning: applied a learnt correction");
+    }
+    if out == text {
         return (text, None);
     }
-    info!("known addresses: replaced {n} misheard address(es)");
-    (snapped, Some(text))
+    (out, Some(text))
 }
 
 /// What History stores for a dictation: (`transcription_text`, `post_processed_text`). When an

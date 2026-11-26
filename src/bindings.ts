@@ -383,6 +383,55 @@ async updateKnownAddresses(addresses: string[]) : Promise<Result<string[], strin
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Called when the user saves a correction in Dictation history. `original` is the dictation
+ * as heard, `before` the text they started from, `after` what they saved. Nothing is kept
+ * but the replaced words themselves, a count and the day. Never logs any text.
+ */
+async learnFromEdit(original: string, before: string, after: string) : Promise<Result<LearnOutcome, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("learn_from_edit", { original, before, after }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The Settings page's edits to the list (switch off, switch back on, forget). Returns the
+ * list as stored.
+ */
+async updateLearnedPairs(pairs: LearnedPair[]) : Promise<Result<LearnedPair[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_learned_pairs", { pairs }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * "Always write it" on an offer: the single word becomes a learnt rule (dictation only).
+ * Returns the list as stored.
+ */
+async acceptLearnedSuggestion(heard: string) : Promise<Result<LearnedPair[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("accept_learned_suggestion", { heard }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The "Learn from my corrections" switch. Off: nothing is learnt and no learnt rule is
+ * applied; the list is kept so switching back on restores it.
+ */
+async changeLearningEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_learning_enabled_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeWrittenFormsSetting(enabled: boolean) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_written_forms_setting", { enabled }) };
@@ -1396,7 +1445,7 @@ sample: string;
  * `size_vram / size`). Below ~0.9, part runs on the processor.
  */
 gpu_share: number | null }
-export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk: boolean; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; meeting_recording_dir?: string | null; meeting_export_dir?: string | null; tts_engine_dir?: string | null; denoise_enabled?: boolean; save_crash_reports?: boolean; transcript_corrections?: { wrong: string; right: string }[]; post_process_app_routes?: string[]; append_trailing_space?: boolean; written_forms_enabled?: boolean; known_addresses?: string[]; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; custom_filler_words?: string[] | null; whisper_accelerator?: WhisperAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; whisper_gpu_device?: number; extra_recording_buffer_ms?: number }
+export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk: boolean; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; meeting_recording_dir?: string | null; meeting_export_dir?: string | null; tts_engine_dir?: string | null; denoise_enabled?: boolean; save_crash_reports?: boolean; transcript_corrections?: { wrong: string; right: string }[]; post_process_app_routes?: string[]; append_trailing_space?: boolean; written_forms_enabled?: boolean; known_addresses?: string[]; learning_enabled?: boolean; learned_pairs?: LearnedPair[]; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; custom_filler_words?: string[] | null; whisper_accelerator?: WhisperAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; whisper_gpu_device?: number; extra_recording_buffer_ms?: number }
 /**
  * Result of rebuilding a room meeting's transcript.
  */
@@ -1469,6 +1518,14 @@ export type ImplementationChangeResult = { success: boolean;
 reset_bindings: string[] }
 export type KeyboardImplementation = "tauri" | "handy_keys"
 export type LLMPrompt = { id: string; name: string; prompt: string; alias?: string | null }
+/**
+ * What one edit taught.
+ */
+export type LearnOutcome = { learnt: LearnedPair[]; watching: number; switched_off: LearnedPair[]; suggested?: LearnedPair[] }
+/**
+ * One replacement the user has made in History.
+ */
+export type LearnedPair = { heard: string; meant: string; seen?: number; off?: boolean; last_seen?: string; suggest_only?: boolean }
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error"
 export type ModelInfo = { id: string; name: string; description: string; filename: string; url: string | null; sha256: string | null; size_mb: number; is_downloaded: boolean; is_downloading: boolean; partial_size: number; is_directory: boolean; engine_type: EngineType; accuracy_score: number; speed_score: number; supports_translation: boolean; is_recommended: boolean; supported_languages: string[]; supports_language_selection: boolean; is_custom: boolean }
 export type ModelLoadStatus = { is_loaded: boolean; current_model: string | null }

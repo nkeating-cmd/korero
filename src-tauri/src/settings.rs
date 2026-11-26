@@ -688,6 +688,14 @@ pub struct AppSettings {
     /// (`audio_toolkit/known_addresses.rs`). Dictation only. Lower case, valid.
     #[serde(default)]
     pub known_addresses: Vec<String>,
+    /// Kōrero 1.52 (B14): learn mishearings of names from the corrections the user makes
+    /// in Dictation history (`learning.rs`). On by default; nothing leaves this computer.
+    #[serde(default = "default_learning_enabled")]
+    pub learning_enabled: bool,
+    /// Kōrero 1.52: what has been learnt so far. A pair is applied (dictation only) once it
+    /// has been seen twice and is not switched off.
+    #[serde(default)]
+    pub learned_pairs: Vec<crate::learning::LearnedPair>,
     #[serde(default = "default_app_language")]
     pub app_language: String,
     #[serde(default)]
@@ -748,6 +756,10 @@ fn default_nz_english_pass_enabled() -> bool {
 }
 
 fn default_written_forms_enabled() -> bool {
+    true
+}
+
+fn default_learning_enabled() -> bool {
     true
 }
 
@@ -1624,6 +1636,8 @@ pub fn get_default_settings() -> AppSettings {
         append_trailing_space: true,  // Kōrero: smoother inline dictation
         written_forms_enabled: default_written_forms_enabled(),
         known_addresses: Vec::new(),
+        learning_enabled: default_learning_enabled(),
+        learned_pairs: Vec::new(),
         app_language: default_app_language(),
         experimental_enabled: false,
         lazy_stream_close: false,

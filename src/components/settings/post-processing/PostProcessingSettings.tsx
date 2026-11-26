@@ -39,6 +39,7 @@ import { ModelSelect } from "../PostProcessingSettingsApi/ModelSelect";
 import { usePostProcessProviderState } from "../PostProcessingSettingsApi/usePostProcessProviderState";
 import { ShortcutInput } from "../ShortcutInput";
 import { CorrectionsManager } from "../../ui/Corrections";
+import { LearntCorrections } from "../../ui/LearntCorrections";
 import { useSettings } from "../../../hooks/useSettings";
 import { PostProcessingToggle } from "../PostProcessingToggle";
 import { LocalModelSetup } from "./LocalModelSetup";
@@ -617,6 +618,9 @@ export const PostProcessingSettings: React.FC = () => {
       {/* Kōrero (v1.15.0): corrections memory — teach the transcriber the
           words it keeps getting wrong. */}
       <CorrectionsManager />
+
+      {/* Kōrero 1.52 (B14): mishearings learnt from corrections made in History. */}
+      <LearntCorrections />
     </div>
   );
 };

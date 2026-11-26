@@ -92,6 +92,16 @@ Running it where Playwright's pinned Chromium is not installed:
    under Advanced, dictate it once as you would say it, and see it pasted right, with "Corrected" and
    the words as heard under "Show original" in Dictation history.
 
+10. **Learning from corrections (1.52) on a real dictation.** The rules are tested in Rust
+    (`learning.rs` and `commands/learning.rs`, with a fuzzer) and the screens in the browser check, but nothing presses
+    the shortcut. By hand: dictate a sentence with a name Kōrero gets wrong, correct it in Dictation
+    history, and see "Noted". Do the same once more and see "Learnt" (a single word is instead offered
+    after three corrections: "Always write it"). Dictate the phrase once more: it is pasted right, with "Corrected" and the words as heard under "Show original". Then check AI
+    clean-up & notes → *Learnt from your corrections* lists it as "In use".
+    Learning, the offer and switch-off (not the dictation itself) are also checked on the real build
+    by `scripts/uat-windows/learning.mjs`, against a portable copy holding invented history rows:
+    10 of 10 claims on legion-26 on 26 Nov 2026.
+
 ## Local AI (1.49): by hand on Windows
 
 The Rust checks and the runtime download are unit-tested (a local range server stands in for

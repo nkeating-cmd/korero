@@ -2,6 +2,7 @@ pub mod audio;
 pub mod history;
 pub mod models;
 pub mod history_extra;
+pub mod learning; // Kōrero 1.52 (B14): learning from History edits
 pub mod machine; // Kōrero 1.43: hardware profile for the local-model card
 pub mod ollama;
 pub mod notes;
