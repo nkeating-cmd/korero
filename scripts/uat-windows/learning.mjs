@@ -26,8 +26,17 @@ try {
     }
     return [...seen];
   };
+  /** Wait until the messages from the step before have gone, so each step reads its own. */
+  const quiet = async () => {
+    for (let i = 0; i < 120; i++) {
+      if ((await page.locator("[data-sonner-toast]").count()) === 0) return;
+      await page.waitForTimeout(250);
+    }
+    throw new Error("earlier messages never cleared");
+  };
   /** Correct the history entry that shows `shown` so that `from` reads `to`. */
   const correct = async (shown, from, to) => {
+    await quiet();
     const card = page
       .locator("div")
       .filter({ hasText: shown })
