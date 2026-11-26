@@ -45,8 +45,10 @@ pub const ACTIVATE_AT: u32 = 2;
 pub const ACTIVATE_AT_ONE_WORD: u32 = 3;
 /// The most pairs kept.
 pub const MAX_PAIRS: usize = 200;
-/// The most pairs taken from one edit: an edit that changes more is a rewrite.
+/// The most different corrections taken from one edit: an edit that changes more is a rewrite.
 const MAX_PAIRS_PER_EDIT: usize = 3;
+/// The most pairs kept from one edit (one correction can give a word and several phrases).
+const MAX_FOUND_PER_EDIT: usize = 8;
 /// The longest run of words on either side of one replacement.
 const MAX_SPAN_WORDS: usize = 4;
 /// Texts longer than this (in words) are not compared.
@@ -436,7 +438,8 @@ pub fn edit_pairs(before: &str, after: &str, lex: &Lexicon) -> Vec<Found> {
     };
     let spans = replaced_spans(&b, &a);
     let mut out: Vec<Found> = Vec::new();
-    let mut spans_used = 0;
+    // The different corrections made in this edit (the same word fixed four times is one).
+    let mut changes: Vec<(String, String)> = Vec::new();
     for s in &spans {
         let (mut b0, mut b1, mut a0, mut a1) = (s.b0, s.b1, s.a0, s.a1);
         if b1 - b0 > MAX_SPAN_WORDS || a1 - a0 > MAX_SPAN_WORDS {
@@ -499,7 +502,7 @@ pub fn edit_pairs(before: &str, after: &str, lex: &Lexicon) -> Vec<Found> {
                 && distinct_inner_capital(&changed_lower, &changed_meant);
             push(changed_lower.clone(), changed_meant.clone(), !bare_rule);
             if bare_rule || macron_only {
-                spans_used += 1;
+                note_change(&mut changes, &changed_lower, &changed_meant);
                 continue;
             }
             // Otherwise it is also learnt as a phrase, with the unchanged word beside it.
@@ -517,7 +520,9 @@ pub fn edit_pairs(before: &str, after: &str, lex: &Lexicon) -> Vec<Found> {
                 b0 -= 1;
                 a0 -= 1;
             } else {
-                spans_used += usize::from(out.len() > before_this_span);
+                if out.len() > before_this_span {
+                    note_change(&mut changes, &changed_lower, &changed_meant);
+                }
                 continue;
             }
         }
@@ -537,13 +542,22 @@ pub fn edit_pairs(before: &str, after: &str, lex: &Lexicon) -> Vec<Found> {
         {
             push(heard, meant, false);
         }
-        spans_used += usize::from(out.len() > before_this_span);
+        if out.len() > before_this_span {
+            note_change(&mut changes, &changed_lower, &changed_meant);
+        }
     }
-    if spans_used > MAX_PAIRS_PER_EDIT {
-        // More than a few replacements in one edit is a rewrite: learn nothing from it.
+    if changes.len() > MAX_PAIRS_PER_EDIT {
+        // More than a few different replacements in one edit is a rewrite: learn nothing.
         return Vec::new();
     }
+    out.truncate(MAX_FOUND_PER_EDIT);
     out
+}
+
+fn note_change(changes: &mut Vec<(String, String)>, heard: &str, meant: &str) {
+    if !changes.iter().any(|(h, m)| h == heard && m == meant) {
+        changes.push((heard.to_string(), meant.to_string()));
+    }
 }
 
 /// A word of the text with where its core (the word without edge punctuation) sits.
@@ -720,8 +734,13 @@ pub fn observe(
         match pairs.iter_mut().find(|p| p.heard == heard) {
             // Switched off, or already a rule: one different edit does not undo either.
             Some(p) if p.off => {}
-            Some(p) if p.active() && p.meant != meant => {}
-            Some(p) if p.meant == meant => {
+            Some(p) if p.active() && !same_but_first_case(&p.meant, &meant) => {}
+            Some(p) if same_but_first_case(&p.meant, &meant) => {
+                // Corrected once mid-sentence ("ngā") and once at the start of one ("Ngā"):
+                // the same correction. The mid-sentence form is the word's own.
+                if first_lower(&meant) {
+                    p.meant = meant;
+                }
                 let was_active = p.active();
                 p.seen = p.seen.saturating_add(1);
                 p.last_seen = today.to_string();
@@ -747,9 +766,15 @@ pub fn observe(
             }
             None => {
                 if pairs.len() >= MAX_PAIRS {
-                    // Full: make room by dropping the oldest pair that is only watched. If
+                    // Full: make room by dropping the least-corrected pair that is only watched. If
                     // every pair is a rule or switched off, this one is not kept.
-                    match pairs.iter().position(|p| !p.active() && !p.off) {
+                    let least = pairs
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, p)| !p.active() && !p.off)
+                        .min_by_key(|(_, p)| p.seen)
+                        .map(|(k, _)| k);
+                    match least {
                         Some(drop) => {
                             pairs.remove(drop);
                         }
@@ -1091,6 +1116,43 @@ mod tests {
     }
 
     #[test]
+    fn the_same_word_fixed_many_times_in_one_dictation_is_one_correction() {
+        // Fourth pass: a long dictation naming one organisation four times taught nothing.
+        assert_eq!(
+            pairs_of(
+                "the fens a the fens b the fens c the fens d",
+                "the FENZ a the FENZ b the FENZ c the FENZ d"
+            ),
+            one("fens", "FENZ")
+        );
+        assert_eq!(
+            offers_of(
+                "ask kite a ask kite b ask kite c ask kite d",
+                "ask Kyt a ask Kyt b ask Kyt c ask Kyt d"
+            ),
+            one("kite", "Kyt")
+        );
+        assert_eq!(
+            offers_of(
+                "te marama a te marama b te marama c te marama d",
+                "te mārama a te mārama b te mārama c te mārama d"
+            ),
+            one("marama", "mārama")
+        );
+    }
+
+    #[test]
+    fn a_sentence_capital_is_the_same_correction() {
+        let mut pairs = Vec::new();
+        obs(&mut pairs, "nga mihi nui", "nga mihi nui", "Ngā mihi nui");
+        obs(&mut pairs, "thanks nga mihi", "thanks nga mihi", "thanks ngā mihi");
+        let out = obs(&mut pairs, "nga mihi", "nga mihi", "Ngā mihi");
+        let p = pairs.iter().find(|p| p.heard == "nga").unwrap();
+        assert_eq!((p.meant.as_str(), p.seen, p.suggest_only), ("ngā", 3, true));
+        assert_eq!(out.suggested.len(), 1);
+    }
+
+    #[test]
     fn two_in_one_edit_count_once() {
         let mut pairs = Vec::new();
         let b = "the foreign emergency crew and foreign emergency staff";
@@ -1191,6 +1253,17 @@ mod tests {
         assert_eq!(pairs.len(), MAX_PAIRS);
         assert!(pairs.iter().any(|p| p.heard == "word0 x"), "the rule was kept");
         assert!(pairs.iter().any(|p| p.heard == "kite today"));
+        // A pair corrected often is not the one dropped.
+        let mut pairs: Vec<LearnedPair> = (0..MAX_PAIRS)
+            .map(|i| pair(&format!("word{i} x"), &format!("Word{i} X"), 2))
+            .collect();
+        pairs[0] = LearnedPair {
+            suggest_only: true,
+            ..pair("nick", "Nic", 50)
+        };
+        pairs[1].seen = 1;
+        obs(&mut pairs, b, b, "send it to Kyt today");
+        assert!(pairs.iter().any(|p| p.heard == "nick"), "the well-counted offer was kept");
         // Every pair a rule: the new one is not kept, and nothing says it was.
         let mut pairs: Vec<LearnedPair> = (0..MAX_PAIRS)
             .map(|i| pair(&format!("word{i} x"), &format!("Word{i} X"), 2))
@@ -1323,7 +1396,7 @@ mod tests {
             let (o, b, a) = (text(&mut next), text(&mut next), text(&mut next));
             let first = edit_pairs(&b, &a, &lex());
             assert_eq!(first, edit_pairs(&b, &a, &lex()));
-            assert!(first.len() <= 2 * MAX_PAIRS_PER_EDIT);
+            assert!(first.len() <= MAX_FOUND_PER_EDIT);
             for f in &first {
                 let (h, m) = (&f.heard, &f.meant);
                 assert!(h.chars().count() >= 3 && !m.is_empty());
