@@ -5,6 +5,7 @@
 //   node scripts/uat-windows/learning.mjs
 import { chromium } from "playwright-core";
 
+const RETRANSCRIBE = "Re-transcribe";
 const claims = [];
 const claim = (name, ok, detail = "") => {
   claims.push(ok);
@@ -70,6 +71,40 @@ try {
   claim("the third time it is offered, not applied", has(t, 'You have corrected "kite" to Kyt three times') && !has(t, "Learnt:"), JSON.stringify(t));
   await page.getByRole("button", { name: "Always write it" }).first().click({ timeout: 8000 });
   await page.waitForTimeout(1200);
+
+  // A real transcription: the seeded entry "Audio check" has a recording that says the
+  // phrase. Transcribing it again runs the same step a dictation runs, with the rule on.
+  const audio = page
+    .locator("div")
+    .filter({ hasText: "placeholder for the audio check" })
+    .filter({ has: page.getByTitle(RETRANSCRIBE) })
+    .last();
+  if ((await audio.count()) > 0) {
+    await quiet();
+    await audio.getByTitle(RETRANSCRIBE).first().click({ timeout: 8000 });
+    const fixed = page.getByText("Fire and Emergency on the plan", { exact: false }).first();
+    let applied = true;
+    try {
+      await fixed.waitFor({ timeout: 90000 });
+    } catch {
+      applied = false;
+    }
+    const body = await page.evaluate(() => document.body.innerText);
+    claim("a real transcription comes out corrected by the learnt rule", applied, applied ? "" : body.slice(0, 400).replace(/\s+/g, " "));
+    const row = page
+      .locator("div")
+      .filter({ hasText: "Fire and Emergency on the plan" })
+      .filter({ has: page.getByTitle(RETRANSCRIBE) })
+      .last();
+    claim("it is marked Corrected", applied && (await row.getByText("Corrected", { exact: true }).count()) > 0);
+    if (applied) {
+      await row.getByRole("button", { name: /original/i }).first().click({ timeout: 8000 });
+      const shown = (await row.innerText()).replace(/\s+/g, " ");
+      claim("the words as heard are kept as the original", /foreign emergency/i.test(shown), shown.slice(0, 300));
+    }
+  } else {
+    console.log("SKIP  no audio check entry seeded");
+  }
 
   // The list in settings shows what the backend really stored.
   await page.getByText("AI clean-up & notes", { exact: true }).first().click();
