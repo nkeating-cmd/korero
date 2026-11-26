@@ -513,6 +513,27 @@
         "done": "Kōrero will write {{means}} from now on.",
         "corrected": "Corrected"
       },
+      "learning": {
+        "title": "Learnt from your corrections",
+        "description": "When you correct a name in Dictation history, Kōrero notes what it wrote and what you changed it to. The second time you make the same correction, Kōrero starts making it for you. Dictation only, and nothing leaves this computer.",
+        "switch": "Learn from my corrections",
+        "switchDescription": "Off: nothing new is learnt and nothing learnt is applied. The list is kept.",
+        "empty": "Nothing learnt yet. Correct a misheard name in Dictation history to start.",
+        "active": "In use",
+        "watching": "Seen once",
+        "off": "Off",
+        "seen": "Corrected {{count}} times",
+        "useEverywhere": "Use everywhere",
+        "useEverywhereTitle": "Also fix this in meetings and notes, and tell the AI clean-up about it",
+        "switchOff": "Switch off {{heard}}",
+        "switchOn": "Switch on {{heard}}",
+        "forget": "Forget {{heard}}",
+        "promoted": "{{meant}} is now a taught correction, used everywhere.",
+        "learnt": "Learnt: \"{{heard}}\" is now written as {{meant}} when you dictate.",
+        "noted": "Noted. Make the same correction once more and Kōrero will make it for you.",
+        "switchedOff": "Kōrero will stop changing \"{{heard}}\" to {{meant}}.",
+        "undo": "Undo"
+      },
       "writtenForms": {
         "label": "Write numbers as figures",
         "description": "Writes spoken numbers, money, percentages, dates, times and measurements as figures: \"one thousand two hundred dollars\" becomes $1,200. English only. Your custom words and corrections are never changed."

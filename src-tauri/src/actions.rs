@@ -1235,11 +1235,40 @@ pub(crate) fn snap_dictation(app: &AppHandle, text: String) -> (String, Option<S
         &[]
     };
     let (snapped, n) = crate::audio_toolkit::snap_addresses(&text, known, &taught);
-    if n == 0 {
+    if n > 0 {
+        info!("known addresses: replaced {n} misheard address(es)");
+    }
+    // Kōrero 1.52 (B14): mishearings learnt from the user's own corrections in History
+    // (`learning.rs`). Dictation only, like the addresses above, and never inside an address.
+    let rules = if s.learning_enabled {
+        crate::learning::active_rules(&s.learned_pairs)
+    } else {
+        Vec::new()
+    };
+    let out = apply_learnt(&snapped, &rules);
+    if out != snapped {
+        info!("learning: applied a learnt correction");
+    }
+    if out == text {
         return (text, None);
     }
-    info!("known addresses: replaced {n} misheard address(es)");
-    (snapped, Some(text))
+    (out, Some(text))
+}
+
+/// The learnt rules applied to a dictation: whole words, case ignored, addresses left whole
+/// (the same replacement the taught corrections use).
+pub(crate) fn apply_learnt(text: &str, rules: &[(String, String)]) -> String {
+    if rules.is_empty() {
+        return text.to_string();
+    }
+    let as_corrections: Vec<crate::settings::TranscriptCorrection> = rules
+        .iter()
+        .map(|(heard, meant)| crate::settings::TranscriptCorrection {
+            wrong: heard.clone(),
+            right: meant.clone(),
+        })
+        .collect();
+    crate::corrections::apply_corrections(text, &as_corrections)
 }
 
 /// What History stores for a dictation: (`transcription_text`, `post_processed_text`). When an
@@ -1256,6 +1285,38 @@ pub(crate) fn history_texts(
         (Some(h), Some(p)) => (h, Some(p)),
         (Some(h), None) if !post_process => (h, Some(text)),
         (_, p) => (text, p),
+    }
+}
+
+#[cfg(test)]
+mod apply_learnt_tests {
+    use super::apply_learnt;
+
+    fn rules() -> Vec<(String, String)> {
+        vec![
+            ("foreign emergency".to_string(), "Fire and Emergency".to_string()),
+            ("kite".to_string(), "Kyt".to_string()),
+        ]
+    }
+
+    #[test]
+    fn learnt_rules_replace_whole_words_only() {
+        assert_eq!(
+            apply_learnt("Working with Foreign Emergency, and for an emergency.", &rules()),
+            "Working with Fire and Emergency, and for an emergency."
+        );
+        assert_eq!(apply_learnt("foreign emergencies", &rules()), "foreign emergencies");
+        assert_eq!(apply_learnt("nothing to do", &rules()), "nothing to do");
+        assert_eq!(apply_learnt("kite", &[]), "kite");
+    }
+
+    #[test]
+    fn learnt_rules_never_edit_inside_an_address() {
+        assert_eq!(
+            apply_learnt("email nick@kite.co.nz about the kite", &rules()),
+            "email nick@kite.co.nz about the Kyt"
+        );
+        assert_eq!(apply_learnt("see kite.co.nz", &rules()), "see kite.co.nz");
     }
 }
 

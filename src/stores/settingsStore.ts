@@ -7,7 +7,7 @@ import type {
   WhisperAcceleratorSetting,
   OrtAcceleratorSetting,
 } from "@/bindings";
-import { commands } from "@/bindings";
+import { commands, type LearnedPair } from "@/bindings";
 
 interface SettingsStore {
   settings: Settings | null;
@@ -151,6 +151,10 @@ const settingUpdaters: {
     commands.changeWrittenFormsSetting(value as boolean),
   known_addresses: (value) =>
     commands.updateKnownAddresses(value as string[]),
+  learning_enabled: (value) =>
+    commands.changeLearningEnabledSetting(value as boolean),
+  learned_pairs: (value) =>
+    commands.updateLearnedPairs(value as LearnedPair[]),
   log_level: (value) => commands.setLogLevel(value as any),
   app_language: (value) => commands.changeAppLanguageSetting(value as string),
   experimental_enabled: (value) =>

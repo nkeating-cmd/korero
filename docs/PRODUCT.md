@@ -1,7 +1,7 @@
 ---
 type: product-brief
 app: korero
-reviewed: 2026-11-17
+reviewed: 2026-11-26
 owner: Nic (decides the order); dev-product skill (maintains this file)
 source_of_truth: this file; detail in the Kōrero claude.ai project (KORERO_STATE.md, plans and build notes) and the backlog kept outside the repo
 wip_limit: 3
@@ -60,6 +60,7 @@ Sources named `KORERO_*` are in the Kōrero claude.ai project.
 | E14 | research | Nic in the Kōrero project chat ("I've given this to clients") | 2026-11-12 | Kōrero is installed by people other than Nic |
 | E15 | research | Nic's request in the Kōrero project chat | 2026-11-17 | Nic wants users with little experience to be able to set up the local AI clean-up model and work out what is wrong when it fails. No client has reported a setup failure yet: Kōrero sends nothing home, so there is no channel for one |
 | E16 | research | Nic's screenshot and request in the Kōrero project chat | 2026-11-22 | "one thousand two hundred" was pasted as words; Nic wants numbers formatted by context the way Wispr Flow does it, without waiting for the AI clean-up |
+| E18 | research | Nic's request in the Kōrero project chat, and legion's meetings store counted the same day (`KORERO_LEARNING_APPROACH_2026-11-26.md`) | 2026-11-26 | "Fire and Emergency" keeps coming out as "foreign emergency" (the wrong form in 5 of his meetings, the right form in 1); the speech model in use takes no vocabulary; he wants Kōrero to learn from the changes he makes, as automatically as data security allows |
 | E17 | research | Nic's tests of 1.50.1 and 1.50.2 in the Kōrero project chat | 2026-11-26 | His own address, said "Nic at KYT dot NZ", came out as nick@kite.co.nz; he asked for addresses he knows to be matched, and for Kōrero to learn from the corrections he makes |
 
 ## Bets
@@ -81,8 +82,10 @@ A build or enable bet enters Now only on research or a requirement. Keep Now to 
 | B7 | Remember voices across meetings | build | O2 | E10 | 2 | 4 | later | 2026-10-16 | plan D2; must meet E11 if built |
 | B8 | Hybrid meetings (room plus remote people): stop remote speech appearing twice (M5) | learn | O2 | E4, E13 | 2 | 2 | later | 2026-10-16 | plan M5 |
 | B10 | Local AI that sets itself up: Kōrero runs its own Ollama, "Check local AI" explains what is wrong, the setup guide ends checked, and every failed clean-up records why (D-014) | build | O5 | E14, E15 | 4 | 4 | now | 2026-11-17 | `KORERO_LOCAL-AI-BUNDLE_REVIEW_2026-11-17.md` |
-| B11 | Numbers, money, percentages, dates, times and measures written as figures on every dictation, rule-based and offline (`audio_toolkit/written_forms.rs`) | build | O3 | E16 | 4 | 3 | now | 2026-11-22 | `KORERO_1.50_NUMBERS-PLAN_2026-11-22.md` |
-| B13 | Known email addresses: a misheard address that sounds like exactly one of the user's own is written as that address on dictation; correcting an address in History offers to remember it (`audio_toolkit/known_addresses.rs`) | build | O3 | E17 | 3 | 2 | now | 2026-11-26 | `KORERO_1.51_KNOWN-ADDRESSES_2026-11-26.md` |
+| B11 | Numbers, money, percentages, dates, times and measures written as figures on every dictation, rule-based and offline (`audio_toolkit/written_forms.rs`) | build | O3 | E16 | 4 | 3 | done | 2026-11-26 | `KORERO_1.50_NUMBERS-PLAN_2026-11-22.md` |
+| B13 | Known email addresses: a misheard address that sounds like exactly one of the user's own is written as that address on dictation; correcting an address in History offers to remember it (`audio_toolkit/known_addresses.rs`) | build | O3 | E17 | 3 | 2 | done | 2026-11-26 | `KORERO_1.51_KNOWN-ADDRESSES_2026-11-26.md` |
+| B14 | Learn mishearings of names from the corrections the user makes in Dictation history: seen twice, then made automatically on dictation; switches itself off if changed back (`learning.rs`, D-015) | build | O3 | E18 | 4 | 2 | now | 2026-11-26 | `KORERO_LEARNING_APPROACH_2026-11-26.md` |
+| B15 | Probe: after a paste, can Kōrero read the text back from the applications Nic dictates into, and again after he edits it? Decides whether learning can follow corrections made outside Kōrero | learn | O3 | E18 | 4 | 1 | next | 2026-11-26 | same |
 | B12 | Compare `text-processing-rs` (a Rust port of NVIDIA NeMo's formatting grammars) against B11's tests: replace, borrow grammars, or drop | learn | O3 | E16 | 2 | 2 | later | 2026-11-22 | same |
 | B9 | Record and score the 108-line te reo take; decide on the lexicon work from the number | learn | O3 | E8 | 3 | 2 | later | 2026-09-25 | `KORERO_PLAN_2026-09-25.md` |
 
@@ -91,6 +94,7 @@ A build or enable bet enters Now only on research or a requirement. Keep Now to 
 Dated one-liners for every reorder, drop or gate decision, newest first. Larger product decisions go to
 `docs/DECISIONS.md`.
 
+- 2026-11-26: Nic chose B14 ("red team review and then determine the approach", then "execute, please"). The red team ruled out matching vocabulary by sound as a rewriter: "for an emergency" scores closer to "Fire and Emergency" than "foreign emergency" does, and that phrase is in his own meetings. So a sound match only judges an edit he actually made. B11 and B13 shipped (1.50.0, 1.51.0) and are done; Now holds B10 and B14 (2 of 3). B15 (reading corrections back from other applications) is a probe in Next: nothing is built on it until the probe gives a number, and it stays opt-in.
 - 2026-11-26: Nic chose B13 ("option C is the best one to go. Red team review and then execute"): his own addresses matched by sound, dictation only, exactly one match or nothing; learning comes from corrections made in History (a Remember card), not from reading other apps after pasting, which stays out until he decides on it. Now holds B10, B11 and B13 (3 of 3).
 - 2026-11-22: Nic chose B11 ("I like option A … please execute this"): numbers written as figures by fixed rules on every dictation, both shortcuts, no AI. B12 (the NeMo grammar port) goes to Later at his request. B11 is built without the `text2num` crate the plan named: measured on 22 Nov, the crate handled only plain numbers, and every other rule (money, dates, times, phones, the guards) had to be Kōrero's own, so a client-installed dependency bought little. Defaults until Nic says otherwise: `3:30 pm`, a comma from 1,000, one to nine as words in prose. Now holds B10 and B11 (2 of 3).
 - 2026-11-17: Nic chose B10 for Now ("Add O5 + B10 to Now"), with Kōrero running its own Ollama (D-014), a model bake-off gating 1.49, and a "Send report to Kyt" email the user reviews and sends. B1 and B3 shipped in 1.45.0 and are done; B4's naming shipped in 1.46, and its merge, split and reassign move to Next. Now holds B10 alone (1 of 3).

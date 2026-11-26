@@ -41,6 +41,7 @@ import {
 } from "@/bindings";
 import { useOsType } from "@/hooks/useOsType";
 import { useSettings } from "@/hooks/useSettings";
+import { useSettingsStore } from "@/stores/settingsStore";
 import { formatDateTime } from "@/utils/dateFormat";
 import { AudioPlayer } from "../../ui/AudioPlayer";
 import { Button } from "../../ui/Button";
@@ -418,7 +419,7 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
   // Kōrero 1.51: address swaps found in the user's last edit, offered to learn.
   const [learn, setLearn] = useState<AddressChange[]>([]);
   const corrections = useCorrections();
-  const { getSetting, updateSetting } = useSettings();
+  const { getSetting, updateSetting, refreshSettings } = useSettings();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Derived state
@@ -479,6 +480,54 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
     setEditText("");
   };
 
+  const learnFromCorrection = async (
+    original: string,
+    before: string,
+    after: string,
+  ) => {
+    try {
+      const r = await commands.learnFromEdit(original, before, after);
+      if (r.status !== "ok" || !r.data) return;
+      const { learnt = [], switched_off = [], watching = 0 } = r.data;
+      if (learnt.length + switched_off.length + watching === 0) return;
+      await refreshSettings();
+      for (const p of learnt)
+        toast.success(
+          t("settings.debug.learning.learnt", {
+            heard: p.heard,
+            meant: p.meant,
+          }),
+          {
+            duration: 10000,
+            action: {
+              label: t("settings.debug.learning.undo"),
+              onClick: () => {
+                const now =
+                  useSettingsStore.getState().settings?.learned_pairs ?? [];
+                updateSetting(
+                  "learned_pairs",
+                  now.map((q) =>
+                    q.heard === p.heard ? { ...q, off: true } : q,
+                  ),
+                );
+              },
+            },
+          },
+        );
+      for (const p of switched_off)
+        toast.message(
+          t("settings.debug.learning.switchedOff", {
+            heard: p.heard,
+            meant: p.meant,
+          }),
+        );
+      if (watching > 0 && learnt.length === 0)
+        toast.message(t("settings.debug.learning.noted"));
+    } catch (error) {
+      console.error("Learning from the correction failed:", error);
+    }
+  };
+
   const handleSaveEdit = async () => {
     if (saving) return;
     if (editText === effectiveText) {
@@ -502,6 +551,14 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
             getSetting("known_addresses") || [],
           ),
         );
+        // Kōrero 1.52 (B14): a misheard name corrected here is noted; the second
+        // time the same correction is made, Kōrero makes it itself (`learning.rs`).
+        if (getSetting("learning_enabled") !== false)
+          void learnFromCorrection(
+            entry.transcription_text,
+            effectiveText,
+            editText,
+          );
         setEditing(false);
         setEditText("");
       } else {
