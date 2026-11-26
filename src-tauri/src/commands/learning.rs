@@ -73,6 +73,23 @@ pub fn update_learned_pairs(
     Ok(clean)
 }
 
+/// "Always write it" on an offer: the single word becomes a learnt rule (dictation only).
+/// Returns the list as stored.
+#[tauri::command]
+#[specta::specta]
+pub fn accept_learned_suggestion(
+    app: AppHandle,
+    heard: String,
+) -> Result<Vec<LearnedPair>, String> {
+    let mut settings = get_settings(&app);
+    if learning::accept(&mut settings.learned_pairs, &heard) {
+        let pairs = settings.learned_pairs.clone();
+        write_settings(&app, settings);
+        return Ok(pairs);
+    }
+    Ok(settings.learned_pairs)
+}
+
 /// The "Learn from my corrections" switch. Off: nothing is learnt and no learnt rule is
 /// applied; the list is kept so switching back on restores it.
 #[tauri::command]

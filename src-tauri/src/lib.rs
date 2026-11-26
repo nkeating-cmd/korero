@@ -552,6 +552,7 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
             shortcut::update_known_addresses,
             commands::learning::learn_from_edit,
             commands::learning::update_learned_pairs,
+            commands::learning::accept_learned_suggestion,
             commands::learning::change_learning_enabled_setting,
             shortcut::change_lazy_stream_close_setting,
             shortcut::change_app_language_setting,

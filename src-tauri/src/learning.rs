@@ -738,7 +738,7 @@ pub fn observe(
             Some(p) if same_but_first_case(&p.meant, &meant) => {
                 // Corrected once mid-sentence ("ngā") and once at the start of one ("Ngā"):
                 // the same correction. The mid-sentence form is the word's own.
-                if first_lower(&meant) {
+                if p.suggest_only && has_macron(&meant) && first_lower(&meant) {
                     p.meant = meant;
                 }
                 let was_active = p.active();
@@ -794,6 +794,22 @@ pub fn observe(
         }
     }
     outcome
+}
+
+/// The user accepted an offer ("Always write it"): the single word becomes a rule, applied on
+/// dictation like any other learnt rule. Only a pair that was really offered can be accepted.
+/// Returns true when a pair changed.
+pub fn accept(pairs: &mut [LearnedPair], heard: &str) -> bool {
+    match pairs
+        .iter_mut()
+        .find(|p| p.heard == heard && p.suggest_only && !p.off && p.seen >= SUGGEST_AT)
+    {
+        Some(p) => {
+            p.suggest_only = false;
+            true
+        }
+        None => false,
+    }
 }
 
 /// The rules Kōrero applies on dictation: (heard, meant).
@@ -1150,6 +1166,25 @@ mod tests {
         let p = pairs.iter().find(|p| p.heard == "nga").unwrap();
         assert_eq!((p.meant.as_str(), p.seen, p.suggest_only), ("ngā", 3, true));
         assert_eq!(out.suggested.len(), 1);
+    }
+
+    #[test]
+    fn an_accepted_offer_is_a_rule_and_nothing_else_can_be_accepted() {
+        let offer = |seen| LearnedPair {
+            suggest_only: true,
+            ..pair("nasa", "NASA", seen)
+        };
+        let mut pairs = vec![offer(3), LearnedPair { heard: "kite".into(), ..offer(2) }];
+        assert!(active_rules(&pairs).is_empty());
+        assert!(!accept(&mut pairs, "kite"), "not offered yet");
+        assert!(!accept(&mut pairs, "nobody"));
+        assert!(accept(&mut pairs, "nasa"));
+        assert_eq!(active_rules(&pairs), one("nasa", "NASA"));
+        // A rule of capitals alone applies (the taught-correction path would skip it).
+        assert_eq!(apply("ask nasa and Nasa", &active_rules(&pairs)), "ask NASA and NASA");
+        assert!(!accept(&mut pairs, "nasa"), "already a rule");
+        let mut off = vec![LearnedPair { off: true, ..offer(9) }];
+        assert!(!accept(&mut off, "nasa"), "dismissed");
     }
 
     #[test]

@@ -409,6 +409,18 @@ async updateLearnedPairs(pairs: LearnedPair[]) : Promise<Result<LearnedPair[], s
 }
 },
 /**
+ * "Always write it" on an offer: the single word becomes a learnt rule (dictation only).
+ * Returns the list as stored.
+ */
+async acceptLearnedSuggestion(heard: string) : Promise<Result<LearnedPair[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("accept_learned_suggestion", { heard }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * The "Learn from my corrections" switch. Off: nothing is learnt and no learnt rule is
  * applied; the list is kept so switching back on restores it.
  */

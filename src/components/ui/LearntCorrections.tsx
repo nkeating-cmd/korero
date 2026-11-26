@@ -2,7 +2,7 @@ import React from "react";
 import { useTranslation } from "react-i18next";
 import { Sparkles, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import type { LearnedPair } from "@/bindings";
+import { commands, type LearnedPair } from "@/bindings";
 import { useSettings } from "../../hooks/useSettings";
 import { useCorrections } from "./Corrections";
 import { ToggleSwitch } from "./ToggleSwitch";
@@ -24,7 +24,8 @@ const OFFER_AT = 3;
  */
 export const LearntCorrections: React.FC = () => {
   const { t } = useTranslation();
-  const { getSetting, updateSetting, isUpdating } = useSettings();
+  const { getSetting, updateSetting, isUpdating, refreshSettings } =
+    useSettings();
   const corrections = useCorrections();
   const enabled = getSetting("learning_enabled") !== false;
   const pairs: LearnedPair[] = getSetting("learned_pairs") ?? [];
@@ -34,6 +35,14 @@ export const LearntCorrections: React.FC = () => {
     save(pairs.map((p) => (p.heard === heard ? { ...p, off } : p)));
   const forget = (heard: string) =>
     save(pairs.filter((p) => p.heard !== heard));
+  /** "Always write it" on an offered single word: it becomes a learnt rule. */
+  const accept = async (p: LearnedPair) => {
+    await commands.acceptLearnedSuggestion(p.heard);
+    await refreshSettings();
+  };
+  /** A taught correction of capitals alone is skipped by the transcriber, so do not offer it. */
+  const canPromote = (p: LearnedPair) =>
+    p.meant.toLowerCase() !== p.heard.toLowerCase();
   const promote = (p: LearnedPair) => {
     const added = corrections.addMany([{ wrong: p.heard, right: p.meant }]);
     forget(p.heard);
@@ -104,7 +113,7 @@ export const LearntCorrections: React.FC = () => {
                   {" · "}
                   {t("settings.debug.learning.seen", { count: seen })}
                 </span>
-                {(active || offered) && (
+                {((active && canPromote(p)) || offered) && (
                   <button
                     type="button"
                     title={t("settings.debug.learning.useEverywhereTitle")}
@@ -114,7 +123,7 @@ export const LearntCorrections: React.FC = () => {
                         : "settings.debug.learning.useEverywhereFor",
                       { heard: p.heard, meant: p.meant },
                     )}
-                    onClick={() => promote(p)}
+                    onClick={() => (offered ? void accept(p) : promote(p))}
                     className="text-xs text-aurora-cyan hover:underline"
                   >
                     {t(

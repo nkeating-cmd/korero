@@ -100,7 +100,7 @@ test.describe("Learning from corrections", () => {
       });
   });
 
-  test("a single word corrected three times is offered, and Always makes it a taught correction", async ({
+  test("a single word corrected three times is offered, and Always makes it a learnt rule", async ({
     page,
   }) => {
     const word = {
@@ -127,15 +127,14 @@ test.describe("Learning from corrections", () => {
         exact: false,
       }),
     ).toBeVisible();
-    // Nothing is taught until the user says so.
-    expect(await invoked(page)).not.toContain("update_transcript_corrections");
+    // Nothing changes until the user says so.
+    expect(await invoked(page)).not.toContain("accept_learned_suggestion");
     await page.getByRole("button", { name: "Always write it" }).click();
     await expect
-      .poll(() => argsOf(page, "update_transcript_corrections"))
-      .toEqual({ corrections: [{ wrong: "kite", right: "Kyt" }] });
-    await expect
-      .poll(() => argsOf(page, "update_learned_pairs"))
-      .toEqual({ pairs: [pair] });
+      .poll(() => argsOf(page, "accept_learned_suggestion"))
+      .toEqual({ heard: "kite" });
+    // It stays a learnt rule (dictation only): it is not made a taught correction.
+    expect(await invoked(page)).not.toContain("update_transcript_corrections");
   });
 
   test("changing a learnt correction back is announced", async ({ page }) => {
@@ -238,6 +237,13 @@ test.describe("Learning from corrections", () => {
     ).toBeVisible();
     await expect(rows.nth(4)).toContainText("Watching · corrected 2 times");
     await expect(rows.nth(4).getByRole("button")).toHaveCount(1);
+    await rows
+      .nth(3)
+      .getByRole("button", { name: /Always write/ })
+      .click();
+    await expect
+      .poll(() => argsOf(page, "accept_learned_suggestion"))
+      .toEqual({ heard: "nick" });
     // Only a pair in use can be promoted.
     await expect(
       rows.nth(0).getByRole("button", { name: /everywhere/ }),

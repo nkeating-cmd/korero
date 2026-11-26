@@ -530,7 +530,7 @@
         "always": "Always write it",
         "alwaysFor": "Always write {{heard}} as {{meant}}",
         "keepCounting": "Keep counting {{heard}} to {{meant}}",
-        "offer": "You have corrected \"{{heard}}\" to {{meant}} three times. Always write {{meant}}? It becomes a taught correction: used everywhere, including meetings, and given to the AI that writes your notes.",
+        "offer": "You have corrected \"{{heard}}\" to {{meant}} three times. Always write {{meant}} when you dictate?",
         "useEverywhereTitle": "Makes it a taught correction: also used in meetings and notes, and given to the AI that writes your notes",
         "use": "Write {{heard}} as {{meant}}",
         "forget": "Forget {{heard}}",

@@ -77,9 +77,7 @@ pub fn apply_corrections(text: &str, corrections: &[TranscriptCorrection]) -> St
     for c in corrections {
         let wrong = c.wrong.trim();
         let right = c.right.trim();
-        // Kōrero 1.52: only an identical pair is skipped. A pair that differs in capitals
-        // alone ("github" → "GitHub") used to be skipped too, so teaching one did nothing.
-        if wrong.is_empty() || right.is_empty() || wrong == right {
+        if wrong.is_empty() || right.is_empty() || wrong.eq_ignore_ascii_case(right) {
             continue;
         }
         // Kōrero 1.51: an email-address correction ("nick@kite.co.nz" → "nic@kyt.nz") is the
@@ -568,12 +566,6 @@ mod tests {
     fn corrections_noop_when_absent_or_empty() {
         let c = vec![corr("xyz", "abc")];
         assert_eq!(apply_corrections("nothing here", &c), "nothing here");
-        // Kōrero 1.52: a correction of capitals alone applies (it was silently skipped).
-        let caps = [corr("github", "GitHub"), corr("same", "same")];
-        assert_eq!(
-            apply_corrections("push to github, Github or GITHUB. same", &caps),
-            "push to GitHub, GitHub or GitHub. same"
-        );
         assert_eq!(apply_corrections("text", &[]), "text");
     }
 }

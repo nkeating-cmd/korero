@@ -542,13 +542,9 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
             action: {
               label: t("settings.debug.learning.always"),
               onClick: () => {
-                corrections.addMany([{ wrong: p.heard, right: p.meant }]);
-                const now =
-                  useSettingsStore.getState().settings?.learned_pairs ?? [];
-                updateSetting(
-                  "learned_pairs",
-                  now.filter((q) => q.heard !== p.heard),
-                );
+                void commands
+                  .acceptLearnedSuggestion(p.heard)
+                  .then(() => refreshSettings());
               },
             },
           },
