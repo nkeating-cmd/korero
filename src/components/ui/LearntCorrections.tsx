@@ -13,6 +13,8 @@ import { ToggleSwitch } from "./ToggleSwitch";
  */
 export const timesNeeded = (heard: string): number =>
   heard.includes(" ") ? 2 : 3;
+/** A single word is offered after this many corrections (`SUGGEST_AT`). */
+const OFFER_AT = 3;
 
 /**
  * Kōrero 1.52 (B14): what Kōrero has learnt from the corrections made in
@@ -75,12 +77,16 @@ export const LearntCorrections: React.FC = () => {
         <ul className="space-y-1">
           {pairs.map((p) => {
             const seen = p.seen ?? 0;
-            const active = !p.off && seen >= timesNeeded(p.heard);
+            const offer = p.suggest_only === true;
+            const active = !p.off && !offer && seen >= timesNeeded(p.heard);
+            const offered = !p.off && offer && seen >= OFFER_AT;
             const state = p.off
               ? t("settings.debug.learning.off")
               : active
                 ? t("settings.debug.learning.active")
-                : t("settings.debug.learning.watching");
+                : offered
+                  ? t("settings.debug.learning.offered")
+                  : t("settings.debug.learning.watching");
             return (
               <li
                 key={p.heard}
@@ -98,27 +104,36 @@ export const LearntCorrections: React.FC = () => {
                   {" · "}
                   {t("settings.debug.learning.seen", { count: seen })}
                 </span>
-                {active && (
+                {(active || offered) && (
                   <button
                     type="button"
                     title={t("settings.debug.learning.useEverywhereTitle")}
-                    aria-label={t("settings.debug.learning.useEverywhereFor", {
-                      meant: p.meant,
-                    })}
+                    aria-label={t(
+                      offered
+                        ? "settings.debug.learning.alwaysFor"
+                        : "settings.debug.learning.useEverywhereFor",
+                      { heard: p.heard, meant: p.meant },
+                    )}
                     onClick={() => promote(p)}
                     className="text-xs text-aurora-cyan hover:underline"
                   >
-                    {t("settings.debug.learning.useEverywhere")}
+                    {t(
+                      offered
+                        ? "settings.debug.learning.always"
+                        : "settings.debug.learning.useEverywhere",
+                    )}
                   </button>
                 )}
                 <input
                   type="checkbox"
                   checked={!p.off}
                   onChange={(e) => setOff(p.heard, !e.target.checked)}
-                  aria-label={t("settings.debug.learning.use", {
-                    heard: p.heard,
-                    meant: p.meant,
-                  })}
+                  aria-label={t(
+                    offer
+                      ? "settings.debug.learning.keepCounting"
+                      : "settings.debug.learning.use",
+                    { heard: p.heard, meant: p.meant },
+                  )}
                 />
                 <button
                   type="button"

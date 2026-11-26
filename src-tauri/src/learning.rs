@@ -15,9 +15,14 @@
 //!   "cost", "their" → "there").
 //! - **A single word is almost never a rule by itself.** A rule for one word changes every use
 //!   of it, and a word Kōrero heard may be a real word or another person's name ("minister" →
-//!   "Ministry", "Tim" → "Tom", "marama" → "mārama"). So a single word takes the unchanged
-//!   word beside it as context and is learnt as a phrase. The one exception is a word whose
-//!   corrected form has a capital inside it (FENZ, GitHub), and that needs three corrections.
+//!   "Ministry", "Tim" → "Tom", "kite" → "Kyt"). So a single word takes the unchanged word
+//!   beside it as context and is learnt as a phrase. It is also counted as a *suggestion*:
+//!   after three corrections Kōrero offers, once, to always write it, and the user decides.
+//!   The one exception is a word whose corrected form has a capital inside it and different
+//!   letters (FENZ from "fens", GitHub): that becomes a rule after three corrections.
+//! - **A macron alone is never applied automatically.** "marama" and "mārama" are different
+//!   words, and no list of such pairs is complete, so a macron-only change is a suggestion at
+//!   most (and not even that for the pairs Kōrero knows are different words).
 //! - **Seen twice.** One edit is watched; the same edit again makes a phrase a rule.
 //! - **Never ordinary words alone.** If every word Kōrero wrote is ordinary English, nothing
 //!   is learnt. A te reo word whose macron-free form is a different word (tangata, tāngata)
@@ -65,7 +70,13 @@ pub struct LearnedPair {
     /// The day it was last seen (yyyy-mm-dd), for the list in Settings.
     #[serde(default)]
     pub last_seen: String,
+    /// A single word counted so Kōrero can offer it: never applied until the user says so.
+    #[serde(default)]
+    pub suggest_only: bool,
 }
+
+/// A suggestion is offered when its correction has been made this many times.
+pub const SUGGEST_AT: u32 = 3;
 
 impl LearnedPair {
     /// How many times this replacement must be made before it is a rule.
@@ -79,7 +90,7 @@ impl LearnedPair {
 
     /// True when Kōrero makes this replacement on dictation.
     pub fn active(&self) -> bool {
-        !self.off && self.seen >= self.needed()
+        !self.off && !self.suggest_only && self.seen >= self.needed()
     }
 }
 
@@ -92,6 +103,19 @@ pub struct LearnOutcome {
     pub watching: u32,
     /// Rules switched off because the user changed them back.
     pub switched_off: Vec<LearnedPair>,
+    /// Single words corrected often enough, with this edit, to offer as a taught correction.
+    #[serde(default)]
+    pub suggested: Vec<LearnedPair>,
+}
+
+/// One replacement found in an edit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Found {
+    /// Lower case.
+    pub heard: String,
+    pub meant: String,
+    /// A single word: counted towards a suggestion, never a rule.
+    pub suggest_only: bool,
 }
 
 /// The two word lists the rules lean on, passed in so this file stays pure.
@@ -382,16 +406,37 @@ fn only_first_letters_differ(heard: &[&str], meant: &[&str]) -> bool {
         })
 }
 
-/// The replacements in an edit that look like mishearings of a name: (heard, meant), heard in
-/// lower case.
-pub fn edit_pairs(before: &str, after: &str, lex: &Lexicon) -> Vec<(String, String)> {
+/// True when the corrected form has a capital inside it and is not just the heard word in
+/// capitals ("aid" → "AID" is emphasis as often as an acronym).
+fn distinct_inner_capital(heard: &str, meant: &str) -> bool {
+    meant.chars().skip(1).any(|c| c.is_uppercase())
+        && !(meant.to_lowercase() == heard && meant.chars().all(|c| !c.is_lowercase()))
+}
+
+/// The checks every pair must pass, whatever its kind.
+fn acceptable(heard_written: &str, meant: &str, heard: &str) -> bool {
+    heard.chars().count() >= 3
+        && meant.chars().count() <= MAX_MEANT_CHARS
+        && heard_written != meant
+        && sounds_alike(heard, meant)
+}
+
+/// The replacements in an edit that look like mishearings of a name, heard in lower case.
+pub fn edit_pairs(before: &str, after: &str, lex: &Lexicon) -> Vec<Found> {
     let b: Vec<&str> = before.split_whitespace().collect();
     let a: Vec<&str> = after.split_whitespace().collect();
     if b.is_empty() || a.is_empty() || b.len() > MAX_WORDS || a.len() > MAX_WORDS {
         return Vec::new();
     }
+    // Punctuation between the words ("foreign, emergency") is not one phrase.
+    let joined = |tokens: &[&str]| {
+        tokens.iter().enumerate().all(|(k, t)| {
+            (k + 1 == tokens.len() || t.ends_with(core(t))) && (k == 0 || t.starts_with(core(t)))
+        })
+    };
     let spans = replaced_spans(&b, &a);
-    let mut out: Vec<(String, String)> = Vec::new();
+    let mut out: Vec<Found> = Vec::new();
+    let mut spans_used = 0;
     for s in &spans {
         let (mut b0, mut b1, mut a0, mut a1) = (s.b0, s.b1, s.a0, s.a1);
         if b1 - b0 > MAX_SPAN_WORDS || a1 - a0 > MAX_SPAN_WORDS {
@@ -403,6 +448,13 @@ pub fn edit_pairs(before: &str, after: &str, lex: &Lexicon) -> Vec<(String, Stri
         let at_start = a0 == 0 || ends_sentence(a[a0 - 1]);
         let changed_heard = join_cores(&b[b0..b1]);
         let changed_meant = join_cores(&a[a0..a1]);
+        if !changed_heard
+            .split(' ')
+            .chain(changed_meant.split(' '))
+            .all(plain_word)
+        {
+            continue;
+        }
         if !name_like(&changed_heard, &changed_meant, at_start) {
             continue;
         }
@@ -410,86 +462,84 @@ pub fn edit_pairs(before: &str, after: &str, lex: &Lexicon) -> Vec<(String, Stri
         if same_word_with_an_ending(&changed_heard, &changed_meant) {
             continue;
         }
-        // One word is too broad to be a rule by itself: it would rewrite every "foreign",
-        // every "minister", every "Tim". Take the unchanged word beside it as context. The
-        // exception is a word whose corrected form has a capital inside it (FENZ, GitHub).
-        let mut bare_word = false;
+        let changed_lower = changed_heard.to_lowercase();
+        // Only the macrons changed. Two such forms can be different words (marama, mārama),
+        // so this is never applied automatically; known different words are not even offered.
+        let macron_only = has_macron(&changed_meant)
+            && changed_lower == without_macrons(&changed_meant.to_lowercase());
+        if macron_only && changed_lower.split(' ').any(|w| (lex.ambiguous)(w)) {
+            continue;
+        }
+        let before_this_span = out.len();
+        let mut push = |heard: String, meant: String, suggest_only: bool| {
+            if !out.iter().any(|f| f.heard == heard) {
+                out.push(Found {
+                    heard,
+                    meant,
+                    suggest_only,
+                });
+            }
+        };
+
+        if b1 - b0 == 1 && a1 - a0 == 1 {
+            // One word for one word. A rule for one word changes every use of it.
+            if !acceptable(&changed_heard, &changed_meant, &changed_lower) {
+                continue;
+            }
+            // An ordinary word only put in capitals ("the NEW plan") is emphasis.
+            if (lex.common)(&changed_lower) && changed_meant.to_lowercase() == changed_lower {
+                continue;
+            }
+            // Left alone elsewhere in the text just corrected: it is a real word too.
+            if count_heard(after, &[changed_lower.clone()], &changed_meant) > 0 {
+                continue;
+            }
+            let bare_rule = !macron_only
+                && !(lex.common)(&changed_lower)
+                && distinct_inner_capital(&changed_lower, &changed_meant);
+            push(changed_lower.clone(), changed_meant.clone(), !bare_rule);
+            if bare_rule || macron_only {
+                spans_used += 1;
+                continue;
+            }
+            // Otherwise it is also learnt as a phrase, with the unchanged word beside it.
+        } else if macron_only {
+            continue;
+        }
+
         if b1 - b0 == 1 {
-            let heard_word = core(b[b0]).to_lowercase();
-            bare_word = a1 - a0 == 1
-                && changed_meant.chars().skip(1).any(|c| c.is_uppercase())
-                && !(lex.common)(&heard_word);
-            if !bare_word {
-                if b1 < b.len() && a1 < a.len() && core(b[b1]) == core(a[a1]) {
-                    b1 += 1;
-                    a1 += 1;
-                } else if b0 > 0 && a0 > 0 && core(b[b0 - 1]) == core(a[a0 - 1]) {
-                    b0 -= 1;
-                    a0 -= 1;
-                } else {
-                    continue;
-                }
+            // One word is too broad to be a rule by itself: it would rewrite every "foreign",
+            // every "minister", every "Tim". Take the unchanged word beside it as context.
+            if b1 < b.len() && a1 < a.len() && core(b[b1]) == core(a[a1]) {
+                b1 += 1;
+                a1 += 1;
+            } else if b0 > 0 && a0 > 0 && core(b[b0 - 1]) == core(a[a0 - 1]) {
+                b0 -= 1;
+                a0 -= 1;
+            } else {
+                spans_used += usize::from(out.len() > before_this_span);
+                continue;
             }
         }
         let heard_words: Vec<&str> = b[b0..b1].iter().map(|t| core(t)).collect();
         let meant_words: Vec<&str> = a[a0..a1].iter().map(|t| core(t)).collect();
-        if !heard_words.iter().chain(meant_words.iter()).all(|w| plain_word(w)) {
-            continue;
-        }
-        // Punctuation between the words ("foreign, emergency") is not one phrase.
-        let joined = |tokens: &[&str]| {
-            tokens.iter().enumerate().all(|(k, t)| {
-                (k + 1 == tokens.len() || t.ends_with(core(t)))
-                    && (k == 0 || t.starts_with(core(t)))
-            })
-        };
-        if !joined(&b[b0..b1]) || !joined(&a[a0..a1]) {
-            continue;
-        }
+        let phrase_ok = heard_words.iter().chain(meant_words.iter()).all(|w| plain_word(w))
+            && joined(&b[b0..b1])
+            && joined(&a[a0..a1]);
         let heard_written = heard_words.join(" ");
-        let mut meant = meant_words.join(" ");
-        // A te reo word corrected at the start of a sentence: the capital is the sentence's,
-        // not the word's ("Ngā mihi" teaches "ngā").
-        if at_start && has_macron(&meant) && !meant.chars().skip(1).any(|c| c.is_uppercase()) {
-            let mut c = meant.chars();
-            if let Some(f) = c.next() {
-                meant = f.to_lowercase().chain(c).collect();
-            }
-        }
+        let meant = meant_words.join(" ");
         let heard = heard_written.to_lowercase();
-        if heard.chars().count() < 3
-            || meant.chars().count() > MAX_MEANT_CHARS
-            || heard_written == meant
-        {
-            continue;
-        }
         // Every word Kōrero wrote is ordinary English: the user reworded, or the name is
         // also an ordinary word ("mark said", "who is"). Too risky to make a rule.
-        if heard.split(' ').all(|w| (lex.common)(w)) {
-            continue;
-        }
-        // A te reo singular is not a misspelt plural (tangata, tāngata).
-        if heard == without_macrons(&meant.to_lowercase())
-            && heard.split(' ').any(|w| (lex.ambiguous)(w))
+        if phrase_ok
+            && acceptable(&heard_written, &meant, &heard)
+            && !heard.split(' ').all(|w| (lex.common)(w))
         {
-            continue;
+            push(heard, meant, false);
         }
-        if !sounds_alike(&heard, &meant) {
-            continue;
-        }
-        // A single word the user left alone elsewhere in the text they just corrected is a
-        // real word too. (A phrase fixed once and missed once is still learnt.)
-        if bare_word {
-            let heard_list = vec![heard.clone()];
-            if count_heard(after, &heard_list, &meant) > 0 {
-                continue;
-            }
-        }
-        if !out.iter().any(|(h, _)| *h == heard) {
-            out.push((heard, meant));
-        }
+        spans_used += usize::from(out.len() > before_this_span);
     }
-    if out.len() > MAX_PAIRS_PER_EDIT {
+    if spans_used > MAX_PAIRS_PER_EDIT {
         // More than a few replacements in one edit is a rewrite: learn nothing from it.
         return Vec::new();
     }
@@ -658,7 +708,12 @@ pub fn observe(
         }
     }
 
-    for (heard, meant) in edit_pairs(before, after, lex) {
+    for found in edit_pairs(before, after, lex) {
+        let Found {
+            heard,
+            meant,
+            suggest_only,
+        } = found;
         if taught.iter().any(|t| t.trim().to_lowercase() == heard) {
             continue;
         }
@@ -670,7 +725,13 @@ pub fn observe(
                 let was_active = p.active();
                 p.seen = p.seen.saturating_add(1);
                 p.last_seen = today.to_string();
-                if !was_active && p.active() {
+                if p.suggest_only {
+                    if p.seen == SUGGEST_AT {
+                        outcome.suggested.push(p.clone());
+                    } else if p.seen < SUGGEST_AT {
+                        outcome.watching += 1;
+                    }
+                } else if !was_active && p.active() {
                     outcome.learnt.push(p.clone());
                 } else if !p.active() {
                     outcome.watching += 1;
@@ -680,6 +741,7 @@ pub fn observe(
                 // Still being watched, and corrected to something else: count again.
                 p.meant = meant;
                 p.seen = 1;
+                p.suggest_only = suggest_only;
                 p.last_seen = today.to_string();
                 outcome.watching += 1;
             }
@@ -700,6 +762,7 @@ pub fn observe(
                     seen: 1,
                     off: false,
                     last_seen: today.to_string(),
+                    suggest_only,
                 });
                 outcome.watching += 1;
             }
@@ -760,8 +823,21 @@ mod tests {
         }
     }
 
+    /// The rules an edit would teach (suggestions left out).
     fn pairs_of(before: &str, after: &str) -> Vec<(String, String)> {
         edit_pairs(before, after, &lex())
+            .into_iter()
+            .filter(|f| !f.suggest_only)
+            .map(|f| (f.heard, f.meant))
+            .collect()
+    }
+    /// The single words an edit would count towards a suggestion.
+    fn offers_of(before: &str, after: &str) -> Vec<(String, String)> {
+        edit_pairs(before, after, &lex())
+            .into_iter()
+            .filter(|f| f.suggest_only)
+            .map(|f| (f.heard, f.meant))
+            .collect()
     }
     fn none() -> Vec<(String, String)> {
         Vec::new()
@@ -776,6 +852,7 @@ mod tests {
             seen,
             off: false,
             last_seen: String::new(),
+            suggest_only: false,
         }
     }
 
@@ -801,21 +878,26 @@ mod tests {
 
     #[test]
     fn names_and_acronyms_are_learnt() {
-        // A capital inside the corrected word: learnt as the word itself.
+        // A capital inside the corrected word, and different letters: a rule by itself.
         assert_eq!(pairs_of("we met the fens team", "we met the FENZ team"), one("fens", "FENZ"));
+        assert_eq!(offers_of("we met the fens team", "we met the FENZ team"), none());
         assert_eq!(pairs_of("push it to github now", "push it to GitHub now"), one("github", "GitHub"));
-        // Any other single word is learnt with the word beside it, never by itself.
+        // Any other single word is learnt with the word beside it, and counted as an offer.
         assert_eq!(pairs_of("send it to kite today", "send it to Kyt today"), one("kite today", "Kyt today"));
+        assert_eq!(offers_of("send it to kite today", "send it to Kyt today"), one("kite", "Kyt"));
         assert_eq!(pairs_of("send it to kite", "send it to Kyt"), one("to kite", "to Kyt"));
-        assert_eq!(pairs_of("our whanau is here", "our whānau is here"), one("whanau is", "whānau is"));
         // Already capitalised by the transcriber, corrected to a name that sounds the same.
         assert_eq!(pairs_of("we saw Nick there", "we saw Nic there"), one("nick there", "Nic there"));
+        assert_eq!(offers_of("we saw Nick there", "we saw Nic there"), one("nick", "Nic"));
         assert_eq!(pairs_of("ask Steven about it", "ask Stephen about it"), one("steven about", "Stephen about"));
         // A lower-case word after a full stop is not a sentence start ("e.g. kite called").
         assert_eq!(pairs_of("e.g. kite called", "e.g. Kyt called"), one("kite called", "Kyt called"));
-        // A te reo phrase corrected at the start of a sentence does not keep its capital.
-        assert_eq!(pairs_of("nga mihi nui", "Ngā mihi nui"), one("nga mihi", "ngā mihi"));
-        assert_eq!(pairs_of("thanks nga mihi", "thanks ngā mihi"), one("nga mihi", "ngā mihi"));
+        // No unchanged word beside it: still counted as an offer.
+        assert_eq!(pairs_of("thanks, nick.", "thanks, Nic."), none());
+        assert_eq!(offers_of("thanks, nick.", "thanks, Nic."), one("nick", "Nic"));
+        // An ordinary word that is also a name is never a rule, but can be offered.
+        assert_eq!(pairs_of("then mark said yes", "then Marc said yes"), none());
+        assert_eq!(offers_of("then mark said yes", "then Marc said yes"), one("mark", "Marc"));
         // A phrase fixed once and missed once in the same dictation is still learnt.
         assert_eq!(
             pairs_of(
@@ -824,6 +906,25 @@ mod tests {
             ),
             one("foreign emergency", "Fire and Emergency")
         );
+    }
+
+    #[test]
+    fn a_macron_alone_is_offered_and_never_applied_by_itself() {
+        // marama (moon) and mārama (clear) are different words; no list of such pairs is
+        // complete, so nothing with only a macron changed becomes a rule.
+        for (b, a, h, m) in [
+            ("our whanau is here", "our whānau is here", "whanau", "whānau"),
+            ("te marama hou", "te mārama hou", "marama", "mārama"),
+            ("the maori people", "the Māori people", "maori", "Māori"),
+            ("thanks nga mihi", "thanks ngā mihi", "nga", "ngā"),
+        ] {
+            assert_eq!(pairs_of(b, a), none(), "{b:?}");
+            assert_eq!(offers_of(b, a), one(h, m), "{b:?}");
+        }
+        // Pairs Kōrero knows are different words are not even offered.
+        assert_eq!(edit_pairs("he tangata pai", "he tāngata pai", &lex()), Vec::new());
+        assert_eq!(edit_pairs("te wahine nei", "te wāhine nei", &lex()), Vec::new());
+        assert_eq!(edit_pairs("nga matua katoa", "ngā mātua katoa", &lex()), Vec::new());
     }
 
     #[test]
@@ -845,7 +946,7 @@ mod tests {
             // A name the sentence starts with: its capital could be the sentence's.
             ("Nick called", "Nic called"),
         ] {
-            assert_eq!(pairs_of(b, a), none(), "{b:?} -> {a:?}");
+            assert_eq!(edit_pairs(b, a, &lex()), Vec::new(), "{b:?} -> {a:?}");
         }
     }
 
@@ -856,7 +957,6 @@ mod tests {
             // M4: context made only of ordinary words.
             ("who is on call", "WHO is on call"),
             ("tell us about it", "tell US about it"),
-            ("then mark said yes", "then Marc said yes"),
             // M5: te reo singulars are not misspelt plurals.
             ("he tangata pai", "he tāngata pai"),
             ("te wahine nei", "te wāhine nei"),
@@ -873,21 +973,26 @@ mod tests {
             ("ask Chris view", "ask Chris's view"),
             ("it is Fire and Emergency plan", "it is Fire and Emergency's plan"),
             ("the Jones family", "the Joneses family"),
-            // Second pass: a single word a capital inside it, left alone elsewhere.
-            ("the fens team and the fens office", "the FENZ team and the fens office"),
         ] {
-            assert_eq!(pairs_of(b, a), none(), "{b:?} -> {a:?}");
+            assert_eq!(edit_pairs(b, a, &lex()), Vec::new(), "{b:?} -> {a:?}");
         }
-        // Second pass: a word that is a real word, or another person's name, is never a
-        // rule by itself. With its neighbour it is narrow enough to be the user's call.
+        // A word that is a real word, another person's name, or only put in capitals is
+        // never a rule by itself. With its neighbour it is narrow enough to be the user's call.
         for (b, a, h, m) in [
             ("ask may about it", "ask Mae about it", "may about", "Mae about"),
             ("call Tim tomorrow", "call Tom tomorrow", "tim tomorrow", "Tom tomorrow"),
             ("see the minister said no", "see the Ministry said no", "minister said", "Ministry said"),
-            ("te marama hou", "te mārama hou", "marama hou", "mārama hou"),
+            ("an urgent matter", "an URGENT matter", "urgent matter", "URGENT matter"),
+            ("an aid package", "an AID package", "aid package", "AID package"),
         ] {
             assert_eq!(pairs_of(b, a), one(h, m), "{b:?} -> {a:?}");
         }
+        // A single word left alone elsewhere in the same correction is a real word too.
+        assert_eq!(edit_pairs("we may go with may", "we may go with Mae", &lex()), Vec::new());
+        assert_eq!(
+            edit_pairs("the fens team and the fens office", "the FENZ team and the fens office", &lex()),
+            Vec::new()
+        );
     }
 
     #[test]
@@ -960,6 +1065,32 @@ mod tests {
     }
 
     #[test]
+    fn a_single_word_is_offered_after_three_and_never_applied() {
+        let mut pairs = Vec::new();
+        // Corrected in three different sentences: no phrase repeats, the word is counted.
+        for (b, a) in [
+            ("ask kite now", "ask Kyt now"),
+            ("tell kite about it", "tell Kyt about it"),
+        ] {
+            let out = obs(&mut pairs, b, b, a);
+            assert!(out.suggested.is_empty() && out.learnt.is_empty());
+            assert!(out.watching > 0);
+        }
+        let out = obs(&mut pairs, "from kite again", "from kite again", "from Kyt again");
+        assert_eq!(out.suggested.len(), 1);
+        assert_eq!((out.suggested[0].heard.as_str(), out.suggested[0].meant.as_str()), ("kite", "Kyt"));
+        assert!(active_rules(&pairs).is_empty(), "an offer is never applied");
+        // Offered once: a fourth correction does not offer again.
+        let out = obs(&mut pairs, "with kite soon", "with kite soon", "with Kyt soon");
+        assert!(out.suggested.is_empty());
+        // Dismissed (switched off), it is not counted again.
+        pairs.iter_mut().find(|p| p.heard == "kite").unwrap().off = true;
+        let seen = pairs.iter().find(|p| p.heard == "kite").unwrap().seen;
+        obs(&mut pairs, "near kite then", "near kite then", "near Kyt then");
+        assert_eq!(pairs.iter().find(|p| p.heard == "kite").unwrap().seen, seen);
+    }
+
+    #[test]
     fn two_in_one_edit_count_once() {
         let mut pairs = Vec::new();
         let b = "the foreign emergency crew and foreign emergency staff";
@@ -1024,7 +1155,7 @@ mod tests {
         let mut pairs = vec![pair("kite today", "Kyt today", 5)];
         let b = "send it to kite today";
         let out = obs(&mut pairs, b, b, "send it to Kyte today");
-        assert_eq!(out, LearnOutcome::default());
+        assert!(out.learnt.is_empty() && out.switched_off.is_empty());
         assert_eq!((pairs[0].meant.as_str(), pairs[0].seen), ("Kyt today", 5));
         // A pair that is only watched does start again.
         let mut pairs = vec![pair("kite today", "Kyt today", 1)];
@@ -1056,7 +1187,7 @@ mod tests {
             .collect();
         let b = "send it to kite today";
         let out = obs(&mut pairs, b, b, "send it to Kyt today");
-        assert_eq!(out.watching, 1);
+        assert_eq!(out.watching, 2, "the phrase and the word");
         assert_eq!(pairs.len(), MAX_PAIRS);
         assert!(pairs.iter().any(|p| p.heard == "word0 x"), "the rule was kept");
         assert!(pairs.iter().any(|p| p.heard == "kite today"));
@@ -1192,10 +1323,12 @@ mod tests {
             let (o, b, a) = (text(&mut next), text(&mut next), text(&mut next));
             let first = edit_pairs(&b, &a, &lex());
             assert_eq!(first, edit_pairs(&b, &a, &lex()));
-            assert!(first.len() <= MAX_PAIRS_PER_EDIT);
-            for (h, m) in &first {
+            assert!(first.len() <= 2 * MAX_PAIRS_PER_EDIT);
+            for f in &first {
+                let (h, m) = (&f.heard, &f.meant);
                 assert!(h.chars().count() >= 3 && !m.is_empty());
                 assert_eq!(*h, h.to_lowercase());
+                assert!(f.suggest_only || h.contains(' ') || m.chars().skip(1).any(|c| c.is_uppercase()));
                 assert!(h.split(' ').chain(m.split(' ')).all(plain_word), "{h:?} {m:?}");
             }
             let _ = sounds_alike(&b, &a);

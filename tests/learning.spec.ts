@@ -100,6 +100,44 @@ test.describe("Learning from corrections", () => {
       });
   });
 
+  test("a single word corrected three times is offered, and Always makes it a taught correction", async ({
+    page,
+  }) => {
+    const word = {
+      heard: "kite",
+      meant: "Kyt",
+      seen: 3,
+      off: false,
+      last_seen: "2026-11-26",
+      suggest_only: true,
+    };
+    await installTauriMock(page, [], {
+      get_app_settings: { ...SETTINGS, learned_pairs: [pair, word] },
+      get_history_entries: { entries: [entry], has_more: false },
+      learn_from_edit: {
+        learnt: [],
+        watching: 0,
+        switched_off: [],
+        suggested: [word],
+      },
+    });
+    await correct(page, fixed);
+    await expect(
+      page.getByText('You have corrected "kite" to Kyt three times', {
+        exact: false,
+      }),
+    ).toBeVisible();
+    // Nothing is taught until the user says so.
+    expect(await invoked(page)).not.toContain("update_transcript_corrections");
+    await page.getByRole("button", { name: "Always write it" }).click();
+    await expect
+      .poll(() => argsOf(page, "update_transcript_corrections"))
+      .toEqual({ corrections: [{ wrong: "kite", right: "Kyt" }] });
+    await expect
+      .poll(() => argsOf(page, "update_learned_pairs"))
+      .toEqual({ pairs: [pair] });
+  });
+
   test("changing a learnt correction back is announced", async ({ page }) => {
     await installTauriMock(page, [], {
       get_history_entries: {
@@ -165,6 +203,14 @@ test.describe("Learning from corrections", () => {
           pair,
           watched,
           { ...pair, heard: "kite", meant: "Kyt", off: true },
+          { ...pair, heard: "nick", meant: "Nic", seen: 3, suggest_only: true },
+          {
+            ...pair,
+            heard: "mark",
+            meant: "Marc",
+            seen: 2,
+            suggest_only: true,
+          },
         ],
       },
     });
@@ -178,13 +224,20 @@ test.describe("Learning from corrections", () => {
     });
     await expect(card).toBeVisible();
     const rows = card.getByRole("listitem");
-    await expect(rows).toHaveCount(3);
+    await expect(rows).toHaveCount(5);
     await expect(rows.nth(0)).toContainText("foreign emergency");
     await expect(rows.nth(0)).toContainText("Fire and Emergency");
     await expect(rows.nth(0)).toContainText("In use · corrected 2 times");
     // A single word needs three: twice is still only watched.
     await expect(rows.nth(1)).toContainText("Watching · corrected 2 times");
     await expect(rows.nth(2)).toContainText("Off");
+    // A single word is never in use by itself: suggested at three, watched before.
+    await expect(rows.nth(3)).toContainText("Suggested · corrected 3 times");
+    await expect(
+      rows.nth(3).getByRole("button", { name: "Always write nick as Nic" }),
+    ).toBeVisible();
+    await expect(rows.nth(4)).toContainText("Watching · corrected 2 times");
+    await expect(rows.nth(4).getByRole("button")).toHaveCount(1);
     // Only a pair in use can be promoted.
     await expect(
       rows.nth(0).getByRole("button", { name: /everywhere/ }),

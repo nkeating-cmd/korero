@@ -49,10 +49,11 @@ pub fn learn_from_edit(
         write_settings(&app, settings);
     }
     log::info!(
-        "learning: {} learnt, {} watching, {} switched off",
+        "learning: {} learnt, {} watching, {} switched off, {} offered",
         outcome.learnt.len(),
         outcome.watching,
-        outcome.switched_off.len()
+        outcome.switched_off.len(),
+        outcome.suggested.len()
     );
     Ok(outcome)
 }
@@ -88,8 +89,13 @@ mod tests {
     use super::real_lexicon;
     use crate::learning::edit_pairs;
 
+    /// The rules an edit would teach (single words that are only offered are left out).
     fn pairs_of(before: &str, after: &str) -> Vec<(String, String)> {
         edit_pairs(before, after, &real_lexicon())
+            .into_iter()
+            .filter(|f| !f.suggest_only)
+            .map(|f| (f.heard, f.meant))
+            .collect()
     }
 
     /// The rules against the app's real word lists (the tests in `learning.rs` use small
@@ -108,8 +114,9 @@ mod tests {
             ("call Tim tomorrow", "call Tom tomorrow"),
             ("see the minister said no", "see the Ministry said no"),
             ("with the police today", "with the Policy today"),
-            ("te marama hou", "te mārama hou"),
-            ("an urgent matter", "an Urgent matter"),
+            ("an urgent matter", "an URGENT matter"),
+            ("an aid package", "an AID package"),
+            ("send it to kite today", "send it to Kyt today"),
         ] {
             for (h, _) in pairs_of(b, a) {
                 assert!(h.contains(' '), "{b:?} -> {a:?} learnt the bare word {h:?}");
@@ -122,12 +129,26 @@ mod tests {
             ("we met at the bank", "we met at the Bank"),
             ("we may go with may", "we may go with MAE"),
             ("ask Chris view", "ask Chris's view"),
+            ("the costs are high", "the cost is high"),
+            ("it is over their", "it is over there"),
+            ("the new plan", "the NEW plan"),
+        ] {
+            assert_eq!(pairs_of(b, a), Vec::new(), "{b:?} -> {a:?}");
+        }
+        // Te reo: a macron alone never becomes a rule, and the pairs Kōrero knows are
+        // different words are not even offered.
+        for (b, a) in [
             ("he tangata pai", "he tāngata pai"),
             ("te wahine nei", "te wāhine nei"),
             ("nga matua katoa", "nga mātua katoa"),
             ("he kaka tera", "he kākā tera"),
-            ("the costs are high", "the cost is high"),
-            ("it is over their", "it is over there"),
+        ] {
+            assert_eq!(edit_pairs(b, a, &real_lexicon()), Vec::new(), "{b:?} -> {a:?}");
+        }
+        for (b, a) in [
+            ("te marama hou", "te mārama hou"),
+            ("te kainga tawhito", "te kāinga tawhito"),
+            ("our whanau is here", "our whānau is here"),
         ] {
             assert_eq!(pairs_of(b, a), Vec::new(), "{b:?} -> {a:?}");
         }
@@ -144,6 +165,7 @@ mod tests {
             seen: 5,
             off: false,
             last_seen: String::new(),
+            suggest_only: false,
         }];
         let glossary = crate::corrections::glossary_block(&s.transcript_corrections);
         assert!(!glossary.unwrap_or_default().contains("Emergency"));

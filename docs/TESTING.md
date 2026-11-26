@@ -95,8 +95,8 @@ Running it where Playwright's pinned Chromium is not installed:
 10. **Learning from corrections (1.52) on a real dictation.** The rules are tested in Rust
     (`learning.rs` and `commands/learning.rs`, with a fuzzer) and the screens in the browser check, but nothing presses
     the shortcut. By hand: dictate a sentence with a name Kōrero gets wrong, correct it in Dictation
-    history, and see "Noted". Do the same again (once more for a phrase, twice more for a single word)
-    and see "Learnt". Dictate it once more: it is pasted right, with "Corrected" and the words as heard under "Show original". Then check AI
+    history, and see "Noted". Do the same once more and see "Learnt" (a single word is instead offered
+    after three corrections: "Always write it"). Dictate the phrase once more: it is pasted right, with "Corrected" and the words as heard under "Show original". Then check AI
     clean-up & notes → *Learnt from your corrections* lists it as "In use".
 
 ## Local AI (1.49): by hand on Windows

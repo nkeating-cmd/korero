@@ -1509,11 +1509,11 @@ export type LLMPrompt = { id: string; name: string; prompt: string; alias?: stri
 /**
  * What one edit taught.
  */
-export type LearnOutcome = { learnt: LearnedPair[]; watching: number; switched_off: LearnedPair[] }
+export type LearnOutcome = { learnt: LearnedPair[]; watching: number; switched_off: LearnedPair[]; suggested?: LearnedPair[] }
 /**
  * One replacement the user has made in History.
  */
-export type LearnedPair = { heard: string; meant: string; seen?: number; off?: boolean; last_seen?: string }
+export type LearnedPair = { heard: string; meant: string; seen?: number; off?: boolean; last_seen?: string; suggest_only?: boolean }
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error"
 export type ModelInfo = { id: string; name: string; description: string; filename: string; url: string | null; sha256: string | null; size_mb: number; is_downloaded: boolean; is_downloading: boolean; partial_size: number; is_directory: boolean; engine_type: EngineType; accuracy_score: number; speed_score: number; supports_translation: boolean; is_recommended: boolean; supported_languages: string[]; supports_language_selection: boolean; is_custom: boolean }
 export type ModelLoadStatus = { is_loaded: boolean; current_model: string | null }

@@ -488,8 +488,17 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
     try {
       const r = await commands.learnFromEdit(original, before, after);
       if (r.status !== "ok" || !r.data) return;
-      const { learnt = [], switched_off = [], watching = 0 } = r.data;
-      if (learnt.length + switched_off.length + watching === 0) return;
+      const {
+        learnt = [],
+        switched_off = [],
+        watching = 0,
+        suggested = [],
+      } = r.data;
+      if (
+        learnt.length + switched_off.length + suggested.length + watching ===
+        0
+      )
+        return;
       await refreshSettings();
       for (const p of learnt)
         toast.success(
@@ -521,7 +530,30 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
             meant: p.meant,
           }),
         );
-      if (watching > 0 && learnt.length === 0)
+      // A single word corrected three times: offer, once, to always write it.
+      for (const p of suggested)
+        toast.message(
+          t("settings.debug.learning.offer", {
+            heard: p.heard,
+            meant: p.meant,
+          }),
+          {
+            duration: 20000,
+            action: {
+              label: t("settings.debug.learning.always"),
+              onClick: () => {
+                corrections.addMany([{ wrong: p.heard, right: p.meant }]);
+                const now =
+                  useSettingsStore.getState().settings?.learned_pairs ?? [];
+                updateSetting(
+                  "learned_pairs",
+                  now.filter((q) => q.heard !== p.heard),
+                );
+              },
+            },
+          },
+        );
+      if (watching > 0 && learnt.length === 0 && suggested.length === 0)
         toast.message(t("settings.debug.learning.noted"));
     } catch (error) {
       console.error("Learning from the correction failed:", error);
